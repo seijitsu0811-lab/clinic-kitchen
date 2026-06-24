@@ -30,7 +30,7 @@ app.use((req, res, next) => {
     const [, pass] = Buffer.from(creds, 'base64').toString().split(':');
     if (pass === PASSWORD) return next();
   }
-  res.setHeader('WWW-Authenticate', 'Basic realm="診所廚房系統"');
+  res.setHeader('WWW-Authenticate', 'Basic realm="Clinic Kitchen"');
   res.status(401).send('請輸入密碼');
 });
 
