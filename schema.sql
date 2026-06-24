@@ -1,219 +1,232 @@
--- ============================================================
--- 診所廚房管理系統 - 資料庫結構
--- 設計原則：Product-Agnostic，可擴充任何 Meal 類型
--- ============================================================
-
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
 
--- 產品（精力湯、未來可新增便當等）
-CREATE TABLE IF NOT EXISTS products (
+-- ── 使用者（廚房員工）────────────────────────────────────
+CREATE TABLE IF NOT EXISTS users (
   id   INTEGER PRIMARY KEY AUTOINCREMENT,
-  name TEXT    NOT NULL,
-  status TEXT  NOT NULL DEFAULT 'active'
+  name TEXT NOT NULL UNIQUE,
+  role TEXT DEFAULT 'staff',
+  created_at TEXT DEFAULT (datetime('now','localtime'))
 );
 
--- 產品變體（個案版、員工版）
-CREATE TABLE IF NOT EXISTS variants (
-  id         INTEGER PRIMARY KEY AUTOINCREMENT,
-  product_id INTEGER NOT NULL,
-  name       TEXT    NOT NULL,
-  description TEXT,
-  FOREIGN KEY (product_id) REFERENCES products(id)
-);
-
--- 季節
-CREATE TABLE IF NOT EXISTS seasons (
-  id           INTEGER PRIMARY KEY AUTOINCREMENT,
-  name         TEXT    NOT NULL,
-  start_month  INTEGER NOT NULL,
-  end_month    INTEGER NOT NULL,
-  is_current   INTEGER NOT NULL DEFAULT 0
-);
-
--- 食材主檔
+-- ── 食材主檔 ──────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS ingredients (
-  id               INTEGER PRIMARY KEY AUTOINCREMENT,
-  name             TEXT    NOT NULL,
-  unit             TEXT    NOT NULL,
-  cost_per_unit    REAL    NOT NULL DEFAULT 0,
-  min_stock        REAL    NOT NULL DEFAULT 0,
-  shelf_life_days  INTEGER NOT NULL DEFAULT 0
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  name         TEXT NOT NULL UNIQUE,
+  unit         TEXT NOT NULL DEFAULT 'g',
+  category     TEXT NOT NULL DEFAULT '其他',
+  safety_stock REAL DEFAULT 0,
+  storage_note TEXT DEFAULT '',
+  active       INTEGER DEFAULT 1
 );
 
--- 配方固定食材（每個 variant 的基底，全年不變）
-CREATE TABLE IF NOT EXISTS recipe_items (
-  id             INTEGER PRIMARY KEY AUTOINCREMENT,
-  variant_id     INTEGER NOT NULL,
-  ingredient_id  INTEGER NOT NULL,
-  qty_per_cup    REAL    NOT NULL,
-  FOREIGN KEY (variant_id)    REFERENCES variants(id),
-  FOREIGN KEY (ingredient_id) REFERENCES ingredients(id)
-);
-
--- 配方季節水果槽（每個 variant × season 的水果）
-CREATE TABLE IF NOT EXISTS seasonal_items (
-  id             INTEGER PRIMARY KEY AUTOINCREMENT,
-  variant_id     INTEGER NOT NULL,
-  season_id      INTEGER NOT NULL,
-  ingredient_id  INTEGER NOT NULL,
-  qty_per_cup    REAL    NOT NULL,
-  FOREIGN KEY (variant_id)    REFERENCES variants(id),
-  FOREIGN KEY (season_id)     REFERENCES seasons(id),
-  FOREIGN KEY (ingredient_id) REFERENCES ingredients(id)
-);
-
--- SOP 步驟
-CREATE TABLE IF NOT EXISTS sop_steps (
-  id            INTEGER PRIMARY KEY AUTOINCREMENT,
-  product_id    INTEGER NOT NULL,
-  step_number   INTEGER NOT NULL,
-  title         TEXT    NOT NULL,
-  description   TEXT,
-  timer_seconds INTEGER NOT NULL DEFAULT 0,
-  FOREIGN KEY (product_id) REFERENCES products(id)
-);
-
--- SOP 步驟確認清單
-CREATE TABLE IF NOT EXISTS sop_checklist (
-  id      INTEGER PRIMARY KEY AUTOINCREMENT,
-  step_id INTEGER NOT NULL,
-  item    TEXT    NOT NULL,
-  FOREIGN KEY (step_id) REFERENCES sop_steps(id)
-);
-
--- 庫存現況（每種食材一筆）
+-- ── 庫存（目前數量）──────────────────────────────────────
 CREATE TABLE IF NOT EXISTS inventory (
-  ingredient_id  INTEGER PRIMARY KEY,
-  current_stock  REAL    NOT NULL DEFAULT 0,
+  ingredient_id INTEGER PRIMARY KEY,
+  qty           REAL DEFAULT 0,
+  updated_at    TEXT DEFAULT (datetime('now','localtime')),
   FOREIGN KEY (ingredient_id) REFERENCES ingredients(id)
 );
 
--- 庫存異動紀錄（進貨 / 生產耗用）
-CREATE TABLE IF NOT EXISTS inventory_log (
-  id             INTEGER PRIMARY KEY AUTOINCREMENT,
-  ingredient_id  INTEGER NOT NULL,
-  type           TEXT    NOT NULL, -- 'purchase' | 'use'
-  qty            REAL    NOT NULL,
-  date           TEXT    NOT NULL DEFAULT (date('now')),
-  note           TEXT,
+-- ── 採購紀錄（計算加權平均成本）─────────────────────────
+CREATE TABLE IF NOT EXISTS purchase_log (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  ingredient_id INTEGER NOT NULL,
+  qty           REAL NOT NULL,
+  total_price   REAL NOT NULL,
+  purchased_at  TEXT NOT NULL,
+  user_id       INTEGER,
   FOREIGN KEY (ingredient_id) REFERENCES ingredients(id)
 );
 
--- 每日排程
-CREATE TABLE IF NOT EXISTS daily_orders (
-  id             INTEGER PRIMARY KEY AUTOINCREMENT,
-  date           TEXT    NOT NULL,
-  variant_id     INTEGER NOT NULL,
-  cups           INTEGER NOT NULL,
-  deadline_time  TEXT    NOT NULL DEFAULT '13:30',
-  assigned_staff TEXT,
-  status         TEXT    NOT NULL DEFAULT 'pending',
-  FOREIGN KEY (variant_id) REFERENCES variants(id)
+-- ── 處方（EMP-00 員工標準 + RX-01..10 個案）─────────────
+CREATE TABLE IF NOT EXISTS prescriptions (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  code              TEXT NOT NULL UNIQUE,
+  name              TEXT NOT NULL,
+  formula_type      TEXT NOT NULL DEFAULT '粉配方',
+  contraindications TEXT DEFAULT '',
+  timing            TEXT DEFAULT '餐前',
+  active            INTEGER DEFAULT 1
 );
 
--- 生產批次
-CREATE TABLE IF NOT EXISTS production_batches (
+-- ── 處方食材用量（每杯）────────────────────────────────
+CREATE TABLE IF NOT EXISTS prescription_ingredients (
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
-  daily_order_id  INTEGER NOT NULL,
-  batch_number    INTEGER NOT NULL,
-  batch_size      INTEGER NOT NULL,
-  operator        TEXT,
-  start_time      TEXT,
-  end_time        TEXT,
-  status          TEXT    NOT NULL DEFAULT 'pending',
-  FOREIGN KEY (daily_order_id) REFERENCES daily_orders(id)
+  prescription_id INTEGER NOT NULL,
+  ingredient_id   INTEGER NOT NULL,
+  qty_per_cup     REAL NOT NULL DEFAULT 0,
+  UNIQUE(prescription_id, ingredient_id),
+  FOREIGN KEY (prescription_id) REFERENCES prescriptions(id),
+  FOREIGN KEY (ingredient_id)   REFERENCES ingredients(id)
 );
 
--- 步驟完成紀錄（防呆 log）
-CREATE TABLE IF NOT EXISTS step_log (
-  id          INTEGER PRIMARY KEY AUTOINCREMENT,
-  batch_id    INTEGER NOT NULL,
-  step_id     INTEGER NOT NULL,
-  completed_at TEXT   NOT NULL DEFAULT (datetime('now')),
-  operator    TEXT,
-  FOREIGN KEY (batch_id) REFERENCES production_batches(id),
-  FOREIGN KEY (step_id)  REFERENCES sop_steps(id)
+-- ── 今日員工出席 ──────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS staff_attendance (
+  id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  date      TEXT NOT NULL,
+  user_id   INTEGER NOT NULL,
+  attending INTEGER DEFAULT 1,
+  meal_time TEXT DEFAULT '1330',
+  UNIQUE(date, user_id),
+  FOREIGN KEY (user_id) REFERENCES users(id)
 );
 
--- ============================================================
+-- ── 今日個案出單 ──────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS case_orders (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  date            TEXT NOT NULL,
+  prescription_id INTEGER NOT NULL,
+  cups            INTEGER NOT NULL DEFAULT 1,
+  meal_time       TEXT DEFAULT '1330',
+  notes           TEXT DEFAULT '',
+  FOREIGN KEY (prescription_id) REFERENCES prescriptions(id)
+);
+
+-- ── 操作記錄 ─────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS user_logs (
+  id      INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER,
+  action  TEXT NOT NULL,
+  detail  TEXT,
+  ts      TEXT DEFAULT (datetime('now','localtime'))
+);
+
+-- ── 系統設定 ─────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS settings (
+  key   TEXT PRIMARY KEY,
+  value TEXT
+);
+
+-- ════════════════════════════════════════════════════════
 -- 初始資料
--- ============================================================
+-- ════════════════════════════════════════════════════════
 
-INSERT OR IGNORE INTO products (id, name) VALUES (1, '精力湯');
+INSERT OR IGNORE INTO settings (key, value) VALUES
+  ('labor_rate',           '250'),
+  ('labor_min_per_cup',    '15'),
+  ('full_formula_price',   '350'),
+  ('powder_formula_price', '280');
 
-INSERT OR IGNORE INTO variants (id, product_id, name, description) VALUES
-  (1, 1, '個案版', '低糖，高蔬菜比例，針對治療需求'),
-  (2, 1, '員工版', '均衡口感，標準配方');
+INSERT OR IGNORE INTO users (name) VALUES
+  ('Bonnie'),('Yenti'),('Louise'),('GG'),('Winnie'),
+  ('綉綉'),('Ann'),('John'),('孟睿');
 
-INSERT OR IGNORE INTO seasons (id, name, start_month, end_month, is_current) VALUES
-  (1, '春', 3, 5, 0),
-  (2, '夏', 6, 8, 1),
-  (3, '秋', 9, 11, 0),
-  (4, '冬', 12, 2, 0);
+INSERT OR IGNORE INTO ingredients (name, unit, category, safety_stock, storage_note) VALUES
+  ('芽菜',     'g',  '蔬菜', 0,    '最長5天｜冷藏4°C｜開袋密封5天'),
+  ('羽衣甘藍', 'g',  '蔬菜', 0,    '最長5天｜冷藏4°C｜洗後密封5天'),
+  ('貝比生菜', 'g',  '蔬菜', 0,    '最長5天｜冷藏4°C｜洗後密封5天'),
+  ('小麥草',   'g',  '蔬菜', 0,    ''),
+  ('胡蘿蔔',   'g',  '蔬菜', 0,    '完整7天｜切開冷藏5天'),
+  ('木瓜',     'g',  '水果', 0,    '完整3天｜切開冷藏2天'),
+  ('甜菜根',   'g',  '水果', 0,    '完整7天｜切開冷藏5天'),
+  ('蘋果',     'g',  '水果', 1350, '完整7天｜切塊冷凍後30天'),
+  ('檸檬帶皮', 'g',  '水果', 135,  '完整7天｜切開冷藏3天'),
+  ('莓果',     'g',  '水果', 1680, '冷凍-18°C｜開袋密封後30天'),
+  ('香蕉',     'g',  '水果', 0,    '完整5天｜切塊冷凍後30天'),
+  ('奇異果',   'g',  '水果', 0,    '完整5天｜切塊冷凍後30天'),
+  ('鳳梨',     'g',  '水果', 0,    ''),
+  ('燕麥',     'g',  '粉類', 800,  '打粉後玻璃罐室溫密封｜最長60天'),
+  ('核桃',     'g',  '粉類', 500,  '密封室溫避光｜開袋後30天'),
+  ('薑黃粉',   'g',  '粉類', 80,   '密封室溫｜依包裝效期(通常180天)'),
+  ('肉桂粉',   'g',  '粉類', 0,    '密封室溫｜依包裝效期'),
+  ('薑粉',     'g',  '粉類', 0,    '密封室溫｜依包裝效期'),
+  ('藜麥粉',   'g',  '粉類', 0,    '密封室溫｜依包裝效期'),
+  ('蛋白粉',   'g',  '粉類', 2000, '1罐=500g｜密封室溫｜開罐後60天'),
+  ('黑胡椒',   'g',  '膠囊', 80,   '1g≈14~20粒｜密封室溫'),
+  ('AstragIN', '粒', '膠囊', 0,    '密封室溫｜注意批號效期'),
+  ('Senactiv', '粒', '膠囊', 0,    '密封室溫｜注意批號效期'),
+  ('益生菌',   '包', '膠囊', 0,    ''),
+  ('橄欖油',   'ml', '油水', 1600, '室溫避光｜開瓶後90天'),
+  ('苦茶油',   'ml', '油水', 0,    '室溫避光｜開瓶後90天'),
+  ('酪梨油',   'ml', '油水', 0,    '室溫避光｜開瓶後90天');
 
-INSERT OR IGNORE INTO ingredients (id, name, unit, cost_per_unit, min_stock, shelf_life_days) VALUES
-  (1,  '蛋白粉',   'g',  0, 500,  365),
-  (2,  '燕麥粉',   'g',  0, 300,  180),
-  (3,  '薑黃',     'g',  0, 100,  365),
-  (4,  '羽衣甘藍', 'g',  0, 300,  5),
-  (5,  '奶油萵苣', 'g',  0, 300,  5),
-  (6,  '冷壓油',   'ml', 0, 200,  90),
-  (7,  '水',       'ml', 0, 0,    0),
-  (8,  '芒果',     'g',  0, 500,  30),
-  (9,  '奇異果',   'g',  0, 300,  30),
-  (10, '鳳梨',     'g',  0, 500,  30),
-  (11, '草莓',     'g',  0, 300,  7),
-  (12, '藍莓',     'g',  0, 200,  7),
-  (13, '香蕉',     'g',  0, 200,  5),
-  (14, '蘋果',     'g',  0, 500,  14),
-  (15, '葡萄',     'g',  0, 300,  7),
-  (16, '柳橙',     'g',  0, 300,  14),
-  (17, '梨子',     'g',  0, 300,  14),
-  (18, '柑橘',     'g',  0, 300,  14);
+INSERT OR IGNORE INTO inventory (ingredient_id, qty)
+SELECT id, CASE name
+  WHEN '芽菜'     THEN 360  WHEN '羽衣甘藍' THEN 350
+  WHEN '貝比生菜' THEN 450  WHEN '胡蘿蔔'   THEN 600
+  WHEN '蘋果'     THEN 5060 WHEN '檸檬帶皮' THEN 500
+  WHEN '莓果'     THEN 1650 WHEN '奇異果'   THEN 64
+  WHEN '燕麥'     THEN 2070 WHEN '核桃'     THEN 1000
+  WHEN '薑黃粉'   THEN 170  WHEN '肉桂粉'   THEN 13
+  WHEN '薑粉'     THEN 80   WHEN '蛋白粉'   THEN 5000
+  WHEN '黑胡椒'   THEN 450  WHEN 'AstragIN' THEN 50
+  WHEN 'Senactiv' THEN 50   WHEN '橄欖油'   THEN 1700
+  WHEN '苦茶油'   THEN 150  ELSE 0
+END FROM ingredients;
 
--- 個案版固定食材
-INSERT OR IGNORE INTO recipe_items (variant_id, ingredient_id, qty_per_cup) VALUES
-  (1, 1, 15), (1, 2, 10), (1, 3, 3), (1, 4, 50), (1, 5, 30), (1, 6, 10), (1, 7, 200);
+INSERT OR IGNORE INTO purchase_log (ingredient_id, qty, total_price, purchased_at) VALUES
+  ((SELECT id FROM ingredients WHERE name='莓果'),    1500, 329,  '2026-06-01'),
+  ((SELECT id FROM ingredients WHERE name='莓果'),    3815, 1131, '2026-06-01'),
+  ((SELECT id FROM ingredients WHERE name='羽衣甘藍'),1500, 831,  '2026-06-01'),
+  ((SELECT id FROM ingredients WHERE name='蘋果'),   18140, 3058, '2026-06-01'),
+  ((SELECT id FROM ingredients WHERE name='芽菜'),     200, 155,  '2026-06-01'),
+  ((SELECT id FROM ingredients WHERE name='貝比生菜'),1000, 1111, '2026-06-01'),
+  ((SELECT id FROM ingredients WHERE name='胡蘿蔔'),   250, 59,   '2026-06-01'),
+  ((SELECT id FROM ingredients WHERE name='檸檬帶皮'),1800, 148,  '2026-06-01'),
+  ((SELECT id FROM ingredients WHERE name='薑黃粉'),   340, 129,  '2026-06-01'),
+  ((SELECT id FROM ingredients WHERE name='橄欖油'),  3000, 1167, '2026-06-01'),
+  ((SELECT id FROM ingredients WHERE name='核桃'),    1360, 489,  '2026-06-01'),
+  ((SELECT id FROM ingredients WHERE name='燕麥'),    5470, 804,  '2026-06-01'),
+  ((SELECT id FROM ingredients WHERE name='苦茶油'),   300, 660,  '2026-06-01'),
+  ((SELECT id FROM ingredients WHERE name='蛋白粉'),  4500, 2970, '2026-06-01');
 
--- 員工版固定食材
-INSERT OR IGNORE INTO recipe_items (variant_id, ingredient_id, qty_per_cup) VALUES
-  (2, 1, 10), (2, 2, 10), (2, 3, 2), (2, 4, 40), (2, 5, 30), (2, 6, 10), (2, 7, 200);
+INSERT OR IGNORE INTO prescriptions (code, name, formula_type, contraindications, timing) VALUES
+  ('EMP-00', '員工標準', '全配方', '',              '餐前'),
+  ('RX-01',  'AW',       '全配方', '無肉桂粉改薑片','餐前'),
+  ('RX-02',  '盧張鶯鶯', '粉配方', '',              '隨餐'),
+  ('RX-03',  '王長慧',   '粉配方', '',              '隨餐'),
+  ('RX-04',  '陶石良',   '粉配方', '',              '餐前');
 
--- 季節水果槽
-INSERT OR IGNORE INTO seasonal_items (variant_id, season_id, ingredient_id, qty_per_cup) VALUES
-  -- 個案版 × 春
-  (1, 1, 11, 50), (1, 1, 12, 30),
-  -- 員工版 × 春
-  (2, 1, 11, 60), (2, 1, 12, 40), (2, 1, 13, 30),
-  -- 個案版 × 夏
-  (1, 2, 8, 40),  (1, 2, 9, 40),
-  -- 員工版 × 夏
-  (2, 2, 8, 60),  (2, 2, 10, 50), (2, 2, 9, 40),
-  -- 個案版 × 秋
-  (1, 3, 14, 50), (1, 3, 15, 30),
-  -- 員工版 × 秋
-  (2, 3, 14, 50), (2, 3, 15, 40), (2, 3, 16, 40),
-  -- 個案版 × 冬
-  (1, 4, 17, 60), (1, 4, 18, 40),
-  -- 員工版 × 冬
-  (2, 4, 17, 60), (2, 4, 18, 50), (2, 4, 9, 40);
+-- Helper macro: insert one prescription ingredient by name
+-- EMP-00
+INSERT OR IGNORE INTO prescription_ingredients (prescription_id, ingredient_id, qty_per_cup) SELECT (SELECT id FROM prescriptions WHERE code='EMP-00'),(SELECT id FROM ingredients WHERE name='羽衣甘藍'),15;
+INSERT OR IGNORE INTO prescription_ingredients (prescription_id, ingredient_id, qty_per_cup) SELECT (SELECT id FROM prescriptions WHERE code='EMP-00'),(SELECT id FROM ingredients WHERE name='貝比生菜'),15;
+INSERT OR IGNORE INTO prescription_ingredients (prescription_id, ingredient_id, qty_per_cup) SELECT (SELECT id FROM prescriptions WHERE code='EMP-00'),(SELECT id FROM ingredients WHERE name='蘋果'),80;
+INSERT OR IGNORE INTO prescription_ingredients (prescription_id, ingredient_id, qty_per_cup) SELECT (SELECT id FROM prescriptions WHERE code='EMP-00'),(SELECT id FROM ingredients WHERE name='檸檬帶皮'),15;
+INSERT OR IGNORE INTO prescription_ingredients (prescription_id, ingredient_id, qty_per_cup) SELECT (SELECT id FROM prescriptions WHERE code='EMP-00'),(SELECT id FROM ingredients WHERE name='莓果'),20;
+INSERT OR IGNORE INTO prescription_ingredients (prescription_id, ingredient_id, qty_per_cup) SELECT (SELECT id FROM prescriptions WHERE code='EMP-00'),(SELECT id FROM ingredients WHERE name='香蕉'),30;
+INSERT OR IGNORE INTO prescription_ingredients (prescription_id, ingredient_id, qty_per_cup) SELECT (SELECT id FROM prescriptions WHERE code='EMP-00'),(SELECT id FROM ingredients WHERE name='燕麥'),10;
+INSERT OR IGNORE INTO prescription_ingredients (prescription_id, ingredient_id, qty_per_cup) SELECT (SELECT id FROM prescriptions WHERE code='EMP-00'),(SELECT id FROM ingredients WHERE name='核桃'),1;
+INSERT OR IGNORE INTO prescription_ingredients (prescription_id, ingredient_id, qty_per_cup) SELECT (SELECT id FROM prescriptions WHERE code='EMP-00'),(SELECT id FROM ingredients WHERE name='薑黃粉'),1;
+INSERT OR IGNORE INTO prescription_ingredients (prescription_id, ingredient_id, qty_per_cup) SELECT (SELECT id FROM prescriptions WHERE code='EMP-00'),(SELECT id FROM ingredients WHERE name='黑胡椒'),1;
+INSERT OR IGNORE INTO prescription_ingredients (prescription_id, ingredient_id, qty_per_cup) SELECT (SELECT id FROM prescriptions WHERE code='EMP-00'),(SELECT id FROM ingredients WHERE name='橄欖油'),20;
 
--- SOP 步驟
-INSERT OR IGNORE INTO sop_steps (id, product_id, step_number, title, description, timer_seconds) VALUES
-  (1, 1, 1, '加入粉末',     '依序加入蛋白粉、燕麥粉、薑黃，確認每項克數正確', 0),
-  (2, 1, 2, '加水低速攪拌', '加入清水，低速攪拌 10 秒讓粉末充分溶解',           10),
-  (3, 1, 3, '加入蔬菜',     '加入已三洗的羽衣甘藍與奶油萵苣',                   0),
-  (4, 1, 4, '加入冷凍水果', '加入當季冷凍水果，高速攪拌 40 秒',                  40),
-  (5, 1, 5, '停機加冷壓油', '停止攪拌後加入冷壓油，輕搖均勻',                   0),
-  (6, 1, 6, '完成出杯',     '2小時內需完成食用，填寫完成記錄',                   0);
+-- RX-01 (AW)
+INSERT OR IGNORE INTO prescription_ingredients (prescription_id, ingredient_id, qty_per_cup) SELECT (SELECT id FROM prescriptions WHERE code='RX-01'),(SELECT id FROM ingredients WHERE name='羽衣甘藍'),20;
+INSERT OR IGNORE INTO prescription_ingredients (prescription_id, ingredient_id, qty_per_cup) SELECT (SELECT id FROM prescriptions WHERE code='RX-01'),(SELECT id FROM ingredients WHERE name='貝比生菜'),10;
+INSERT OR IGNORE INTO prescription_ingredients (prescription_id, ingredient_id, qty_per_cup) SELECT (SELECT id FROM prescriptions WHERE code='RX-01'),(SELECT id FROM ingredients WHERE name='木瓜'),30;
+INSERT OR IGNORE INTO prescription_ingredients (prescription_id, ingredient_id, qty_per_cup) SELECT (SELECT id FROM prescriptions WHERE code='RX-01'),(SELECT id FROM ingredients WHERE name='蘋果'),40;
+INSERT OR IGNORE INTO prescription_ingredients (prescription_id, ingredient_id, qty_per_cup) SELECT (SELECT id FROM prescriptions WHERE code='RX-01'),(SELECT id FROM ingredients WHERE name='檸檬帶皮'),30;
+INSERT OR IGNORE INTO prescription_ingredients (prescription_id, ingredient_id, qty_per_cup) SELECT (SELECT id FROM prescriptions WHERE code='RX-01'),(SELECT id FROM ingredients WHERE name='莓果'),20;
+INSERT OR IGNORE INTO prescription_ingredients (prescription_id, ingredient_id, qty_per_cup) SELECT (SELECT id FROM prescriptions WHERE code='RX-01'),(SELECT id FROM ingredients WHERE name='奇異果'),20;
+INSERT OR IGNORE INTO prescription_ingredients (prescription_id, ingredient_id, qty_per_cup) SELECT (SELECT id FROM prescriptions WHERE code='RX-01'),(SELECT id FROM ingredients WHERE name='燕麥'),20;
+INSERT OR IGNORE INTO prescription_ingredients (prescription_id, ingredient_id, qty_per_cup) SELECT (SELECT id FROM prescriptions WHERE code='RX-01'),(SELECT id FROM ingredients WHERE name='核桃'),1;
+INSERT OR IGNORE INTO prescription_ingredients (prescription_id, ingredient_id, qty_per_cup) SELECT (SELECT id FROM prescriptions WHERE code='RX-01'),(SELECT id FROM ingredients WHERE name='薑黃粉'),1;
+INSERT OR IGNORE INTO prescription_ingredients (prescription_id, ingredient_id, qty_per_cup) SELECT (SELECT id FROM prescriptions WHERE code='RX-01'),(SELECT id FROM ingredients WHERE name='肉桂粉'),1;
+INSERT OR IGNORE INTO prescription_ingredients (prescription_id, ingredient_id, qty_per_cup) SELECT (SELECT id FROM prescriptions WHERE code='RX-01'),(SELECT id FROM ingredients WHERE name='黑胡椒'),1;
+INSERT OR IGNORE INTO prescription_ingredients (prescription_id, ingredient_id, qty_per_cup) SELECT (SELECT id FROM prescriptions WHERE code='RX-01'),(SELECT id FROM ingredients WHERE name='AstragIN'),2;
+INSERT OR IGNORE INTO prescription_ingredients (prescription_id, ingredient_id, qty_per_cup) SELECT (SELECT id FROM prescriptions WHERE code='RX-01'),(SELECT id FROM ingredients WHERE name='橄欖油'),20;
 
-INSERT OR IGNORE INTO sop_checklist (step_id, item) VALUES
-  (1, '確認蛋白粉克數正確'),
-  (1, '確認燕麥粉克數正確'),
-  (1, '確認薑黃克數正確'),
-  (3, '蔬菜已完成三洗'),
-  (3, '蔬菜外觀正常、無異味'),
-  (5, '確認機器已完全停止'),
-  (6, '記錄完成時間'),
-  (6, '確認出杯數量正確');
+-- RX-02 (盧張鶯鶯)
+INSERT OR IGNORE INTO prescription_ingredients (prescription_id, ingredient_id, qty_per_cup) SELECT (SELECT id FROM prescriptions WHERE code='RX-02'),(SELECT id FROM ingredients WHERE name='燕麥'),10;
+INSERT OR IGNORE INTO prescription_ingredients (prescription_id, ingredient_id, qty_per_cup) SELECT (SELECT id FROM prescriptions WHERE code='RX-02'),(SELECT id FROM ingredients WHERE name='核桃'),1;
+INSERT OR IGNORE INTO prescription_ingredients (prescription_id, ingredient_id, qty_per_cup) SELECT (SELECT id FROM prescriptions WHERE code='RX-02'),(SELECT id FROM ingredients WHERE name='薑黃粉'),1;
+INSERT OR IGNORE INTO prescription_ingredients (prescription_id, ingredient_id, qty_per_cup) SELECT (SELECT id FROM prescriptions WHERE code='RX-02'),(SELECT id FROM ingredients WHERE name='肉桂粉'),1;
+INSERT OR IGNORE INTO prescription_ingredients (prescription_id, ingredient_id, qty_per_cup) SELECT (SELECT id FROM prescriptions WHERE code='RX-02'),(SELECT id FROM ingredients WHERE name='黑胡椒'),1;
+
+-- RX-03 (王長慧)
+INSERT OR IGNORE INTO prescription_ingredients (prescription_id, ingredient_id, qty_per_cup) SELECT (SELECT id FROM prescriptions WHERE code='RX-03'),(SELECT id FROM ingredients WHERE name='燕麥'),10;
+INSERT OR IGNORE INTO prescription_ingredients (prescription_id, ingredient_id, qty_per_cup) SELECT (SELECT id FROM prescriptions WHERE code='RX-03'),(SELECT id FROM ingredients WHERE name='核桃'),1;
+INSERT OR IGNORE INTO prescription_ingredients (prescription_id, ingredient_id, qty_per_cup) SELECT (SELECT id FROM prescriptions WHERE code='RX-03'),(SELECT id FROM ingredients WHERE name='薑黃粉'),1;
+INSERT OR IGNORE INTO prescription_ingredients (prescription_id, ingredient_id, qty_per_cup) SELECT (SELECT id FROM prescriptions WHERE code='RX-03'),(SELECT id FROM ingredients WHERE name='薑粉'),1;
+INSERT OR IGNORE INTO prescription_ingredients (prescription_id, ingredient_id, qty_per_cup) SELECT (SELECT id FROM prescriptions WHERE code='RX-03'),(SELECT id FROM ingredients WHERE name='黑胡椒'),1;
+
+-- RX-04 (陶石良)
+INSERT OR IGNORE INTO prescription_ingredients (prescription_id, ingredient_id, qty_per_cup) SELECT (SELECT id FROM prescriptions WHERE code='RX-04'),(SELECT id FROM ingredients WHERE name='燕麥'),20;
+INSERT OR IGNORE INTO prescription_ingredients (prescription_id, ingredient_id, qty_per_cup) SELECT (SELECT id FROM prescriptions WHERE code='RX-04'),(SELECT id FROM ingredients WHERE name='核桃'),1;
+INSERT OR IGNORE INTO prescription_ingredients (prescription_id, ingredient_id, qty_per_cup) SELECT (SELECT id FROM prescriptions WHERE code='RX-04'),(SELECT id FROM ingredients WHERE name='薑黃粉'),1;
+INSERT OR IGNORE INTO prescription_ingredients (prescription_id, ingredient_id, qty_per_cup) SELECT (SELECT id FROM prescriptions WHERE code='RX-04'),(SELECT id FROM ingredients WHERE name='肉桂粉'),1;
+INSERT OR IGNORE INTO prescription_ingredients (prescription_id, ingredient_id, qty_per_cup) SELECT (SELECT id FROM prescriptions WHERE code='RX-04'),(SELECT id FROM ingredients WHERE name='薑粉'),1;
+INSERT OR IGNORE INTO prescription_ingredients (prescription_id, ingredient_id, qty_per_cup) SELECT (SELECT id FROM prescriptions WHERE code='RX-04'),(SELECT id FROM ingredients WHERE name='黑胡椒'),1;
+INSERT OR IGNORE INTO prescription_ingredients (prescription_id, ingredient_id, qty_per_cup) SELECT (SELECT id FROM prescriptions WHERE code='RX-04'),(SELECT id FROM ingredients WHERE name='AstragIN'),2;
