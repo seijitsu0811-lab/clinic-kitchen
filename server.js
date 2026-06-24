@@ -22,6 +22,9 @@ db.exec('PRAGMA journal_mode = WAL');
 db.exec('PRAGMA foreign_keys = ON');
 db.exec(fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8'));
 
+// ── Healthcheck（不需要密碼）─────────────────────────────
+app.get('/health', (req, res) => res.send('ok'));
+
 // ── 密碼保護（HTTP Basic Auth）────────────────────────────
 app.use((req, res, next) => {
   const auth = req.headers['authorization'];
