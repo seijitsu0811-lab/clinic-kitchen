@@ -80,7 +80,9 @@ const App = (() => {
 
     // B. 批次計算
     const { three, two } = d.staff_batches;
+    const pw = d.staff_powder;
     const bDiv = document.getElementById('staffBatches');
+
     if (d.attending_count === 0) {
       bDiv.innerHTML = '<div class="empty"><div class="ei">😴</div>今日無員工出席</div>';
     } else {
@@ -88,6 +90,26 @@ const App = (() => {
         three > 0 ? `${three} 批 × 3 杯` : '',
         two   > 0 ? `${two} 批 × 2 杯`  : ''
       ].filter(Boolean).join('　+　');
+
+      // 粉包批次表格
+      let powderBatchHtml = '';
+      if (pw && pw.per_cup > 0) {
+        const ratioTip = pw.items.map(i => `${i.name} ${i.qty}${i.unit}`).join('、');
+        powderBatchHtml = `
+          <div class="powder-box">
+            <div class="powder-title">🧪 預調粉包（EMP-00）</div>
+            <div class="powder-ratio">配比／杯：${ratioTip}</div>
+            <div class="powder-per-cup">每杯取粉 <strong>${pw.per_cup}g</strong></div>
+            <div class="powder-batch-row">
+              ${pw.batches.map(b => `
+                <div class="powder-batch-item">
+                  <div class="pb-label">${b.label}</div>
+                  <div class="pb-val">${b.per_batch}<span class="pb-unit">g</span></div>
+                </div>`).join('')}
+            </div>
+          </div>`;
+      }
+
       bDiv.innerHTML = `
         <div class="batch-box">
           <div style="display:flex;gap:16px;align-items:flex-end">
@@ -96,10 +118,12 @@ const App = (() => {
             <div><div class="num" style="font-size:24px">${batchDesc || '—'}</div><div class="label">員工批次（EMP-00）</div></div>
           </div>
         </div>
+        ${powderBatchHtml}
         <div class="card">
-          <div class="card-title">EMP-00 員工備料明細（共 ${d.attending_count} 杯）</div>
-          ${d.staff_prep.length === 0 ? '<div style="color:var(--text2);font-size:14px">請先建立 EMP-00 處方</div>' :
-            d.staff_prep.map(p => `
+          <div class="card-title">EMP-00 鮮食備料（共 ${d.attending_count} 杯）</div>
+          ${d.staff_prep.length === 0
+            ? '<div style="color:var(--text2);font-size:14px">請先建立 EMP-00 處方</div>'
+            : d.staff_prep.map(p => `
               <div class="row">
                 <span class="row-label">${esc(p.name)}</span>
                 <span class="row-value" style="font-weight:700">${p.total}${p.unit}
@@ -118,6 +142,20 @@ const App = (() => {
         const warn = c.contraindications ? `<div class="warn-box">⚠ ${esc(c.contraindications)}</div>` : '';
         const mt = c.meal_time;
         const mStr = mt.length === 4 ? `${mt.slice(0,2)}:${mt.slice(2)}` : mt;
+
+        // 粉包資訊
+        let casePowderHtml = '';
+        if (c.powder && c.powder.per_cup > 0) {
+          const ratioTip = c.powder.items.map(i => `${i.name} ${i.qty}${i.unit}`).join('、');
+          casePowderHtml = `
+            <div class="case-powder">
+              <span class="cp-icon">🧪</span>
+              <span class="cp-label">粉包</span>
+              <span class="cp-val">${c.powder.per_cup}g/杯 × ${c.cups}杯 = <strong>${c.powder.total}g</strong></span>
+              <span class="cp-ratio">（${ratioTip}）</span>
+            </div>`;
+        }
+
         return `
         <div class="case-card ${c.formula_type === '粉配方' ? 'powder' : ''}">
           <div class="case-head">
@@ -131,6 +169,7 @@ const App = (() => {
             <button class="btn btn-danger btn-sm" onclick="App.deleteCase(${c.id})">刪除</button>
           </div>
           ${warn}
+          ${casePowderHtml}
           ${c.prep.length > 0 ? `
           <div class="prep-grid">
             ${c.prep.map(p => `
@@ -140,7 +179,7 @@ const App = (() => {
                   <span style="font-size:11px;color:var(--text3)">×${c.cups}杯</span>
                 </div>
               </div>`).join('')}
-          </div>` : '<div style="color:var(--text2);font-size:13px;margin-top:8px">（此處方無食材資料，請編輯處方）</div>'}
+          </div>` : ''}
         </div>`;
       }).join('');
     }

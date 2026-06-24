@@ -129,6 +129,36 @@
     .batch-box .num { font-size: 36px; font-weight: 800; line-height: 1; }
     .batch-box .label { font-size: 13px; opacity: .8; margin-top: 4px; }
 
+    /* 粉包計算 */
+    .powder-box {
+      background: linear-gradient(135deg, #FF9500 0%, #FF6B00 100%);
+      border-radius: 16px; padding: 16px; color: #fff; margin-bottom: 12px;
+    }
+    .powder-title { font-size: 13px; font-weight: 700; opacity: .85; margin-bottom: 4px; letter-spacing: .5px; }
+    .powder-ratio { font-size: 12px; opacity: .75; margin-bottom: 8px; }
+    .powder-per-cup { font-size: 15px; margin-bottom: 12px; }
+    .powder-per-cup strong { font-size: 28px; font-weight: 800; }
+    .powder-batch-row { display: flex; gap: 10px; flex-wrap: wrap; }
+    .powder-batch-item {
+      background: rgba(255,255,255,.2); border-radius: 12px; padding: 10px 16px;
+      min-width: 100px; text-align: center;
+    }
+    .pb-label { font-size: 12px; opacity: .85; margin-bottom: 4px; }
+    .pb-val { font-size: 26px; font-weight: 800; line-height: 1; }
+    .pb-unit { font-size: 14px; font-weight: 400; }
+
+    /* 個案粉包行 */
+    .case-powder {
+      display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+      background: rgba(255,149,0,.1); border: 1px solid rgba(255,149,0,.3);
+      border-radius: 10px; padding: 8px 12px; margin: 8px 0; font-size: 13px;
+    }
+    .cp-icon { font-size: 16px; }
+    .cp-label { font-weight: 700; color: #CC6600; }
+    .cp-val { color: var(--text1); }
+    .cp-val strong { font-size: 15px; font-weight: 800; color: #CC4400; }
+    .cp-ratio { color: var(--text3); font-size: 12px; }
+
     .case-card {
       background: var(--card); border-radius: 16px; padding: 16px; margin-bottom: 10px;
       border-left: 4px solid var(--blue);

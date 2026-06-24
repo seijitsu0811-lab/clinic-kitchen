@@ -113,16 +113,32 @@ app.get('/api/today', (req, res) => {
   // EMP-00 備料（每杯用量 × 出席人數）
   const empRx = db.prepare(`SELECT * FROM prescriptions WHERE code='EMP-00'`).get();
   let staffPrep = [];
+  let staffPowder = { per_cup: 0, items: [], batches: [] };
   if (empRx) {
-    staffPrep = db.prepare(
-      `SELECT pi.qty_per_cup, i.name, i.unit FROM prescription_ingredients pi
+    const allItems = db.prepare(
+      `SELECT pi.qty_per_cup, i.name, i.unit, i.category FROM prescription_ingredients pi
        JOIN ingredients i ON i.id=pi.ingredient_id
        WHERE pi.prescription_id=? AND pi.qty_per_cup>0 ORDER BY i.category, i.name`
-    ).all(empRx.id).map(r => ({
+    ).all(empRx.id);
+
+    // 非粉類：正常顯示
+    staffPrep = allItems.filter(r => r.category !== '粉類').map(r => ({
       name: r.name, unit: r.unit,
       per_cup: r.qty_per_cup,
       total: r.qty_per_cup * attendingCount
     }));
+
+    // 粉類：預調粉包計算
+    const powderItems = allItems.filter(r => r.category === '粉類');
+    const powderPerCup = powderItems.reduce((s, r) => s + r.qty_per_cup, 0);
+    const batchList = [];
+    if (staffBatches.three > 0) batchList.push({ label: `3杯批 ×${staffBatches.three}`, per_batch: Math.round(powderPerCup * 3 * 10) / 10, count: staffBatches.three });
+    if (staffBatches.two  > 0) batchList.push({ label: `2杯批 ×${staffBatches.two}`,  per_batch: Math.round(powderPerCup * 2 * 10) / 10, count: staffBatches.two  });
+    staffPowder = {
+      per_cup: Math.round(powderPerCup * 10) / 10,
+      items: powderItems.map(r => ({ name: r.name, qty: r.qty_per_cup, unit: r.unit })),
+      batches: batchList
+    };
   }
 
   // 個案出單（今日）
@@ -133,18 +149,29 @@ app.get('/api/today', (req, res) => {
      WHERE co.date=? ORDER BY co.meal_time`
   ).all(date);
 
-  // 每個個案的備料明細
+  // 每個個案的備料明細（含粉包計算）
   const casesWithPrep = cases.map(c => {
-    const prep = db.prepare(
-      `SELECT pi.qty_per_cup, i.name, i.unit FROM prescription_ingredients pi
+    const allItems = db.prepare(
+      `SELECT pi.qty_per_cup, i.name, i.unit, i.category FROM prescription_ingredients pi
        JOIN ingredients i ON i.id=pi.ingredient_id
        WHERE pi.prescription_id=? AND pi.qty_per_cup>0 ORDER BY i.category, i.name`
-    ).all(c.prescription_id).map(r => ({
+    ).all(c.prescription_id);
+
+    const prep = allItems.filter(r => r.category !== '粉類').map(r => ({
       name: r.name, unit: r.unit,
       per_cup: r.qty_per_cup,
       total: r.qty_per_cup * c.cups
     }));
-    return { ...c, prep };
+
+    const powderItems = allItems.filter(r => r.category === '粉類');
+    const powderPerCup = powderItems.reduce((s, r) => s + r.qty_per_cup, 0);
+    const powder = {
+      per_cup: Math.round(powderPerCup * 10) / 10,
+      total:   Math.round(powderPerCup * c.cups * 10) / 10,
+      items:   powderItems.map(r => ({ name: r.name, qty: r.qty_per_cup, unit: r.unit }))
+    };
+
+    return { ...c, prep, powder };
   });
 
   res.json({
@@ -153,6 +180,7 @@ app.get('/api/today', (req, res) => {
     attending_count: attendingCount,
     staff_batches: staffBatches,
     staff_prep: staffPrep,
+    staff_powder: staffPowder,
     cases: casesWithPrep
   });
 });
