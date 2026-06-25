@@ -39,15 +39,29 @@ CREATE TABLE IF NOT EXISTS purchase_log (
   FOREIGN KEY (ingredient_id) REFERENCES ingredients(id)
 );
 
+-- ── 產品（精力湯、其他未來產品）────────────────────────
+CREATE TABLE IF NOT EXISTS products (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  name        TEXT NOT NULL UNIQUE,
+  unit        TEXT NOT NULL DEFAULT '份',
+  batch_size  INTEGER NOT NULL DEFAULT 3,
+  description TEXT DEFAULT '',
+  sort_order  INTEGER DEFAULT 0,
+  active      INTEGER DEFAULT 1
+);
+
 -- ── 處方（EMP-00 員工標準 + RX-01..10 個案）─────────────
 CREATE TABLE IF NOT EXISTS prescriptions (
   id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  product_id        INTEGER DEFAULT 1,
   code              TEXT NOT NULL UNIQUE,
   name              TEXT NOT NULL,
   formula_type      TEXT NOT NULL DEFAULT '粉配方',
   contraindications TEXT DEFAULT '',
   timing            TEXT DEFAULT '餐前',
-  active            INTEGER DEFAULT 1
+  is_staff_rx       INTEGER DEFAULT 0,
+  active            INTEGER DEFAULT 1,
+  FOREIGN KEY (product_id) REFERENCES products(id)
 );
 
 -- ── 處方食材用量（每杯）────────────────────────────────
@@ -107,6 +121,8 @@ INSERT OR IGNORE INTO settings (key, value) VALUES
   ('labor_min_per_cup',    '15'),
   ('full_formula_price',   '350'),
   ('powder_formula_price', '280');
+
+INSERT OR IGNORE INTO products (id, name, unit, batch_size, sort_order) VALUES (1, '精力湯', '杯', 3, 1);
 
 INSERT OR IGNORE INTO users (name) VALUES
   ('Bonnie'),('Yenti'),('Louise'),('GG'),('Winnie'),

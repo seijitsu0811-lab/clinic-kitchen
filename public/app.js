@@ -69,8 +69,7 @@ const App = (() => {
     const d = await api('/api/today');
 
     // A. 員工出席
-    const staffGrid = document.getElementById('staffGrid');
-    staffGrid.innerHTML = d.staff.map(s => `
+    document.getElementById('staffGrid').innerHTML = d.staff.map(s => `
       <div class="staff-chip ${s.attending ? 'on' : 'off'}"
            onclick="App.toggleAttendance(${s.user_id}, ${s.attending ? 0 : 1})">
         <div class="dot"></div>
@@ -78,28 +77,33 @@ const App = (() => {
       </div>`).join('');
     document.getElementById('staffCount').textContent = `${d.attending_count}人`;
 
-    // B. 批次計算
-    const { three, two } = d.staff_batches;
-    const pw = d.staff_powder;
-    const bDiv = document.getElementById('staffBatches');
+    // B+C. 每個產品的批次 + 個案（合併渲染）
+    document.getElementById('productSections').innerHTML = d.products.map(prod => renderProductSection(prod, d.attending_count)).join('');
+  }
 
-    if (d.attending_count === 0) {
-      bDiv.innerHTML = '<div class="empty"><div class="ei">😴</div>今日無員工出席</div>';
+  function renderProductSection(prod, attendingCount) {
+    const unit = prod.unit;
+    const batches = prod.batches; // [{size, count}]
+
+    // 批次文字
+    const batchDesc = batches.map(b => `${b.count}批×${b.size}${unit}`).join('　+　');
+
+    // 員工批次區塊
+    let batchHtml = '';
+    if (attendingCount === 0) {
+      batchHtml = `<div class="empty" style="margin-bottom:8px"><div class="ei">😴</div>今日無員工出席</div>`;
+    } else if (!prod.staff_rx) {
+      batchHtml = `<div class="product-no-staff">尚未設定員工標準處方，請在「處方」頁新增並勾選「員工標準」</div>`;
     } else {
-      const batchDesc = [
-        three > 0 ? `${three} 批 × 3 杯` : '',
-        two   > 0 ? `${two} 批 × 2 杯`  : ''
-      ].filter(Boolean).join('　+　');
-
-      // 粉包批次表格
-      let powderBatchHtml = '';
-      if (pw && pw.per_cup > 0) {
+      const pw = prod.staff_powder;
+      let powderHtml = '';
+      if (pw && pw.per_serving > 0) {
         const ratioTip = pw.items.map(i => `${i.name} ${i.qty}${i.unit}`).join('、');
-        powderBatchHtml = `
+        powderHtml = `
           <div class="powder-box">
-            <div class="powder-title">🧪 預調粉包（EMP-00）</div>
-            <div class="powder-ratio">配比／杯：${ratioTip}</div>
-            <div class="powder-per-cup">每杯取粉 <strong>${pw.per_cup}g</strong></div>
+            <div class="powder-title">🧪 預調粉包（${esc(prod.staff_rx.code)}）</div>
+            <div class="powder-ratio">配比／${unit}：${ratioTip}</div>
+            <div class="powder-per-cup">每${unit}取粉 <strong>${pw.per_serving}g</strong></div>
             <div class="powder-batch-row">
               ${pw.batches.map(b => `
                 <div class="powder-batch-item">
@@ -110,79 +114,99 @@ const App = (() => {
           </div>`;
       }
 
-      bDiv.innerHTML = `
-        <div class="batch-box">
-          <div style="display:flex;gap:16px;align-items:flex-end">
-            <div><div class="num">${d.attending_count}</div><div class="label">出席人數</div></div>
-            <div style="font-size:28px;font-weight:800;opacity:.7">=</div>
-            <div><div class="num" style="font-size:24px">${batchDesc || '—'}</div><div class="label">員工批次（EMP-00）</div></div>
-          </div>
-        </div>
-        ${powderBatchHtml}
-        <div class="card">
-          <div class="card-title">EMP-00 鮮食備料（共 ${d.attending_count} 杯）</div>
-          ${d.staff_prep.length === 0
-            ? '<div style="color:var(--text2);font-size:14px">請先建立 EMP-00 處方</div>'
-            : d.staff_prep.map(p => `
+      let prepHtml = '';
+      if (prod.staff_prep.length > 0) {
+        prepHtml = `
+          <div class="card">
+            <div class="card-title">${esc(prod.staff_rx.code)} 鮮食備料（共 ${attendingCount} ${unit}）</div>
+            ${prod.staff_prep.map(p => `
               <div class="row">
                 <span class="row-label">${esc(p.name)}</span>
                 <span class="row-value" style="font-weight:700">${p.total}${p.unit}
-                  <span style="font-size:12px;color:var(--text3)">（${p.per_cup}${p.unit}/杯）</span>
+                  <span style="font-size:12px;color:var(--text3)">（${p.per_serving}${p.unit}/${unit}）</span>
                 </span>
               </div>`).join('')}
-        </div>`;
-    }
+          </div>`;
+      }
 
-    // C. 個案出單
-    const caseList = document.getElementById('caseList');
-    if (d.cases.length === 0) {
-      caseList.innerHTML = `<div class="empty"><div class="ei">📋</div>今日尚無個案出單<br><small>點右上角「＋新增」新增</small></div>`;
-    } else {
-      caseList.innerHTML = d.cases.map(c => {
-        const warn = c.contraindications ? `<div class="warn-box">⚠ ${esc(c.contraindications)}</div>` : '';
-        const mt = c.meal_time;
-        const mStr = mt.length === 4 ? `${mt.slice(0,2)}:${mt.slice(2)}` : mt;
-
-        // 粉包資訊
-        let casePowderHtml = '';
-        if (c.powder && c.powder.per_cup > 0) {
-          const ratioTip = c.powder.items.map(i => `${i.name} ${i.qty}${i.unit}`).join('、');
-          casePowderHtml = `
-            <div class="case-powder">
-              <span class="cp-icon">🧪</span>
-              <span class="cp-label">粉包</span>
-              <span class="cp-val">${c.powder.per_cup}g/杯 × ${c.cups}杯 = <strong>${c.powder.total}g</strong></span>
-              <span class="cp-ratio">（${ratioTip}）</span>
-            </div>`;
-        }
-
-        return `
-        <div class="case-card ${c.formula_type === '粉配方' ? 'powder' : ''}">
-          <div class="case-head">
-            <div>
-              <div class="case-name">${esc(c.rx_name)}</div>
-              <div class="case-meta">${esc(c.code)} ·
-                <span class="badge ${c.formula_type==='全配方'?'badge-blue':'badge-purple'}">${esc(c.formula_type)}</span>
-                · ${c.cups}杯 · 取餐 ${mStr} · ${esc(c.timing)}
-              </div>
+      batchHtml = `
+        <div class="batch-box">
+          <div style="display:flex;gap:16px;align-items:flex-end">
+            <div><div class="num">${attendingCount}</div><div class="label">出席人數</div></div>
+            <div style="font-size:28px;font-weight:800;opacity:.7">=</div>
+            <div><div class="num" style="font-size:22px">${batchDesc || '—'}</div>
+              <div class="label">員工批次（${esc(prod.staff_rx.code)}）</div>
             </div>
-            <button class="btn btn-danger btn-sm" onclick="App.deleteCase(${c.id})">刪除</button>
           </div>
-          ${warn}
-          ${casePowderHtml}
-          ${c.prep.length > 0 ? `
-          <div class="prep-grid">
-            ${c.prep.map(p => `
-              <div class="prep-item">
-                <div class="pi-name">${esc(p.name)}</div>
-                <div class="pi-val">${p.total}${p.unit}
-                  <span style="font-size:11px;color:var(--text3)">×${c.cups}杯</span>
-                </div>
-              </div>`).join('')}
-          </div>` : ''}
-        </div>`;
-      }).join('');
+        </div>
+        ${powderHtml}
+        ${prepHtml}`;
     }
+
+    // 個案出單
+    const casesHtml = prod.cases.length === 0
+      ? `<div class="empty"><div class="ei">📋</div>今日尚無個案出單</div>`
+      : prod.cases.map(c => renderCaseCard(c, unit)).join('');
+
+    return `
+      <div class="product-section">
+        <div class="product-header">
+          <span class="product-tag">${esc(prod.name)}</span>
+          <span class="product-hname">▌B 員工批次</span>
+          <span class="product-unit-note">單位：${unit}</span>
+        </div>
+        ${batchHtml}
+
+        <div class="section-head" style="margin-top:20px">
+          <span class="product-hname">▌C 個案出單</span>
+          <button class="btn btn-primary btn-sm" onclick="App.openAddCase(${prod.id})">＋ 新增</button>
+        </div>
+        ${casesHtml}
+      </div>`;
+  }
+
+  function renderCaseCard(c, unit) {
+    const warn = c.contraindications ? `<div class="warn-box">⚠ ${esc(c.contraindications)}</div>` : '';
+    const mt = c.meal_time;
+    const mStr = mt && mt.length === 4 ? `${mt.slice(0,2)}:${mt.slice(2)}` : (mt || '');
+
+    let casePowderHtml = '';
+    if (c.powder && c.powder.per_serving > 0) {
+      const ratioTip = c.powder.items.map(i => `${i.name} ${i.qty}${i.unit}`).join('、');
+      casePowderHtml = `
+        <div class="case-powder">
+          <span class="cp-icon">🧪</span>
+          <span class="cp-label">粉包</span>
+          <span class="cp-val">${c.powder.per_serving}g/${unit} × ${c.cups}${unit} = <strong>${c.powder.total}g</strong></span>
+          <span class="cp-ratio">（${ratioTip}）</span>
+        </div>`;
+    }
+
+    return `
+      <div class="case-card ${c.formula_type === '粉配方' ? 'powder' : ''}">
+        <div class="case-head">
+          <div>
+            <div class="case-name">${esc(c.rx_name)}</div>
+            <div class="case-meta">${esc(c.code)} ·
+              <span class="badge ${c.formula_type==='全配方'?'badge-blue':'badge-purple'}">${esc(c.formula_type)}</span>
+              · ${c.cups}${unit} · 取餐 ${mStr} · ${esc(c.timing)}
+            </div>
+          </div>
+          <button class="btn btn-danger btn-sm" onclick="App.deleteCase(${c.id})">刪除</button>
+        </div>
+        ${warn}
+        ${casePowderHtml}
+        ${c.prep.length > 0 ? `
+        <div class="prep-grid">
+          ${c.prep.map(p => `
+            <div class="prep-item">
+              <div class="pi-name">${esc(p.name)}</div>
+              <div class="pi-val">${p.total}${p.unit}
+                <span style="font-size:11px;color:var(--text3)">×${c.cups}${unit}</span>
+              </div>
+            </div>`).join('')}
+        </div>` : ''}
+      </div>`;
   }
 
   async function toggleAttendance(userId, newVal) {
@@ -196,12 +220,29 @@ const App = (() => {
     loadToday();
   }
 
-  async function openAddCase() {
+  async function openAddCase(productId) {
     const rxs = await api('/api/prescriptions');
     const sel = document.getElementById('caseRxSel');
-    sel.innerHTML = rxs.filter(r => r.code !== 'EMP-00').map(r =>
-      `<option value="${r.id}">${esc(r.code)} — ${esc(r.name)} (${esc(r.formula_type)})</option>`
-    ).join('');
+    // 群組化：按產品分 optgroup，排除員工標準處方
+    const caseRxs = rxs.filter(r => !r.is_staff_rx);
+    const byProduct = {};
+    caseRxs.forEach(r => {
+      const key = r.product_name || '未分類';
+      if (!byProduct[key]) byProduct[key] = [];
+      byProduct[key].push(r);
+    });
+    sel.innerHTML = Object.entries(byProduct).map(([pname, list]) => `
+      <optgroup label="${esc(pname)}">
+        ${list.map(r => `<option value="${r.id}" ${r.product_id==productId?'selected':''}>${esc(r.code)} — ${esc(r.name)} (${esc(r.formula_type)})</option>`).join('')}
+      </optgroup>`).join('');
+    // 更新份數標籤
+    const updateLabel = () => {
+      const sel2 = document.getElementById('caseRxSel');
+      const chosen = caseRxs.find(r => r.id == sel2.value);
+      document.getElementById('caseCupsLabel').textContent = chosen ? `份數（${chosen.product_unit||'份'}）` : '份數';
+    };
+    sel.onchange = updateLabel;
+    updateLabel();
     openModal('modalAddCase');
   }
 
@@ -219,29 +260,60 @@ const App = (() => {
   async function loadRx() {
     allPrescriptions = await api('/api/prescriptions');
     const list = document.getElementById('rxList');
-    list.innerHTML = allPrescriptions.map(rx => `
-      <div class="rx-card">
-        <div style="display:flex;justify-content:space-between;align-items:flex-start">
-          <div>
-            <div class="rx-code">${esc(rx.code)}</div>
-            <div class="rx-name">${esc(rx.name)}</div>
-            <div class="rx-meta">
-              <span class="badge ${rx.formula_type==='全配方'?'badge-blue':'badge-purple'}">${esc(rx.formula_type)}</span>
-              · ${esc(rx.timing)}
-              ${rx.contraindications ? `· <span style="color:var(--orange)">⚠ ${esc(rx.contraindications)}</span>` : ''}
+
+    // 按產品分組
+    const byProduct = {};
+    allPrescriptions.forEach(rx => {
+      const key = rx.product_name || '未分類';
+      if (!byProduct[key]) byProduct[key] = [];
+      byProduct[key].push(rx);
+    });
+
+    if (allPrescriptions.length === 0) {
+      list.innerHTML = '<div class="empty"><div class="ei">💊</div>尚無處方</div>';
+      return;
+    }
+
+    list.innerHTML = Object.entries(byProduct).map(([pname, rxs]) => `
+      <div class="rx-product-group">
+        <div class="rx-product-label">📦 ${esc(pname)}</div>
+        ${rxs.map(rx => `
+          <div class="rx-card">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start">
+              <div>
+                <div class="rx-code">${esc(rx.code)}
+                  ${rx.is_staff_rx ? '<span class="badge badge-green" style="font-size:11px;margin-left:6px">員工標準</span>' : ''}
+                </div>
+                <div class="rx-name">${esc(rx.name)}</div>
+                <div class="rx-meta">
+                  <span class="badge ${rx.formula_type==='全配方'?'badge-blue':'badge-purple'}">${esc(rx.formula_type)}</span>
+                  · ${esc(rx.timing)}
+                  ${rx.contraindications ? `· <span style="color:var(--orange)">⚠ ${esc(rx.contraindications)}</span>` : ''}
+                </div>
+              </div>
+              <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end">
+                <button class="btn btn-ghost btn-sm" onclick="App.openEditRx(${rx.id})">編輯資訊</button>
+                <button class="btn btn-primary btn-sm" onclick="App.openEditRxIngredients(${rx.id},'${esc(rx.name)}')">編輯配方</button>
+              </div>
             </div>
-          </div>
-          <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end">
-            <button class="btn btn-ghost btn-sm" onclick="App.openEditRx(${rx.id})">編輯資訊</button>
-            <button class="btn btn-primary btn-sm" onclick="App.openEditRxIngredients(${rx.id},'${esc(rx.name)}')">編輯配方</button>
-          </div>
-        </div>
-      </div>`).join('') || '<div class="empty"><div class="ei">💊</div>尚無處方</div>';
+          </div>`).join('')}
+      </div>`).join('');
   }
 
-  function openAddRx() {
+  async function _fillProductSel(selectedId) {
+    const products = await api('/api/products');
+    const sel = document.getElementById('rxProductId');
+    sel.innerHTML = products.filter(p => p.active).map(p =>
+      `<option value="${p.id}" ${p.id==selectedId?'selected':''}>${esc(p.name)}</option>`
+    ).join('');
+    return products;
+  }
+
+  async function openAddRx() {
+    await _fillProductSel(1);
     document.getElementById('modalRxTitle').textContent = '新增處方';
     document.getElementById('rxEditId').value = '';
+    document.getElementById('rxIsStaff').value = '0';
     document.getElementById('rxCode').value = '';
     document.getElementById('rxName').value = '';
     document.getElementById('rxType').value = '粉配方';
@@ -250,11 +322,13 @@ const App = (() => {
     openModal('modalRx');
   }
 
-  function openEditRx(id) {
+  async function openEditRx(id) {
     const rx = allPrescriptions.find(r => r.id === id);
     if (!rx) return;
+    await _fillProductSel(rx.product_id);
     document.getElementById('modalRxTitle').textContent = '編輯處方資訊';
     document.getElementById('rxEditId').value = id;
+    document.getElementById('rxIsStaff').value = rx.is_staff_rx ? '1' : '0';
     document.getElementById('rxCode').value = rx.code;
     document.getElementById('rxName').value = rx.name;
     document.getElementById('rxType').value = rx.formula_type;
@@ -266,14 +340,16 @@ const App = (() => {
   async function saveRx() {
     const id = document.getElementById('rxEditId').value;
     const data = {
-      code: document.getElementById('rxCode').value.trim(),
-      name: document.getElementById('rxName').value.trim(),
-      formula_type: document.getElementById('rxType').value,
-      timing: document.getElementById('rxTiming').value,
+      product_id:       parseInt(document.getElementById('rxProductId').value),
+      is_staff_rx:      document.getElementById('rxIsStaff').value === '1' ? 1 : 0,
+      code:             document.getElementById('rxCode').value.trim(),
+      name:             document.getElementById('rxName').value.trim(),
+      formula_type:     document.getElementById('rxType').value,
+      timing:           document.getElementById('rxTiming').value,
       contraindications: document.getElementById('rxContra').value.trim(),
       active: 1
     };
-    if (!data.code || !data.name) return alert('請填寫處方代號和姓名');
+    if (!data.code || !data.name) return alert('請填寫處方代號和名稱');
     if (id) {
       await api(`/api/prescriptions/${id}`, 'PUT', data);
     } else {
@@ -281,6 +357,56 @@ const App = (() => {
     }
     closeModal('modalRx');
     loadRx();
+  }
+
+  // ── 產品管理 ────────────────────────────────────────────
+  let allProducts = [];
+
+  async function openAddProduct() {
+    allProducts = await api('/api/products');
+    // 用 alert-style 簡易列表 + modal 新增
+    const existing = allProducts.map((p,i) =>
+      `${i+1}. ${p.name}（${p.unit}，批次${p.batch_size}）<button onclick="App.openEditProduct(${p.id})" style="margin-left:8px;cursor:pointer;background:none;border:1px solid var(--blue);border-radius:6px;padding:2px 8px;color:var(--blue)">編輯</button>`
+    ).join('<br>');
+    document.getElementById('productListPreview').innerHTML = existing || '（尚無其他產品）';
+    document.getElementById('modalProductTitle').textContent = '新增產品';
+    document.getElementById('productEditId').value = '';
+    document.getElementById('productName').value = '';
+    document.getElementById('productUnit').value = '份';
+    document.getElementById('productBatch').value = '1';
+    document.getElementById('productDesc').value = '';
+    openModal('modalProduct');
+  }
+
+  async function openEditProduct(id) {
+    const p = allProducts.find(x => x.id === id);
+    if (!p) return;
+    document.getElementById('modalProductTitle').textContent = '編輯產品';
+    document.getElementById('productEditId').value = id;
+    document.getElementById('productName').value = p.name;
+    document.getElementById('productUnit').value = p.unit;
+    document.getElementById('productBatch').value = p.batch_size;
+    document.getElementById('productDesc').value = p.description || '';
+  }
+
+  async function saveProduct() {
+    const id = document.getElementById('productEditId').value;
+    const data = {
+      name:       document.getElementById('productName').value.trim(),
+      unit:       document.getElementById('productUnit').value.trim() || '份',
+      batch_size: parseInt(document.getElementById('productBatch').value) || 1,
+      description: document.getElementById('productDesc').value.trim(),
+      active: 1
+    };
+    if (!data.name) return alert('請填寫產品名稱');
+    if (id) {
+      await api(`/api/products/${id}`, 'PUT', data);
+    } else {
+      await api('/api/products', 'POST', data);
+    }
+    closeModal('modalProduct');
+    loadRx();
+    loadToday();
   }
 
   async function openEditRxIngredients(rxId, rxName) {
@@ -545,6 +671,7 @@ const App = (() => {
     openAddIngredient, addIngredient, openPurchase, savePurchase,
     loadCost, openSettings, saveSettings,
     openAddUser, addUser,
+    openAddProduct, openEditProduct, saveProduct,
     openModal, closeModal
   };
 })();

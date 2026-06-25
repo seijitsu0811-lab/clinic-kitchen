@@ -13,6 +13,16 @@ db.exec('PRAGMA journal_mode = WAL');
 db.exec('PRAGMA foreign_keys = ON');
 db.exec(fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8'));
 
+// ── Migrations（向後相容，欄位不存在才加）────────────────
+[
+  "CREATE TABLE IF NOT EXISTS products (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, unit TEXT NOT NULL DEFAULT '份', batch_size INTEGER NOT NULL DEFAULT 3, description TEXT DEFAULT '', sort_order INTEGER DEFAULT 0, active INTEGER DEFAULT 1)",
+  "INSERT OR IGNORE INTO products (id, name, unit, batch_size, sort_order) VALUES (1, '精力湯', '杯', 3, 1)",
+  "ALTER TABLE prescriptions ADD COLUMN product_id INTEGER DEFAULT 1",
+  "ALTER TABLE prescriptions ADD COLUMN is_staff_rx INTEGER DEFAULT 0",
+].forEach(sql => { try { db.exec(sql); } catch(e) {} });
+db.exec("UPDATE prescriptions SET is_staff_rx=1 WHERE code='EMP-00'");
+db.exec("UPDATE prescriptions SET product_id=1 WHERE product_id IS NULL");
+
 // ── 中介層 ────────────────────────────────────────────────
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
@@ -31,12 +41,24 @@ function today() {
   return new Date().toISOString().slice(0,10);
 }
 
-// 計算批次（3杯優先）
-function calcBatches(cups) {
-  const mod = cups % 3;
-  const three = mod === 1 ? Math.floor(cups/3) - 1 : Math.floor(cups/3);
-  const two   = mod === 0 ? 0 : mod === 1 ? 2 : 1;
-  return { three, two, total: three + two };
+// 計算批次：batch_size=3 用 3+2 最佳化，其他用整除
+function calcBatches(cups, batchSize) {
+  batchSize = batchSize || 3;
+  if (batchSize === 3) {
+    const mod   = cups % 3;
+    const three = mod === 1 ? Math.floor(cups/3) - 1 : Math.floor(cups/3);
+    const two   = mod === 0 ? 0 : mod === 1 ? 2 : 1;
+    return [
+      ...(three > 0 ? [{ size: 3, count: three }] : []),
+      ...(two   > 0 ? [{ size: 2, count: two   }] : [])
+    ];
+  }
+  const full = Math.floor(cups / batchSize);
+  const rem  = cups % batchSize;
+  return [
+    ...(full > 0 ? [{ size: batchSize, count: full }] : []),
+    ...(rem  > 0 ? [{ size: rem,       count: 1    }] : [])
+  ];
 }
 
 // 加權平均單價 (NT$/unit)
@@ -85,104 +107,126 @@ app.get('/api/logs', (req, res) => {
 });
 
 // ════════════════════════════════════════════════════════
+// API: 產品管理
+// ════════════════════════════════════════════════════════
+
+app.get('/api/products', (req, res) => {
+  res.json(db.prepare('SELECT * FROM products ORDER BY sort_order, id').all());
+});
+
+app.post('/api/products', (req, res) => {
+  const { name, unit, batch_size, description } = req.body;
+  if (!name?.trim()) return res.status(400).json({ error: '請填寫產品名稱' });
+  try {
+    const maxOrder = db.prepare('SELECT COALESCE(MAX(sort_order),0) as m FROM products').get().m;
+    const r = db.prepare(
+      `INSERT INTO products (name, unit, batch_size, description, sort_order) VALUES (?,?,?,?,?)`
+    ).run(name.trim(), unit||'份', parseInt(batch_size)||1, description||'', maxOrder+1);
+    res.json({ id: r.lastInsertRowid });
+  } catch(e) { res.status(400).json({ error: '產品名稱已存在' }); }
+});
+
+app.put('/api/products/:id', (req, res) => {
+  const { name, unit, batch_size, description, active } = req.body;
+  db.prepare(
+    `UPDATE products SET name=?,unit=?,batch_size=?,description=?,active=? WHERE id=?`
+  ).run(name, unit||'份', parseInt(batch_size)||1, description||'', active===undefined?1:active, req.params.id);
+  res.json({ ok: true });
+});
+
+// ════════════════════════════════════════════════════════
 // API: 今日工作單
 // ════════════════════════════════════════════════════════
+
+function buildPrepAndPowder(rxId, multiplier, unit) {
+  const allItems = db.prepare(
+    `SELECT pi.qty_per_cup, i.name, i.unit, i.category FROM prescription_ingredients pi
+     JOIN ingredients i ON i.id=pi.ingredient_id
+     WHERE pi.prescription_id=? AND pi.qty_per_cup>0 ORDER BY i.category, i.name`
+  ).all(rxId);
+  const prep = allItems.filter(r => r.category !== '粉類').map(r => ({
+    name: r.name, unit: r.unit,
+    per_serving: r.qty_per_cup,
+    total: Math.round(r.qty_per_cup * multiplier * 10) / 10
+  }));
+  const powderItems = allItems.filter(r => r.category === '粉類');
+  const powderPerServing = powderItems.reduce((s, r) => s + r.qty_per_cup, 0);
+  const powder = {
+    per_serving: Math.round(powderPerServing * 10) / 10,
+    total:       Math.round(powderPerServing * multiplier * 10) / 10,
+    items:       powderItems.map(r => ({ name: r.name, qty: r.qty_per_cup, unit: r.unit }))
+  };
+  return { prep, powder };
+}
 
 app.get('/api/today', (req, res) => {
   const date = today();
 
   // 確保所有員工今日出席記錄存在（預設出席）
-  const users = db.prepare('SELECT * FROM users').all();
-  users.forEach(u => {
+  db.prepare('SELECT * FROM users').all().forEach(u => {
     db.prepare(
       `INSERT OR IGNORE INTO staff_attendance (date,user_id,attending,meal_time) VALUES (?,?,1,'1330')`
     ).run(date, u.id);
   });
 
-  // 員工出席清單
   const staff = db.prepare(
     `SELECT sa.*, u.name FROM staff_attendance sa
-     JOIN users u ON u.id=sa.user_id
-     WHERE sa.date=? ORDER BY u.id`
+     JOIN users u ON u.id=sa.user_id WHERE sa.date=? ORDER BY u.id`
   ).all(date);
-
-  // 員工總人數
   const attendingCount = staff.filter(s => s.attending).length;
-  const staffBatches = calcBatches(attendingCount);
 
-  // EMP-00 備料（每杯用量 × 出席人數）
-  const empRx = db.prepare(`SELECT * FROM prescriptions WHERE code='EMP-00'`).get();
-  let staffPrep = [];
-  let staffPowder = { per_cup: 0, items: [], batches: [] };
-  if (empRx) {
-    const allItems = db.prepare(
-      `SELECT pi.qty_per_cup, i.name, i.unit, i.category FROM prescription_ingredients pi
-       JOIN ingredients i ON i.id=pi.ingredient_id
-       WHERE pi.prescription_id=? AND pi.qty_per_cup>0 ORDER BY i.category, i.name`
-    ).all(empRx.id);
+  // 每個產品的今日資料
+  const products = db.prepare('SELECT * FROM products WHERE active=1 ORDER BY sort_order, id').all();
 
-    // 非粉類：正常顯示
-    staffPrep = allItems.filter(r => r.category !== '粉類').map(r => ({
-      name: r.name, unit: r.unit,
-      per_cup: r.qty_per_cup,
-      total: r.qty_per_cup * attendingCount
-    }));
+  const productData = products.map(prod => {
+    const batches = calcBatches(attendingCount, prod.batch_size);
 
-    // 粉類：預調粉包計算
-    const powderItems = allItems.filter(r => r.category === '粉類');
-    const powderPerCup = powderItems.reduce((s, r) => s + r.qty_per_cup, 0);
-    const batchList = [];
-    if (staffBatches.three > 0) batchList.push({ label: `3杯批 ×${staffBatches.three}`, per_batch: Math.round(powderPerCup * 3 * 10) / 10, count: staffBatches.three });
-    if (staffBatches.two  > 0) batchList.push({ label: `2杯批 ×${staffBatches.two}`,  per_batch: Math.round(powderPerCup * 2 * 10) / 10, count: staffBatches.two  });
-    staffPowder = {
-      per_cup: Math.round(powderPerCup * 10) / 10,
-      items: powderItems.map(r => ({ name: r.name, qty: r.qty_per_cup, unit: r.unit })),
-      batches: batchList
+    // 員工標準處方
+    const staffRx = db.prepare(
+      `SELECT * FROM prescriptions WHERE product_id=? AND is_staff_rx=1 AND active=1 LIMIT 1`
+    ).get(prod.id);
+
+    let staffPrep = [], staffPowder = { per_serving: 0, items: [], batches: [] };
+    if (staffRx && attendingCount > 0) {
+      const { prep, powder } = buildPrepAndPowder(staffRx.id, attendingCount, prod.unit);
+      staffPrep = prep;
+      // 粉包per批次
+      const powderBatches = batches.map(b => ({
+        label: `${b.size}${prod.unit}批 ×${b.count}`,
+        per_batch: Math.round(powder.per_serving * b.size * 10) / 10,
+        count: b.count
+      }));
+      staffPowder = { ...powder, batches: powderBatches };
+    }
+
+    // 個案出單（今日，此產品）
+    const cases = db.prepare(
+      `SELECT co.*, p.code, p.name as rx_name, p.formula_type, p.contraindications, p.timing
+       FROM case_orders co
+       JOIN prescriptions p ON p.id=co.prescription_id
+       WHERE co.date=? AND p.product_id=? ORDER BY co.meal_time`
+    ).all(date, prod.id);
+
+    const casesWithPrep = cases.map(c => {
+      const { prep, powder } = buildPrepAndPowder(c.prescription_id, c.cups, prod.unit);
+      return { ...c, prep, powder };
+    });
+
+    return {
+      id:          prod.id,
+      name:        prod.name,
+      unit:        prod.unit,
+      batch_size:  prod.batch_size,
+      description: prod.description,
+      batches,
+      staff_rx:    staffRx || null,
+      staff_prep:  staffPrep,
+      staff_powder: staffPowder,
+      cases:       casesWithPrep
     };
-  }
-
-  // 個案出單（今日）
-  const cases = db.prepare(
-    `SELECT co.*, p.code, p.name as rx_name, p.formula_type, p.contraindications, p.timing
-     FROM case_orders co
-     JOIN prescriptions p ON p.id=co.prescription_id
-     WHERE co.date=? ORDER BY co.meal_time`
-  ).all(date);
-
-  // 每個個案的備料明細（含粉包計算）
-  const casesWithPrep = cases.map(c => {
-    const allItems = db.prepare(
-      `SELECT pi.qty_per_cup, i.name, i.unit, i.category FROM prescription_ingredients pi
-       JOIN ingredients i ON i.id=pi.ingredient_id
-       WHERE pi.prescription_id=? AND pi.qty_per_cup>0 ORDER BY i.category, i.name`
-    ).all(c.prescription_id);
-
-    const prep = allItems.filter(r => r.category !== '粉類').map(r => ({
-      name: r.name, unit: r.unit,
-      per_cup: r.qty_per_cup,
-      total: r.qty_per_cup * c.cups
-    }));
-
-    const powderItems = allItems.filter(r => r.category === '粉類');
-    const powderPerCup = powderItems.reduce((s, r) => s + r.qty_per_cup, 0);
-    const powder = {
-      per_cup: Math.round(powderPerCup * 10) / 10,
-      total:   Math.round(powderPerCup * c.cups * 10) / 10,
-      items:   powderItems.map(r => ({ name: r.name, qty: r.qty_per_cup, unit: r.unit }))
-    };
-
-    return { ...c, prep, powder };
   });
 
-  res.json({
-    date,
-    staff,
-    attending_count: attendingCount,
-    staff_batches: staffBatches,
-    staff_prep: staffPrep,
-    staff_powder: staffPowder,
-    cases: casesWithPrep
-  });
+  res.json({ date, staff, attending_count: attendingCount, products: productData });
 });
 
 // 更新員工出席
@@ -227,19 +271,22 @@ app.delete('/api/today/cases/:id', (req, res) => {
 
 app.get('/api/prescriptions', (req, res) => {
   const rxs = db.prepare(
-    'SELECT * FROM prescriptions WHERE active=1 ORDER BY code'
+    `SELECT p.*, pr.name as product_name, pr.unit as product_unit
+     FROM prescriptions p
+     LEFT JOIN products pr ON pr.id=p.product_id
+     WHERE p.active=1 ORDER BY pr.sort_order, p.product_id, p.is_staff_rx DESC, p.code`
   ).all();
   res.json(rxs);
 });
 
 app.post('/api/prescriptions', (req, res) => {
-  const { code, name, formula_type, contraindications, timing } = req.body;
+  const { product_id, code, name, formula_type, contraindications, timing, is_staff_rx } = req.body;
   if (!code || !name) return res.status(400).json({ error: '處方代號和名稱必填' });
   try {
     const r = db.prepare(
-      `INSERT INTO prescriptions (code,name,formula_type,contraindications,timing)
-       VALUES (?,?,?,?,?)`
-    ).run(code, name, formula_type||'粉配方', contraindications||'', timing||'餐前');
+      `INSERT INTO prescriptions (product_id,code,name,formula_type,contraindications,timing,is_staff_rx)
+       VALUES (?,?,?,?,?,?,?)`
+    ).run(product_id||1, code, name, formula_type||'粉配方', contraindications||'', timing||'餐前', is_staff_rx?1:0);
     res.json({ id: r.lastInsertRowid });
   } catch(e) {
     res.status(400).json({ error: '處方代號已存在' });
@@ -247,10 +294,10 @@ app.post('/api/prescriptions', (req, res) => {
 });
 
 app.put('/api/prescriptions/:id', (req, res) => {
-  const { name, formula_type, contraindications, timing, active } = req.body;
+  const { product_id, name, formula_type, contraindications, timing, is_staff_rx, active } = req.body;
   db.prepare(
-    `UPDATE prescriptions SET name=?,formula_type=?,contraindications=?,timing=?,active=? WHERE id=?`
-  ).run(name, formula_type, contraindications||'', timing, active===undefined?1:active, req.params.id);
+    `UPDATE prescriptions SET product_id=?,name=?,formula_type=?,contraindications=?,timing=?,is_staff_rx=?,active=? WHERE id=?`
+  ).run(product_id||1, name, formula_type, contraindications||'', timing, is_staff_rx?1:0, active===undefined?1:active, req.params.id);
   res.json({ ok: true });
 });
 
