@@ -4,6 +4,9 @@ const App = (() => {
   let currentUser = null;
   let allIngredients = [];
   let allPrescriptions = [];
+  let caseDataMap = {};
+  let costMonth = new Date().toISOString().slice(0, 7); // YYYY-MM
+  let currentCostTab = 'today';
 
   // ── 初始化 ─────────────────────────────────────────────
   async function init() {
@@ -78,6 +81,7 @@ const App = (() => {
     document.getElementById('staffCount').textContent = `${d.attending_count}人`;
 
     // B+C. 每個產品的批次 + 個案（合併渲染）
+    caseDataMap = {};
     document.getElementById('productSections').innerHTML = d.products.map(prod => renderProductSection(prod, d.attending_count)).join('');
   }
 
@@ -129,15 +133,39 @@ const App = (() => {
           </div>`;
       }
 
+      // 員工配方個案提醒
+      const sxc = prod.staff_rx_cases || [];
+      const extraCups = prod.extra_cups || 0;
+      let staffRxCaseAlert = '';
+      if (sxc.length > 0) {
+        const lines = sxc.map(c => {
+          const mt = c.meal_time && c.meal_time.length === 4
+            ? `${c.meal_time.slice(0,2)}:${c.meal_time.slice(2)}` : (c.meal_time || '');
+          const who = c.patient_name ? `${esc(c.patient_name)}` : '（無姓名）';
+          return `<span class="srx-item">${who} ${c.cups}${unit} 取餐 ${mt}</span>`;
+        }).join('');
+        staffRxCaseAlert = `
+          <div class="srx-alert">
+            <span class="srx-icon">📌</span>
+            <span class="srx-label">個案使用員工配方</span>
+            <div class="srx-list">${lines}</div>
+          </div>`;
+      }
+
+      const cupsBreakdown = extraCups > 0
+        ? `<span style="font-size:14px;color:var(--text2);font-weight:400">（員工 ${attendingCount} + 個案 ${extraCups}）</span>`
+        : '';
+
       batchHtml = `
         <div class="batch-box">
-          <div style="display:flex;gap:16px;align-items:flex-end">
-            <div><div class="num">${attendingCount}</div><div class="label">出席人數</div></div>
+          <div style="display:flex;gap:16px;align-items:flex-end;flex-wrap:wrap">
+            <div><div class="num">${prod.total_staff_cups}</div><div class="label">總杯數 ${cupsBreakdown}</div></div>
             <div style="font-size:28px;font-weight:800;opacity:.7">=</div>
             <div><div class="num" style="font-size:22px">${batchDesc || '—'}</div>
               <div class="label">員工批次（${esc(prod.staff_rx.code)}）</div>
             </div>
           </div>
+          ${staffRxCaseAlert}
         </div>
         ${powderHtml}
         ${prepHtml}`;
@@ -166,18 +194,30 @@ const App = (() => {
   }
 
   function renderCaseCard(c, unit) {
+    caseDataMap[c.id] = c;
     const warn = c.contraindications ? `<div class="warn-box">⚠ ${esc(c.contraindications)}</div>` : '';
     const mt = c.meal_time;
     const mStr = mt && mt.length === 4 ? `${mt.slice(0,2)}:${mt.slice(2)}` : (mt || '');
+    const ptName = c.patient_name ? `<span class="case-patient">${esc(c.patient_name)}</span>` : '';
+    const notesHtml = c.notes ? `<div class="case-notes">📝 ${esc(c.notes)}</div>` : '';
+
+    // 出單方式 badge
+    const typeIcons = { '袋裝': '🛍', '罐裝': '🫙', '內用': '🍽' };
+    const typeBadge = `<span class="case-dtype">${typeIcons[c.powder_type] || ''} ${esc(c.powder_type||'袋裝')}</span>`;
 
     let casePowderHtml = '';
-    if (c.powder && c.powder.per_serving > 0) {
+    // 內用不顯示粉包行
+    if (c.powder_type !== '內用' && c.powder && c.powder.per_serving > 0) {
       const ratioTip = c.powder.items.map(i => `${i.name} ${i.qty}${i.unit}`).join('、');
+      const jarBadge = c.powder_type === '罐裝'
+        ? ` <span class="cp-jar">🫙 罐裝 ×1.1</span>` : '';
+      const perServDisp = c.powder_type === '罐裝'
+        ? `${c.powder.per_serving_adj}g` : `${c.powder.per_serving}g`;
       casePowderHtml = `
         <div class="case-powder">
           <span class="cp-icon">🧪</span>
           <span class="cp-label">粉包</span>
-          <span class="cp-val">${c.powder.per_serving}g/${unit} × ${c.cups}${unit} = <strong>${c.powder.total}g</strong></span>
+          <span class="cp-val">${perServDisp}/${unit} × ${c.cups}${unit} = <strong>${c.powder.total}g</strong>${jarBadge}</span>
           <span class="cp-ratio">（${ratioTip}）</span>
         </div>`;
     }
@@ -186,15 +226,19 @@ const App = (() => {
       <div class="case-card ${c.formula_type === '粉配方' ? 'powder' : ''}">
         <div class="case-head">
           <div>
-            <div class="case-name">${esc(c.rx_name)}</div>
+            <div class="case-name">${ptName}${esc(c.rx_name)}</div>
             <div class="case-meta">${esc(c.code)} ·
               <span class="badge ${c.formula_type==='全配方'?'badge-blue':'badge-purple'}">${esc(c.formula_type)}</span>
-              · ${c.cups}${unit} · 取餐 ${mStr} · ${esc(c.timing)}
+              · ${c.cups}${unit} · 取餐 ${mStr} · ${esc(c.timing)} · ${typeBadge}
             </div>
           </div>
-          <button class="btn btn-danger btn-sm" onclick="App.deleteCase(${c.id})">刪除</button>
+          <div style="display:flex;gap:6px">
+            <button class="btn btn-ghost btn-sm" onclick="App.openEditCase(${c.id})">編輯</button>
+            <button class="btn btn-danger btn-sm" onclick="App.deleteCase(${c.id})">刪除</button>
+          </div>
         </div>
         ${warn}
+        ${notesHtml}
         ${casePowderHtml}
         ${c.prep.length > 0 ? `
         <div class="prep-grid">
@@ -220,38 +264,65 @@ const App = (() => {
     loadToday();
   }
 
-  async function openAddCase(productId) {
+  async function _buildCaseRxSel(productId, selectedRxId) {
     const rxs = await api('/api/prescriptions');
     const sel = document.getElementById('caseRxSel');
-    // 群組化：按產品分 optgroup，排除員工標準處方
-    const caseRxs = rxs.filter(r => !r.is_staff_rx);
     const byProduct = {};
-    caseRxs.forEach(r => {
+    rxs.forEach(r => {
       const key = r.product_name || '未分類';
       if (!byProduct[key]) byProduct[key] = [];
       byProduct[key].push(r);
     });
     sel.innerHTML = Object.entries(byProduct).map(([pname, list]) => `
       <optgroup label="${esc(pname)}">
-        ${list.map(r => `<option value="${r.id}" ${r.product_id==productId?'selected':''}>${esc(r.code)} — ${esc(r.name)} (${esc(r.formula_type)})</option>`).join('')}
+        ${list.map(r => {
+          const staffTag = r.is_staff_rx ? ' ★員工' : '';
+          const isSel = selectedRxId ? r.id == selectedRxId : r.product_id == productId && !r.is_staff_rx;
+          return `<option value="${r.id}" ${isSel?'selected':''}>${esc(r.code)} — ${esc(r.name)}${staffTag} (${esc(r.formula_type)})</option>`;
+        }).join('')}
       </optgroup>`).join('');
-    // 更新份數標籤
     const updateLabel = () => {
-      const sel2 = document.getElementById('caseRxSel');
-      const chosen = caseRxs.find(r => r.id == sel2.value);
+      const chosen = rxs.find(r => r.id == sel.value);
       document.getElementById('caseCupsLabel').textContent = chosen ? `份數（${chosen.product_unit||'份'}）` : '份數';
     };
     sel.onchange = updateLabel;
     updateLabel();
+    return rxs;
+  }
+
+  async function openAddCase(productId) {
+    document.getElementById('caseEditId').value = '';
+    document.getElementById('caseModalTitle').textContent = '新增個案出單';
+    await _buildCaseRxSel(productId, null);
+    document.getElementById('casePatientName').value = '';
+    document.getElementById('caseNotes').value = '';
+    document.getElementById('caseCups').value = '1';
+    document.getElementById('caseMealTime').value = '1330';
+    const bagRadio = document.querySelector('input[name="casePowderType"][value="袋裝"]');
+    if (bagRadio) bagRadio.checked = true;
     openModal('modalAddCase');
   }
 
+  async function openEditCase(id) {
+    const c = caseDataMap[id];
+    if (!c) return;
+    openEditRxIngredients(c.prescription_id, c.rx_name || c.code || '處方');
+  }
+
   async function addCase() {
+    const editId = document.getElementById('caseEditId').value;
     const prescription_id = document.getElementById('caseRxSel').value;
     const cups = parseInt(document.getElementById('caseCups').value) || 1;
     const meal_time = document.getElementById('caseMealTime').value || '1330';
     const notes = document.getElementById('caseNotes').value;
-    await api('/api/today/cases', 'POST', { prescription_id, cups, meal_time, notes });
+    const powder_type = document.querySelector('input[name="casePowderType"]:checked')?.value || '袋裝';
+    const patient_name = document.getElementById('casePatientName').value.trim();
+    const payload = { prescription_id, cups, meal_time, powder_type, patient_name, notes };
+    if (editId) {
+      await api(`/api/today/cases/${editId}`, 'PUT', payload);
+    } else {
+      await api('/api/today/cases', 'POST', payload);
+    }
     closeModal('modalAddCase');
     loadToday();
   }
@@ -340,23 +411,27 @@ const App = (() => {
   async function saveRx() {
     const id = document.getElementById('rxEditId').value;
     const data = {
-      product_id:       parseInt(document.getElementById('rxProductId').value),
-      is_staff_rx:      document.getElementById('rxIsStaff').value === '1' ? 1 : 0,
-      code:             document.getElementById('rxCode').value.trim(),
-      name:             document.getElementById('rxName').value.trim(),
-      formula_type:     document.getElementById('rxType').value,
-      timing:           document.getElementById('rxTiming').value,
+      product_id:        parseInt(document.getElementById('rxProductId').value),
+      is_staff_rx:       document.getElementById('rxIsStaff').value === '1' ? 1 : 0,
+      code:              document.getElementById('rxCode').value.trim(),
+      name:              document.getElementById('rxName').value.trim(),
+      formula_type:      document.getElementById('rxType').value,
+      timing:            document.getElementById('rxTiming').value,
       contraindications: document.getElementById('rxContra').value.trim(),
       active: 1
     };
     if (!data.code || !data.name) return alert('請填寫處方代號和名稱');
-    if (id) {
-      await api(`/api/prescriptions/${id}`, 'PUT', data);
-    } else {
-      await api('/api/prescriptions', 'POST', data);
+    try {
+      if (id) {
+        await api(`/api/prescriptions/${id}`, 'PUT', data);
+      } else {
+        await api('/api/prescriptions', 'POST', data);
+      }
+      closeModal('modalRx');
+      loadRx();
+    } catch(e) {
+      alert('儲存失敗：' + e.message);
     }
-    closeModal('modalRx');
-    loadRx();
   }
 
   // ── 產品管理 ────────────────────────────────────────────
@@ -415,21 +490,28 @@ const App = (() => {
     const items = await api(`/api/prescriptions/${rxId}/ingredients`);
     allIngredients = items;
 
-    const cats = ['蔬菜','水果','粉類','膠囊','油水','其他'];
+    const cats = ['蔬菜','水果','粉類','保健品','油水','其他'];
     let html = '';
     cats.forEach(cat => {
-      const catItems = items.filter(i => i.category === cat);
+      const catItems = items.filter(i => i.category === cat)
+        .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
       if (catItems.length === 0) return;
       html += `<div class="ie-cat">${cat}</div>`;
       catItems.forEach(i => {
         html += `
           <div class="ie-row">
             <span>${esc(i.name)}</span>
-            <span style="font-size:12px;color:var(--text2)">${i.unit}/杯</span>
+            <span style="font-size:12px;color:var(--text2)">${i.unit}/份</span>
             <input type="number" min="0" step="0.1" value="${i.qty_per_cup}"
               data-ing-id="${i.id}" id="ing_${i.id}">
           </div>`;
       });
+      html += `
+        <div class="ie-row ie-custom-row" data-cat="${cat}">
+          <input type="text" class="ie-custom-name" placeholder="自填食材名稱" style="flex:1;border:1px solid var(--border);border-radius:6px;padding:3px 8px;font-size:13px;background:var(--bg2)">
+          <span style="font-size:12px;color:var(--text2)">g/份</span>
+          <input type="number" min="0" step="0.1" value="0" class="ie-custom-qty" style="width:64px;border:1px solid var(--border);border-radius:6px;padding:3px 6px;font-size:13px;text-align:right">
+        </div>`;
     });
     document.getElementById('ingredientEditor').innerHTML = html;
     openModal('modalRxIngredients');
@@ -442,19 +524,35 @@ const App = (() => {
       ingredient_id: parseInt(inp.dataset.ingId),
       qty_per_cup: parseFloat(inp.value) || 0
     }));
+    // 處理自填行：查找 allIngredients 中是否有同名食材
+    const customRows = document.querySelectorAll('#ingredientEditor .ie-custom-row');
+    customRows.forEach(row => {
+      const name = row.querySelector('.ie-custom-name').value.trim();
+      const qty = parseFloat(row.querySelector('.ie-custom-qty').value) || 0;
+      if (name && qty > 0) {
+        const match = (allIngredients || []).find(i => i.name === name);
+        if (match) {
+          const existing = items.find(it => it.ingredient_id === match.id);
+          if (existing) existing.qty_per_cup = qty;
+          else items.push({ ingredient_id: match.id, qty_per_cup: qty });
+        }
+      }
+    });
     await api(`/api/prescriptions/${rxId}/ingredients`, 'PUT', items);
     closeModal('modalRxIngredients');
     loadRx();
+    loadToday();
     alert('配方已儲存');
   }
 
   // ── 庫存管理 ────────────────────────────────────────────
   async function loadInventory() {
     const items = await api('/api/inventory');
-    const cats = ['蔬菜','水果','粉類','膠囊','油水','其他'];
+    const cats = ['蔬菜','水果','粉類','保健品','油水','其他'];
     let html = '';
     cats.forEach(cat => {
-      const catItems = items.filter(i => i.category === cat);
+      const catItems = items.filter(i => i.category === cat)
+        .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
       if (catItems.length === 0) return;
       html += `<div class="cat-header">${cat}</div>`;
       html += '<div class="card" style="padding:0 16px">';
@@ -466,14 +564,21 @@ const App = (() => {
           else if (pct >= 0.5) statusBadge = '<span class="badge badge-orange">⚠ 偏低</span>';
           else statusBadge = '<span class="badge badge-red">🚨 不足</span>';
         }
+        // 顆換算：有 count_unit 的食材（蘋果、帶皮檸檬）
+        const hasCount = i.count_unit && i.count_ratio > 1;
+        const countQty = hasCount ? Math.round(i.qty / i.count_ratio * 10) / 10 : null;
+        const qtyDisplay = hasCount
+          ? `${countQty}<span class="inv-unit"> ${i.count_unit}</span><span style="font-size:11px;color:var(--text3)">（${i.qty}${i.unit}）</span>`
+          : `${i.qty}<span class="inv-unit"> ${i.unit}</span>`;
         html += `
           <div class="inv-row">
             <div style="flex:1">
               <div class="inv-name">${esc(i.name)} ${statusBadge}</div>
               ${i.safety_stock > 0 ? `<div class="inv-unit">安全量 ${i.safety_stock}${i.unit}</div>` : ''}
+              ${hasCount ? `<div class="inv-unit">1${i.count_unit} = ${i.count_ratio}${i.unit}</div>` : ''}
             </div>
-            <div class="inv-qty">${i.qty}<span class="inv-unit"> ${i.unit}</span></div>
-            <div class="inv-edit" onclick="App.openEditInv(${i.id},'${esc(i.name)}',${i.qty},'${i.unit}')">✏️</div>
+            <div class="inv-qty">${qtyDisplay}</div>
+            <div class="inv-edit" onclick="App.openEditInv(${i.id},'${esc(i.name)}',${i.qty},'${i.unit}','${i.count_unit||''}',${i.count_ratio||1})">✏️</div>
           </div>`;
       });
       html += '</div>';
@@ -481,17 +586,33 @@ const App = (() => {
     document.getElementById('invList').innerHTML = html || '<div class="empty">尚無食材資料</div>';
   }
 
-  function openEditInv(id, name, qty, unit) {
+  function openEditInv(id, name, qty, unit, countUnit, countRatio) {
     document.getElementById('editInvTitle').textContent = `調整庫存：${name}`;
     document.getElementById('editInvId').value = id;
-    document.getElementById('editInvQty').value = qty;
-    document.getElementById('editInvQty').placeholder = `單位：${unit}`;
+    document.getElementById('editInvCountUnit').value = countUnit || '';
+    document.getElementById('editInvCountRatio').value = countRatio || 1;
+    const hasCount = countUnit && countRatio > 1;
+    if (hasCount) {
+      const countQty = Math.round(qty / countRatio * 10) / 10;
+      document.getElementById('editInvQty').value = countQty;
+      document.getElementById('editInvQtyLabel').textContent = `庫存量（${countUnit}）`;
+      const hint = document.getElementById('editInvQtyHint');
+      hint.textContent = `輸入顆數，系統自動換算（1${countUnit} = ${countRatio}${unit}）`;
+      hint.style.display = 'block';
+    } else {
+      document.getElementById('editInvQty').value = qty;
+      document.getElementById('editInvQtyLabel').textContent = `庫存量（${unit}）`;
+      document.getElementById('editInvQtyHint').style.display = 'none';
+    }
     openModal('modalEditInv');
   }
 
   async function saveInventory() {
     const id = document.getElementById('editInvId').value;
-    const qty = parseFloat(document.getElementById('editInvQty').value) || 0;
+    const inputQty = parseFloat(document.getElementById('editInvQty').value) || 0;
+    const countUnit = document.getElementById('editInvCountUnit').value;
+    const countRatio = parseFloat(document.getElementById('editInvCountRatio').value) || 1;
+    const qty = countUnit && countRatio > 1 ? Math.round(inputQty * countRatio * 10) / 10 : inputQty;
     await api(`/api/inventory/${id}`, 'PUT', { qty });
     closeModal('modalEditInv');
     loadInventory();
@@ -542,54 +663,208 @@ const App = (() => {
   }
 
   // ── 成本分析 ────────────────────────────────────────────
+  function switchCostTab(tab) {
+    currentCostTab = tab;
+    document.querySelectorAll('.cost-tab').forEach(t =>
+      t.classList.toggle('active', t.dataset.ctab === tab));
+    document.querySelectorAll('.cost-section').forEach(s =>
+      s.classList.toggle('active', s.id === `costSection-${tab}`));
+    if (tab === 'today')   loadCostToday();
+    if (tab === 'monthly') { document.getElementById('costMonthLabel').textContent = costMonth; loadCostMonthly(); }
+    if (tab === 'rx')      loadCostRx();
+  }
+
   async function loadCost() {
+    switchCostTab(currentCostTab);
+  }
+
+  async function loadCostToday() {
     const data = await api('/api/costs');
+    const t = data.today;
     const s = data.settings;
+
+    if (!t.products.length) {
+      document.getElementById('costToday').innerHTML =
+        `<div class="empty"><div class="ei">💰</div>今日尚無出單記錄</div>`;
+      return;
+    }
+
+    const ingTotal   = t.products.reduce((s, p) => s + p.ingredient_cost, 0);
+    const laborTotal = t.products.reduce((s, p) => s + p.labor_cost, 0);
+
     let html = `
-      <div class="card" style="margin-bottom:16px">
-        <div class="card-title">成本設定</div>
-        <div class="row"><span class="row-label">人工費率</span><span class="row-value">NT$${s.labor_rate || 250}/小時</span></div>
-        <div class="row"><span class="row-label">製作時間</span><span class="row-value">${s.labor_min_per_cup || 15} 分鐘/杯 → 人工成本 NT$${data.labor_cost_per_cup.toFixed(1)}/杯</span></div>
-        <div class="row"><span class="row-label">全配方定價</span><span class="row-value">NT$${s.full_formula_price || 350}</span></div>
-        <div class="row"><span class="row-label">粉配方定價</span><span class="row-value">NT$${s.powder_formula_price || 280}</span></div>
+      <div class="cost-grand-card">
+        <div class="cost-grand-label">今日廚房總支出</div>
+        <div class="cost-grand-num">NT$${t.grand_total}</div>
+        <div class="cost-grand-sub">
+          <span>🧺 食材 NT$${Math.round(ingTotal*10)/10}</span>
+          <span>👷 人工 NT$${Math.round(laborTotal*10)/10}</span>
+        </div>
       </div>`;
 
-    data.prescriptions.forEach(rx => {
-      const price = rx.formula_type === '全配方' ? (s.full_formula_price||350) : (s.powder_formula_price||280);
-      const margin = price - rx.total_cost;
+    t.products.forEach(p => {
       html += `
         <div class="cost-card">
-          <div style="display:flex;justify-content:space-between;align-items:flex-start">
+          <div class="cost-card-head">
             <div>
-              <div style="font-size:12px;font-weight:700;color:var(--text2);letter-spacing:1px">${esc(rx.code)}</div>
-              <div style="font-size:17px;font-weight:700">${esc(rx.name)}</div>
-              <div style="font-size:13px;color:var(--text2)">
-                <span class="badge ${rx.formula_type==='全配方'?'badge-blue':'badge-purple'}">${esc(rx.formula_type)}</span>
-              </div>
+              <div class="cost-card-name">${esc(p.product_name)}</div>
+              <div class="cost-card-cups">員工 ${p.staff_cups}${p.product_unit} ＋ 個案 ${p.case_cups}${p.product_unit} ＝ 共 ${p.total_cups}${p.product_unit}</div>
             </div>
             <div style="text-align:right">
-              <div class="cost-total">NT$${rx.total_cost}</div>
-              <div style="font-size:12px;color:var(--text2)">每杯總成本</div>
-              <div style="font-size:13px;margin-top:4px;color:${margin>=0?'var(--green)':'var(--red)'}">
-                毛利 NT$${margin.toFixed(1)}
-              </div>
+              <div class="cost-card-total">NT$${p.total_cost}</div>
+              <div class="cost-card-per">≈ NT$${p.cost_per_cup}/${p.product_unit}</div>
             </div>
           </div>
-          <div class="cost-breakdown" style="margin-top:14px">
-            <div class="cb-row" style="font-weight:700;color:var(--text2)">
-              <span>食材</span><span>NT$${rx.ingredient_cost}</span>
+          <div class="cost-breakdown">
+            <div class="cb-row">
+              <span style="color:var(--text2)">🧺 食材成本</span>
+              <span>NT$${p.ingredient_cost}</span>
             </div>
-            ${rx.breakdown.filter(b => b.cost > 0).map(b => `
-              <div class="cb-row ${b.cost===0?'cb-zero':''}">
-                <span>${esc(b.name)} ${b.qty}${b.unit}/杯</span>
-                <span>NT$${b.cost.toFixed(1)}</span>
-              </div>`).join('')}
-            <div class="cb-row" style="font-weight:700;color:var(--text2)">
-              <span>人工（${s.labor_min_per_cup||15}分鐘）</span>
-              <span>NT$${rx.labor_cost}</span>
+            <div class="cb-row">
+              <span style="color:var(--text2)">👷 人工成本（${s.labor_min_per_cup||15}分/份）</span>
+              <span>NT$${p.labor_cost}</span>
             </div>
           </div>
         </div>`;
+    });
+
+    document.getElementById('costToday').innerHTML = html;
+  }
+
+  async function loadCostMonthly() {
+    document.getElementById('costMonthly').innerHTML =
+      `<div style="text-align:center;padding:24px;color:var(--text2)">載入中…</div>`;
+    const data = await api(`/api/costs/monthly?month=${costMonth}`);
+
+    if (!data.days.length) {
+      document.getElementById('costMonthly').innerHTML =
+        `<div class="empty"><div class="ei">📅</div>${costMonth} 無紀錄</div>`;
+      return;
+    }
+
+    // 收集所有產品名（for columns）
+    const prodNames = [];
+    data.by_product.forEach(p => { if (!prodNames.includes(p.product_name)) prodNames.push(p.product_name); });
+
+    // 月合計卡片列
+    let summaryHtml = `<div class="cost-month-summary">`;
+    data.by_product.forEach(p => {
+      summaryHtml += `
+        <div class="cms-card">
+          <div class="cms-name">${esc(p.product_name)}</div>
+          <div class="cms-total">NT$${p.total_cost}</div>
+          <div class="cms-detail">${p.total_cups}${p.product_unit}・均 NT$${p.cost_per_unit}/${p.product_unit}</div>
+        </div>`;
+    });
+    // 總計卡
+    summaryHtml += `
+        <div class="cms-card" style="background:var(--text);color:#fff">
+          <div class="cms-name" style="color:rgba(255,255,255,.6)">月總支出</div>
+          <div class="cms-total" style="color:#fff">NT$${data.month_total}</div>
+          <div class="cms-detail" style="color:rgba(255,255,255,.5)">${data.days.length} 個工作日</div>
+        </div>
+      </div>`;
+
+    // 日報表
+    const colHead = prodNames.map(n => `<th>${esc(n)}</th>`).join('');
+    let tableHtml = `
+      <div style="overflow-x:auto">
+      <table class="cost-month-table">
+        <thead><tr><th>日期</th>${colHead}<th>合計</th></tr></thead>
+        <tbody>`;
+
+    data.days.forEach(d => {
+      const mmdd = d.date.slice(5).replace('-', '/');
+      const cols = prodNames.map(name => {
+        const p = d.products.find(p => p.product_name === name);
+        return p
+          ? `<td>$${p.total_cost}<br><span style="font-size:11px;color:var(--text3)">${p.total_cups}${p.product_unit}</span></td>`
+          : `<td class="col-zero">—</td>`;
+      }).join('');
+      tableHtml += `<tr><td class="col-date">${mmdd}</td>${cols}<td class="col-total">$${d.grand_total}</td></tr>`;
+    });
+
+    // 月合計列
+    const colTotals = prodNames.map(name => {
+      const p = data.by_product.find(p => p.product_name === name);
+      return p ? `<td style="font-weight:700">$${p.total_cost}</td>` : `<td class="col-zero">—</td>`;
+    }).join('');
+    tableHtml += `
+        <tr class="row-total"><td>月合計</td>${colTotals}<td>$${data.month_total}</td></tr>
+        </tbody></table></div>`;
+
+    document.getElementById('costMonthly').innerHTML = summaryHtml + tableHtml;
+  }
+
+  function prevCostMonth() {
+    const [y, m] = costMonth.split('-').map(Number);
+    const d = new Date(y, m - 2, 1);
+    costMonth = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+    document.getElementById('costMonthLabel').textContent = costMonth;
+    loadCostMonthly();
+  }
+
+  function nextCostMonth() {
+    const [y, m] = costMonth.split('-').map(Number);
+    const d = new Date(y, m, 1);
+    costMonth = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+    document.getElementById('costMonthLabel').textContent = costMonth;
+    loadCostMonthly();
+  }
+
+  async function loadCostRx() {
+    const data = await api('/api/costs');
+    const s = data.settings;
+
+    // 按產品分組
+    const byProduct = {};
+    data.prescriptions.forEach(rx => {
+      const key = rx.product_name || '未分類';
+      if (!byProduct[key]) byProduct[key] = [];
+      byProduct[key].push(rx);
+    });
+
+    let html = `
+      <div class="card" style="margin-bottom:12px">
+        <div class="card-title">人工設定</div>
+        <div class="row"><span class="row-label">費率</span><span class="row-value">NT$${s.labor_rate||250}/小時</span></div>
+        <div class="row"><span class="row-label">製作時間</span><span class="row-value">${s.labor_min_per_cup||15} 分/份 → NT$${data.labor_cost_per_cup}/份</span></div>
+      </div>`;
+
+    Object.entries(byProduct).forEach(([pname, rxs]) => {
+      html += `<div style="font-size:12px;font-weight:700;color:var(--text2);margin:14px 0 6px;text-transform:uppercase;letter-spacing:.5px">📦 ${esc(pname)}</div>`;
+      rxs.forEach(rx => {
+        const price = rx.formula_type === '全配方' ? (s.full_formula_price||350) : (s.powder_formula_price||280);
+        const margin = price - rx.total_cost;
+        html += `
+          <div class="cost-card">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start">
+              <div>
+                <div style="font-size:11px;font-weight:700;color:var(--text2);letter-spacing:1px">${esc(rx.code)}</div>
+                <div style="font-size:16px;font-weight:700">${esc(rx.name)}</div>
+                <span class="badge ${rx.formula_type==='全配方'?'badge-blue':'badge-purple'}">${esc(rx.formula_type)}</span>
+              </div>
+              <div style="text-align:right">
+                <div class="cost-total">NT$${rx.total_cost}</div>
+                <div style="font-size:11px;color:var(--text2)">每${rx.product_unit||'份'}成本</div>
+                <div style="font-size:12px;margin-top:3px;color:${margin>=0?'var(--green)':'var(--red)'}">毛利 NT$${margin.toFixed(1)}</div>
+              </div>
+            </div>
+            <div class="cost-breakdown" style="margin-top:10px">
+              ${rx.breakdown.filter(b => b.cost > 0).map(b => `
+                <div class="cb-row">
+                  <span style="color:var(--text2)">${esc(b.name)} ×${b.qty}${b.unit}</span>
+                  <span>NT$${b.cost}</span>
+                </div>`).join('')}
+              <div class="cb-row" style="font-weight:700">
+                <span>食材小計</span><span>NT$${rx.ingredient_cost}</span>
+              </div>
+              <div class="cb-row">
+                <span style="color:var(--text2)">人工</span><span>NT$${rx.labor_cost}</span>
+              </div>
+            </div>
+          </div>`;
+      });
     });
     document.getElementById('costList').innerHTML = html;
   }
@@ -664,12 +939,13 @@ const App = (() => {
 
   return {
     selectUser, logout, switchTab,
-    toggleAttendance, deleteCase, openAddCase, addCase,
+    toggleAttendance, deleteCase, openAddCase, openEditCase, addCase,
     loadRx, openAddRx, openEditRx, saveRx,
     openEditRxIngredients, saveRxIngredients,
     loadInventory, openEditInv, saveInventory,
     openAddIngredient, addIngredient, openPurchase, savePurchase,
-    loadCost, openSettings, saveSettings,
+    loadCost, switchCostTab, prevCostMonth, nextCostMonth,
+    openSettings, saveSettings,
     openAddUser, addUser,
     openAddProduct, openEditProduct, saveProduct,
     openModal, closeModal
