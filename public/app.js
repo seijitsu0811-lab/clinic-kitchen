@@ -431,13 +431,17 @@ const App = (() => {
         </div>` : ''}
         ${c.formula_type === '粉配方' && (c.powder?.items || []).length > 0 ? `
         <div class="prep-grid" style="margin-top:8px">
-          ${(c.powder.items || []).map(p => `
-            <div class="prep-item">
+          ${(c.powder.items || []).map(p => {
+            const pm = c.powder.powder_multiplier || 1;
+            const total = Math.round(p.qty * c.cups * pm * 10) / 10;
+            const jarNote = pm > 1 ? ` <span style="font-size:10px;color:var(--orange)">×${pm}</span>` : '';
+            return `<div class="prep-item">
               <div class="pi-name">${esc(p.name)}</div>
-              <div class="pi-val">${Math.round(p.qty * c.cups * 10)/10}${p.unit}
+              <div class="pi-val">${total}${p.unit}${jarNote}
                 <span style="font-size:11px;color:var(--text3)">×${c.cups}${unit}</span>
               </div>
-            </div>`).join('')}
+            </div>`;
+          }).join('')}
         </div>` : ''}
         ${(c.supplements || []).length > 0 ? `
         <div class="supp-grid">
