@@ -32,27 +32,33 @@ db.exec("UPDATE prescriptions SET product_id=1 WHERE product_id IS NULL");
 [
   // 重新命名
   "UPDATE ingredients SET name='蘋果(帶皮)' WHERE name='蘋果'",
-  "UPDATE ingredients SET name='帶皮檸檬'   WHERE name='檸檬帶皮'",
-  "UPDATE ingredients SET name='帶皮奇異果' WHERE name='奇異果'",
+  "UPDATE ingredients SET name='檸檬'       WHERE name='檸檬帶皮'",
+  "UPDATE ingredients SET name='檸檬'       WHERE name='帶皮檸檬'",
+  "UPDATE ingredients SET name='奇異果'     WHERE name='帶皮奇異果'",
   // 分類改名
   "UPDATE ingredients SET category='保健品' WHERE category='膠囊'",
+  // 分類拆分：油水 → 油（水另外設定）
+  "UPDATE ingredients SET category='油' WHERE category='油水' AND name IN ('橄欖油','苦茶油','酪梨油','MCT','亞麻仁油')",
+  "UPDATE ingredients SET category='水' WHERE name='水'",
+  // 甜菜根歸蔬菜
+  "UPDATE ingredients SET category='蔬菜' WHERE name='甜菜根'",
   // 設定顆換算
   "UPDATE ingredients SET count_unit='顆', count_ratio=220 WHERE name='蘋果(帶皮)'",
-  "UPDATE ingredients SET count_unit='顆', count_ratio=80  WHERE name='帶皮檸檬'",
+  "UPDATE ingredients SET count_unit='顆', count_ratio=80  WHERE name='檸檬'",
 ].forEach(sql => { try { db.exec(sql); } catch(e) {} });
 
 // 清除重複食材：schema.sql 每次啟動 INSERT OR IGNORE，rename 後舊名再度被插入
-// 刪除無處方引用的舊名重複記錄（prescription_ingredients 不指向這些 id 才刪）
 [
-  ['蘋果',    '蘋果(帶皮)'],
-  ['奇異果',  '帶皮奇異果'],
-  ['檸檬帶皮','帶皮檸檬'],
+  ['蘋果',     '蘋果(帶皮)'],
+  ['帶皮奇異果','奇異果'],
+  ['奇異果_old','奇異果'],   // 僅在 newRow 存在才執行，無副作用
+  ['帶皮檸檬', '檸檬'],
+  ['檸檬帶皮', '檸檬'],
 ].forEach(([oldName, newName]) => {
   try {
     const oldRow = db.prepare("SELECT id FROM ingredients WHERE name=?").get(oldName);
     const newRow = db.prepare("SELECT id FROM ingredients WHERE name=?").get(newName);
-    if (oldRow && newRow) {
-      // 舊名的 prescription_ingredients → 改指向新名 id（若有）
+    if (oldRow && newRow && oldRow.id !== newRow.id) {
       db.prepare("UPDATE OR IGNORE prescription_ingredients SET ingredient_id=? WHERE ingredient_id=?").run(newRow.id, oldRow.id);
       db.prepare("DELETE FROM prescription_ingredients WHERE ingredient_id=?").run(oldRow.id);
       db.prepare("DELETE FROM inventory WHERE ingredient_id=?").run(oldRow.id);
@@ -64,9 +70,9 @@ db.exec("UPDATE prescriptions SET product_id=1 WHERE product_id IS NULL");
 // 新增食材（不存在才加）
 [
   ['蘋果(去皮)', 'g',  '水果', 21],
-  ['MCT',        'ml', '油水', 53],
-  ['亞麻仁油',   'ml', '油水', 54],
-  ['水',         'ml', '油水', 55],
+  ['MCT',        'ml', '油',   53],
+  ['亞麻仁油',   'ml', '油',   54],
+  ['水',         'ml', '水',   60],
 ].forEach(([name, unit, cat, ord]) => {
   try {
     const r = db.prepare("INSERT OR IGNORE INTO ingredients (name,unit,category,sort_order) VALUES (?,?,?,?)").run(name, unit, cat, ord);
@@ -77,10 +83,10 @@ db.exec("UPDATE prescriptions SET product_id=1 WHERE product_id IS NULL");
 // 設定食材顯示排序
 [
   ['芽菜',10],['羽衣甘藍',11],['貝比生菜',12],['小麥草',13],['胡蘿蔔',14],['甜菜根',15],
-  ['蘋果(帶皮)',20],['蘋果(去皮)',21],['帶皮檸檬',22],['莓果',23],['帶皮奇異果',24],['香蕉',25],['木瓜',26],['鳳梨',27],
+  ['蘋果(去皮)',20],['蘋果(帶皮)',21],['檸檬',22],['莓果',23],['奇異果',24],['香蕉',25],['木瓜',26],['鳳梨',27],
   ['燕麥',30],['核桃',31],['薑黃粉',32],['肉桂粉',33],['薑粉',34],['藜麥粉',35],['蛋白粉',36],['黑胡椒',37],
   ['AstragIN',40],['Senactiv',41],['益生菌',42],
-  ['橄欖油',50],['苦茶油',51],['酪梨油',52],['MCT',53],['亞麻仁油',54],['水',55],
+  ['橄欖油',50],['苦茶油',51],['酪梨油',52],['MCT',53],['亞麻仁油',54],['水',60],
 ].forEach(([name, ord]) => {
   try { db.prepare("UPDATE ingredients SET sort_order=? WHERE name=?").run(ord, name); } catch(e) {}
 });
@@ -284,10 +290,10 @@ function buildPrepAndPowder(rxId, multiplier, unit, powderMultiplier) {
      JOIN ingredients i ON i.id=pi.ingredient_id
      WHERE pi.prescription_id=? AND pi.qty_per_cup>0 ORDER BY i.sort_order, i.category, i.name`
   ).all(rxId);
-  // prep = 鮮食（蔬菜/水果/油水）
-  const freshCats = new Set(['蔬菜', '水果', '油水', '其他']);
+  // prep = 鮮食（蔬菜/水果/油/水/其他）
+  const freshCats = new Set(['蔬菜', '水果', '油水', '油', '水', '其他']);
   const prep = allItems.filter(r => freshCats.has(r.category)).map(r => ({
-    name: r.name, unit: r.unit,
+    name: r.name, unit: r.unit, category: r.category,
     per_serving: r.qty_per_cup,
     total: Math.round(r.qty_per_cup * multiplier * 10) / 10
   }));

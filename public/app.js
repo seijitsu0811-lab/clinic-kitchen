@@ -152,17 +152,15 @@ const App = (() => {
 
   function renderProductSection(prod, attendingCount) {
     const unit = prod.unit;
-    const batches = prod.batches; // [{size, count}]
-
-    // 批次文字
+    const batches = prod.batches;
     const batchDesc = batches.map(b => `${b.count}批×${b.size}${unit}`).join('　+　');
 
-    // 員工批次區塊
-    let batchHtml = '';
+    // ── LEFT：員工批次 ──────────────────────────────────────
+    let leftHtml = '';
     if (attendingCount === 0) {
-      batchHtml = `<div class="empty" style="margin-bottom:8px"><div class="ei">😴</div>今日無員工出席</div>`;
+      leftHtml = `<div class="empty" style="margin-bottom:8px"><div class="ei">😴</div>今日無員工出席</div>`;
     } else if (!prod.staff_rx) {
-      batchHtml = `<div class="product-no-staff">尚未設定員工標準處方，請在「處方」頁新增並勾選「員工標準」</div>`;
+      leftHtml = `<div class="product-no-staff">尚未設定員工標準處方</div>`;
     } else {
       const pw = prod.staff_powder;
       let powderHtml = '';
@@ -182,12 +180,11 @@ const App = (() => {
             </div>
           </div>`;
       }
-
       let prepHtml = '';
       if (prod.staff_prep.length > 0) {
         prepHtml = `
           <div class="card">
-            <div class="card-title">${esc(prod.staff_rx.code)} 鮮食備料（共 ${attendingCount} ${unit}）</div>
+            <div class="card-title">${esc(prod.staff_rx.code)} 鮮食備料（共 ${prod.total_staff_cups} ${unit}）</div>
             ${prod.staff_prep.map(p => `
               <div class="row">
                 <span class="row-label">${esc(p.name)}</span>
@@ -197,8 +194,6 @@ const App = (() => {
               </div>`).join('')}
           </div>`;
       }
-
-      // 員工配方個案提醒
       const sxc = prod.staff_rx_cases || [];
       const extraCups = prod.extra_cups || 0;
       let staffRxCaseAlert = '';
@@ -216,15 +211,13 @@ const App = (() => {
             <div class="srx-list">${lines}</div>
           </div>`;
       }
-
       const cupsBreakdown = extraCups > 0
         ? `<span style="font-size:14px;color:var(--text2);font-weight:400">（員工 ${attendingCount} + 個案 ${extraCups}）</span>`
         : '';
-
-      batchHtml = `
+      leftHtml = `
         <div class="batch-box">
           <div style="display:flex;gap:16px;align-items:flex-end;flex-wrap:wrap">
-            <div><div class="num">${prod.total_staff_cups}</div><div class="label">總杯數 ${cupsBreakdown}</div></div>
+            <div><div class="num">${prod.total_staff_cups}</div><div class="label">共 ${prod.total_staff_cups} ${unit} ${cupsBreakdown}</div></div>
             <div style="font-size:28px;font-weight:800;opacity:.7">=</div>
             <div><div class="num" style="font-size:22px">${batchDesc || '—'}</div>
               <div class="label">員工批次（${esc(prod.staff_rx.code)}）</div>
@@ -235,6 +228,71 @@ const App = (() => {
         ${powderHtml}
         ${prepHtml}`;
     }
+
+    // ── RIGHT：AW 個案配比總量 ─────────────────────────────
+    const awCases = prod.cases.filter(c => !c.is_staff_rx);
+    let rightHtml = '';
+    if (awCases.length === 0) {
+      rightHtml = `<div class="aw-empty">今日無個案配料需求</div>`;
+    } else {
+      const awTotalCups = awCases.reduce((s, c) => s + c.cups, 0);
+      const ingMap = {};
+      const catOf = {};
+      const catOrder = ['蔬菜','水果','粉類','保健品','油','水','其他'];
+      awCases.forEach(c => {
+        (c.prep || []).forEach(p => {
+          if (!ingMap[p.name]) { ingMap[p.name] = 0; catOf[p.name] = p.category || '其他'; }
+          ingMap[p.name] = Math.round((ingMap[p.name] + p.total) * 10) / 10;
+        });
+        (c.powder?.items || []).forEach(p => {
+          const t = Math.round(p.qty * c.cups * 10) / 10;
+          if (!ingMap[p.name]) { ingMap[p.name] = 0; catOf[p.name] = '粉類'; }
+          ingMap[p.name] = Math.round((ingMap[p.name] + t) * 10) / 10;
+        });
+        (c.supplements || []).forEach(s => {
+          if (!ingMap[s.name]) { ingMap[s.name] = 0; catOf[s.name] = '保健品'; }
+          ingMap[s.name] = Math.round((ingMap[s.name] + s.total) * 10) / 10;
+        });
+      });
+      // get unit per ingredient from cases data
+      const unitOf = {};
+      awCases.forEach(c => {
+        [...(c.prep||[]), ...(c.supplements||[])].forEach(p => { unitOf[p.name] = p.unit; });
+        (c.powder?.items||[]).forEach(p => { unitOf[p.name] = p.unit; });
+      });
+
+      const grouped = {};
+      Object.keys(ingMap).forEach(name => {
+        const cat = catOf[name] || '其他';
+        if (!grouped[cat]) grouped[cat] = [];
+        grouped[cat].push({ name, total: ingMap[name], unit: unitOf[name] || 'g' });
+      });
+
+      let rows = '';
+      catOrder.forEach(cat => {
+        const items = grouped[cat];
+        if (!items || items.length === 0) return;
+        rows += `<div class="aw-cat">${cat}</div>`;
+        items.forEach(item => {
+          rows += `<div class="row"><span class="row-label">${esc(item.name)}</span>
+            <span class="row-value" style="font-weight:700">${item.total}<span style="font-size:12px;color:var(--text3)">${item.unit}</span></span></div>`;
+        });
+      });
+      rightHtml = `
+        <div class="aw-cups-badge">共 <strong>${awTotalCups}</strong> ${unit}</div>
+        <div class="card" style="margin-top:8px;padding:4px 16px">${rows}</div>`;
+    }
+
+    // 備註欄
+    const notesKey = `batchNotes_${prod.id}`;
+    const savedNotes = localStorage.getItem(notesKey) || '';
+    const notesSection = `
+      <div class="batch-notes-wrap">
+        <div class="batch-notes-label">備註</div>
+        <textarea class="batch-notes-area" rows="2"
+          onchange="localStorage.setItem('${notesKey}',this.value)"
+          placeholder="今日備料備註...">${esc(savedNotes)}</textarea>
+      </div>`;
 
     // 個案出單
     const casesHtml = prod.cases.length === 0
@@ -248,7 +306,17 @@ const App = (() => {
           <span class="product-hname">▌B 員工批次</span>
           <span class="product-unit-note">單位：${unit}</span>
         </div>
-        ${batchHtml}
+        <div class="batch-split">
+          <div class="batch-col batch-col-left">
+            <div class="batch-col-head">👩‍🍳 員工</div>
+            ${leftHtml}
+          </div>
+          <div class="batch-col batch-col-right">
+            <div class="batch-col-head">🫙 個案 AW</div>
+            ${rightHtml}
+          </div>
+        </div>
+        ${notesSection}
 
         <div class="section-head" style="margin-top:20px">
           <span class="product-hname">▌C 個案出單</span>
@@ -389,7 +457,16 @@ const App = (() => {
   async function openEditCase(id) {
     const c = caseDataMap[id];
     if (!c) return;
-    openEditRxIngredients(c.prescription_id, c.rx_name || c.code || '處方');
+    document.getElementById('caseEditId').value = id;
+    document.getElementById('caseModalTitle').textContent = '編輯出單';
+    await _buildCaseRxSel(null, c.prescription_id);
+    document.getElementById('casePatientName').value = c.patient_name || '';
+    document.getElementById('caseCups').value = c.cups;
+    document.getElementById('caseMealTime').value = c.meal_time || '1330';
+    document.getElementById('caseNotes').value = c.notes || '';
+    const radio = document.querySelector(`input[name="casePowderType"][value="${c.powder_type||'袋裝'}"]`);
+    if (radio) radio.checked = true;
+    openModal('modalAddCase');
   }
 
   async function addCase() {
@@ -573,10 +650,10 @@ const App = (() => {
     const items = await api(`/api/prescriptions/${rxId}/ingredients`);
     allIngredients = items;
 
-    const cats = ['蔬菜','水果','粉類','保健品','油水','其他'];
+    const cats = ['蔬菜','水果','粉類','保健品','油','水','其他'];
     let html = '';
     cats.forEach(cat => {
-      const catItems = items.filter(i => i.category === cat)
+      const catItems = items.filter(i => i.category === cat || (cat === '油' && i.category === '油水'))
         .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
       if (catItems.length === 0) return;
       html += `<div class="ie-cat">${cat}</div>`;
@@ -631,10 +708,10 @@ const App = (() => {
   // ── 庫存管理 ────────────────────────────────────────────
   async function loadInventory() {
     const items = await api('/api/inventory');
-    const cats = ['蔬菜','水果','粉類','保健品','油水','其他'];
+    const cats = ['蔬菜','水果','粉類','保健品','油','水','其他'];
     let html = '';
     cats.forEach(cat => {
-      const catItems = items.filter(i => i.category === cat)
+      const catItems = items.filter(i => i.category === cat || (cat === '油' && i.category === '油水'))
         .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
       if (catItems.length === 0) return;
       html += `<div class="cat-header">${cat}</div>`;
