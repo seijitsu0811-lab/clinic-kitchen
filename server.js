@@ -60,11 +60,14 @@ db.exec("UPDATE prescriptions SET product_id=1 WHERE product_id IS NULL");
     const oldRow = db.prepare("SELECT id FROM ingredients WHERE name=?").get(oldName);
     const newRow = db.prepare("SELECT id FROM ingredients WHERE name=?").get(newName);
     if (oldRow && newRow && oldRow.id !== newRow.id) {
-      // 刪掉舊名在同一處方中與新名衝突的列（FK 衝突會擋住後面 DELETE）
+      // prescription_ingredients：有衝突先刪，再移
       db.prepare(`DELETE FROM prescription_ingredients WHERE ingredient_id=? AND prescription_id IN (SELECT prescription_id FROM prescription_ingredients WHERE ingredient_id=?)`).run(oldRow.id, newRow.id);
-      // 剩餘列改指向新 id
       db.prepare("UPDATE prescription_ingredients SET ingredient_id=? WHERE ingredient_id=?").run(newRow.id, oldRow.id);
+      // purchase_log FK
+      db.prepare("UPDATE purchase_log SET ingredient_id=? WHERE ingredient_id=?").run(newRow.id, oldRow.id);
+      // inventory FK
       db.prepare("DELETE FROM inventory WHERE ingredient_id=?").run(oldRow.id);
+      // 最後才刪食材本身
       db.prepare("DELETE FROM ingredients WHERE id=?").run(oldRow.id);
     }
   } catch(e) { console.error('dedup', oldName, e.message); }
