@@ -103,32 +103,35 @@ const App = (() => {
 
     function caseChip(c, type) {
       const picked = casePickedUp.has(c.id);
+      const isInuse = c.powder_type === '內用';
       const name = c.patient_name || c.rx_name || c.code;
       const mt = c.meal_time && c.meal_time.length === 4
         ? `${c.meal_time.slice(0,2)}:${c.meal_time.slice(2)}` : (c.meal_time || '');
       const sub = type === 'fresh'
         ? `${esc(c.rx_name)}${mt ? ' · ' + mt : ''}`
         : `${c.cups}天 ${esc(c.powder_type || '袋裝')}`;
-      return `<div class="case-chip ${picked ? 'picked' : ''}" data-type="${type}"
+      return `<div class="case-chip ${picked ? 'picked' : ''}" data-type="${type}" data-inuse="${isInuse?1:0}"
                    onclick="App.toggleCasePickup(${c.id})">
         <div class="sname">${esc(name)}</div>
-        <div class="chip-sub">${sub}</div>
+        <div class="chip-sub">${isInuse ? '🍽 內用' : ''}${sub}</div>
+      </div>`;
+    }
+
+    // 各組再依內用/外帶排序：外帶在前，內用在後
+    function chipGroup(cases, type, label) {
+      if (cases.length === 0) return '';
+      const takeout = cases.filter(c => c.powder_type !== '內用');
+      const inuse   = cases.filter(c => c.powder_type === '內用');
+      const chips = [...takeout, ...inuse].map(c => caseChip(c, type)).join('');
+      return `<div class="today-group">
+        <div class="today-group-label">${label}</div>
+        <div class="chips-row">${chips}</div>
       </div>`;
     }
 
     let groupsHtml = '';
-    if (freshCases.length > 0) {
-      groupsHtml += `<div class="today-group">
-        <div class="today-group-label">現打精力湯</div>
-        <div class="chips-row">${freshCases.map(c => caseChip(c, 'fresh')).join('')}</div>
-      </div>`;
-    }
-    if (powderCases.length > 0) {
-      groupsHtml += `<div class="today-group">
-        <div class="today-group-label">粉配方</div>
-        <div class="chips-row">${powderCases.map(c => caseChip(c, 'powder')).join('')}</div>
-      </div>`;
-    }
+    groupsHtml += chipGroup(freshCases,  'fresh',  '現打精力湯');
+    groupsHtml += chipGroup(powderCases, 'powder', '粉配方');
     document.getElementById('caseChips').innerHTML = groupsHtml;
   }
 
@@ -294,10 +297,22 @@ const App = (() => {
           placeholder="今日備料備註...">${esc(savedNotes)}</textarea>
       </div>`;
 
-    // 個案出單
-    const casesHtml = prod.cases.length === 0
-      ? `<div class="empty"><div class="ei">📋</div>今日尚無個案出單</div>`
-      : prod.cases.map(c => renderCaseCard(c, unit)).join('');
+    // 個案出單 — 外帶 / 內用 分組
+    let casesHtml = '';
+    if (prod.cases.length === 0) {
+      casesHtml = `<div class="empty"><div class="ei">📋</div>今日尚無個案出單</div>`;
+    } else {
+      const takeout = prod.cases.filter(c => c.powder_type !== '內用');
+      const inuse   = prod.cases.filter(c => c.powder_type === '內用');
+      if (takeout.length > 0) {
+        casesHtml += `<div class="case-group-head">🛍 外帶（${takeout.length}）</div>`;
+        casesHtml += takeout.map(c => renderCaseCard(c, unit)).join('');
+      }
+      if (inuse.length > 0) {
+        casesHtml += `<div class="case-group-head">🍽 內用（${inuse.length}）</div>`;
+        casesHtml += inuse.map(c => renderCaseCard(c, unit)).join('');
+      }
+    }
 
     return `
       <div class="product-section">
