@@ -381,6 +381,20 @@ app.get('/api/today', (req, res) => {
       return { ...c, prep, powder, supplements };
     });
 
+    // 預約出單（未來日期）
+    const futureCases = db.prepare(
+      `SELECT co.*, p.code, p.name as rx_name, p.formula_type,
+              p.contraindications, p.timing, p.is_staff_rx
+       FROM case_orders co
+       JOIN prescriptions p ON p.id=co.prescription_id
+       WHERE co.date>? AND p.product_id=? ORDER BY co.date, co.meal_time`
+    ).all(date, prod.id);
+    const futureCasesWithPrep = futureCases.map(c => {
+      const pm = c.powder_type === '罐裝' ? 1.1 : 1.0;
+      const { prep, powder, supplements } = buildPrepAndPowder(c.prescription_id, c.cups, prod.unit, pm);
+      return { ...c, prep, powder, supplements };
+    });
+
     return {
       id:               prod.id,
       name:             prod.name,
@@ -398,7 +412,8 @@ app.get('/api/today', (req, res) => {
       staff_rx:         staffRx || null,
       staff_prep:       staffPrep,
       staff_powder:     staffPowder,
-      cases:            casesWithPrep
+      cases:            casesWithPrep,
+      future_cases:     futureCasesWithPrep
     };
   });
 

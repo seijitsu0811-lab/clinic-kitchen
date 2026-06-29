@@ -314,6 +314,32 @@ const App = (() => {
       }
     }
 
+    // 預約出單（未來日期）按日期分組
+    let futureHtml = '';
+    if ((prod.future_cases || []).length === 0) {
+      futureHtml = `<div class="empty" style="padding:12px 0"><div class="ei">📅</div>目前無預約出單</div>`;
+    } else {
+      const byDate = {};
+      prod.future_cases.forEach(c => {
+        if (!byDate[c.date]) byDate[c.date] = [];
+        byDate[c.date].push(c);
+      });
+      Object.keys(byDate).sort().forEach(d => {
+        const label = d.replace(/^(\d{4})-(\d{2})-(\d{2})$/, '$1/$2/$3');
+        futureHtml += `<div class="future-date-head">${label}</div>`;
+        const dayTakeout = byDate[d].filter(c => c.powder_type !== '內用');
+        const dayInuse   = byDate[d].filter(c => c.powder_type === '內用');
+        if (dayTakeout.length > 0) {
+          futureHtml += `<div class="case-group-head" style="margin-top:8px">🛍 外帶（${dayTakeout.length}）</div>`;
+          futureHtml += dayTakeout.map(c => renderCaseCard(c, unit)).join('');
+        }
+        if (dayInuse.length > 0) {
+          futureHtml += `<div class="case-group-head" style="margin-top:8px">🍽 內用（${dayInuse.length}）</div>`;
+          futureHtml += dayInuse.map(c => renderCaseCard(c, unit)).join('');
+        }
+      });
+    }
+
     return `
       <div class="product-section">
         <div class="product-header">
@@ -338,6 +364,11 @@ const App = (() => {
           <button class="btn btn-primary btn-sm" onclick="App.openAddCase(${prod.id})">＋ 新增</button>
         </div>
         ${casesHtml}
+
+        <div class="section-head" style="margin-top:24px">
+          <span class="product-hname">▌D 預約出單</span>
+        </div>
+        <div class="future-cases-box">${futureHtml}</div>
       </div>`;
   }
 
