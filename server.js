@@ -59,8 +59,10 @@ db.exec("UPDATE prescriptions SET product_id=1 WHERE product_id IS NULL");
     const oldRow = db.prepare("SELECT id FROM ingredients WHERE name=?").get(oldName);
     const newRow = db.prepare("SELECT id FROM ingredients WHERE name=?").get(newName);
     if (oldRow && newRow && oldRow.id !== newRow.id) {
-      db.prepare("UPDATE OR IGNORE prescription_ingredients SET ingredient_id=? WHERE ingredient_id=?").run(newRow.id, oldRow.id);
-      db.prepare("DELETE FROM prescription_ingredients WHERE ingredient_id=?").run(oldRow.id);
+      // 刪掉舊名在同一處方中與新名衝突的列（FK 衝突會擋住後面 DELETE）
+      db.prepare(`DELETE FROM prescription_ingredients WHERE ingredient_id=? AND prescription_id IN (SELECT prescription_id FROM prescription_ingredients WHERE ingredient_id=?)`).run(oldRow.id, newRow.id);
+      // 剩餘列改指向新 id
+      db.prepare("UPDATE prescription_ingredients SET ingredient_id=? WHERE ingredient_id=?").run(newRow.id, oldRow.id);
       db.prepare("DELETE FROM inventory WHERE ingredient_id=?").run(oldRow.id);
       db.prepare("DELETE FROM ingredients WHERE id=?").run(oldRow.id);
     }
@@ -474,7 +476,7 @@ app.put('/api/prescriptions/:id', (req, res) => {
 
 // 取得處方食材
 app.get('/api/prescriptions/:id/ingredients', (req, res) => {
-  const all = db.prepare('SELECT id, name, unit, category FROM ingredients WHERE active=1 ORDER BY category, name').all();
+  const all = db.prepare('SELECT id, name, unit, category, sort_order FROM ingredients WHERE active=1 ORDER BY sort_order, category, name').all();
   const used = db.prepare(
     `SELECT pi.ingredient_id, pi.qty_per_cup FROM prescription_ingredients pi WHERE pi.prescription_id=?`
   ).all(req.params.id);
