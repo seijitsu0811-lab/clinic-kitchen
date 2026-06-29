@@ -410,22 +410,23 @@ app.put('/api/today/attendance/:userId', (req, res) => {
   res.json({ ok: true });
 });
 
-// 新增今日個案出單
+// 新增個案出單（日期可自訂，預設今日）
 app.post('/api/today/cases', (req, res) => {
-  const { prescription_id, cups, meal_time, powder_type, patient_name, notes } = req.body;
-  const date = today();
+  const { prescription_id, cups, meal_time, powder_type, patient_name, notes, date } = req.body;
+  const orderDate = date || today();
   const r = db.prepare(
     `INSERT INTO case_orders (date,prescription_id,cups,meal_time,powder_type,patient_name,notes) VALUES (?,?,?,?,?,?,?)`
-  ).run(date, prescription_id, cups||1, meal_time||'1330', powder_type||'袋裝', patient_name||'', notes||'');
+  ).run(orderDate, prescription_id, cups||1, meal_time||'1330', powder_type||'袋裝', patient_name||'', notes||'');
   res.json({ id: r.lastInsertRowid });
 });
 
-// 更新今日個案出單
+// 更新個案出單（含日期）
 app.put('/api/today/cases/:id', (req, res) => {
-  const { cups, meal_time, powder_type, patient_name, notes } = req.body;
+  const { cups, meal_time, powder_type, patient_name, notes, date } = req.body;
+  const orderDate = date || today();
   db.prepare(
-    `UPDATE case_orders SET cups=?,meal_time=?,powder_type=?,patient_name=?,notes=? WHERE id=?`
-  ).run(cups, meal_time, powder_type||'袋裝', patient_name||'', notes||'', req.params.id);
+    `UPDATE case_orders SET date=?,cups=?,meal_time=?,powder_type=?,patient_name=?,notes=? WHERE id=?`
+  ).run(orderDate, cups, meal_time, powder_type||'袋裝', patient_name||'', notes||'', req.params.id);
   res.json({ ok: true });
 });
 

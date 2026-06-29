@@ -449,6 +449,7 @@ const App = (() => {
     document.getElementById('caseNotes').value = '';
     document.getElementById('caseCups').value = '1';
     document.getElementById('caseMealTime').value = '1330';
+    document.getElementById('caseDate').value = new Date().toISOString().slice(0, 10);
     const bagRadio = document.querySelector('input[name="casePowderType"][value="袋裝"]');
     if (bagRadio) bagRadio.checked = true;
     openModal('modalAddCase');
@@ -464,6 +465,7 @@ const App = (() => {
     document.getElementById('caseCups').value = c.cups;
     document.getElementById('caseMealTime').value = c.meal_time || '1330';
     document.getElementById('caseNotes').value = c.notes || '';
+    document.getElementById('caseDate').value = c.date || new Date().toISOString().slice(0, 10);
     const radio = document.querySelector(`input[name="casePowderType"][value="${c.powder_type||'袋裝'}"]`);
     if (radio) radio.checked = true;
     openModal('modalAddCase');
@@ -477,7 +479,8 @@ const App = (() => {
     const notes = document.getElementById('caseNotes').value;
     const powder_type = document.querySelector('input[name="casePowderType"]:checked')?.value || '袋裝';
     const patient_name = document.getElementById('casePatientName').value.trim();
-    const payload = { prescription_id, cups, meal_time, powder_type, patient_name, notes };
+    const date = document.getElementById('caseDate').value || new Date().toISOString().slice(0, 10);
+    const payload = { prescription_id, cups, meal_time, powder_type, patient_name, notes, date };
     if (editId) {
       await api(`/api/today/cases/${editId}`, 'PUT', payload);
     } else {
