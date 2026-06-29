@@ -32,6 +32,7 @@ db.exec("UPDATE prescriptions SET product_id=1 WHERE product_id IS NULL");
 [
   // 重新命名
   "UPDATE ingredients SET name='蘋果(帶皮)' WHERE name='蘋果'",
+  "UPDATE ingredients SET name='蘋果(純皮)' WHERE name='蘋果(去皮)'",
   "UPDATE ingredients SET name='檸檬'       WHERE name='檸檬帶皮'",
   "UPDATE ingredients SET name='檸檬'       WHERE name='帶皮檸檬'",
   "UPDATE ingredients SET name='奇異果'     WHERE name='帶皮奇異果'",
@@ -49,11 +50,11 @@ db.exec("UPDATE prescriptions SET product_id=1 WHERE product_id IS NULL");
 
 // 清除重複食材：schema.sql 每次啟動 INSERT OR IGNORE，rename 後舊名再度被插入
 [
-  ['蘋果',     '蘋果(帶皮)'],
-  ['帶皮奇異果','奇異果'],
-  ['奇異果_old','奇異果'],   // 僅在 newRow 存在才執行，無副作用
-  ['帶皮檸檬', '檸檬'],
-  ['檸檬帶皮', '檸檬'],
+  ['蘋果',       '蘋果(帶皮)'],
+  ['蘋果(去皮)', '蘋果(純皮)'],
+  ['帶皮奇異果', '奇異果'],
+  ['帶皮檸檬',   '檸檬'],
+  ['檸檬帶皮',   '檸檬'],
 ].forEach(([oldName, newName]) => {
   try {
     const oldRow = db.prepare("SELECT id FROM ingredients WHERE name=?").get(oldName);
@@ -71,7 +72,7 @@ db.exec("UPDATE prescriptions SET product_id=1 WHERE product_id IS NULL");
 
 // 新增食材（不存在才加）
 [
-  ['蘋果(去皮)', 'g',  '水果', 21],
+  ['蘋果(純皮)', 'g',  '水果', 21],
   ['MCT',        'ml', '油',   53],
   ['亞麻仁油',   'ml', '油',   54],
   ['水',         'ml', '水',   60],
@@ -85,7 +86,7 @@ db.exec("UPDATE prescriptions SET product_id=1 WHERE product_id IS NULL");
 // 設定食材顯示排序
 [
   ['芽菜',10],['羽衣甘藍',11],['貝比生菜',12],['小麥草',13],['胡蘿蔔',14],['甜菜根',15],
-  ['蘋果(去皮)',20],['蘋果(帶皮)',21],['檸檬',22],['莓果',23],['奇異果',24],['香蕉',25],['木瓜',26],['鳳梨',27],
+  ['蘋果(帶皮)',20],['蘋果(純皮)',21],['檸檬',22],['莓果',23],['奇異果',24],['香蕉',25],['木瓜',26],['鳳梨',27],
   ['燕麥',30],['核桃',31],['薑黃粉',32],['肉桂粉',33],['薑粉',34],['藜麥粉',35],['蛋白粉',36],['黑胡椒',37],
   ['AstragIN',40],['Senactiv',41],['益生菌',42],
   ['橄欖油',50],['苦茶油',51],['酪梨油',52],['MCT',53],['亞麻仁油',54],['水',60],
