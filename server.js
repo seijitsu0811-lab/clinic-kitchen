@@ -48,7 +48,8 @@ db.exec("UPDATE prescriptions SET product_id=1 WHERE product_id IS NULL");
   "UPDATE ingredients SET count_unit='顆', count_ratio=80  WHERE name='檸檬'",
 ].forEach(sql => { try { db.exec(sql); } catch(e) {} });
 
-// 清除重複食材：schema.sql 每次啟動 INSERT OR IGNORE，rename 後舊名再度被插入
+// 清除重複食材：暫停 FK 檢查，安全地搬移再刪除
+db.exec('PRAGMA foreign_keys = OFF');
 [
   ['蘋果',       '蘋果(帶皮)'],
   ['蘋果(去皮)', '蘋果(純皮)'],
@@ -63,15 +64,14 @@ db.exec("UPDATE prescriptions SET product_id=1 WHERE product_id IS NULL");
       // prescription_ingredients：有衝突先刪，再移
       db.prepare(`DELETE FROM prescription_ingredients WHERE ingredient_id=? AND prescription_id IN (SELECT prescription_id FROM prescription_ingredients WHERE ingredient_id=?)`).run(oldRow.id, newRow.id);
       db.prepare("UPDATE prescription_ingredients SET ingredient_id=? WHERE ingredient_id=?").run(newRow.id, oldRow.id);
-      // purchase_log FK
       db.prepare("UPDATE purchase_log SET ingredient_id=? WHERE ingredient_id=?").run(newRow.id, oldRow.id);
-      // inventory FK
       db.prepare("DELETE FROM inventory WHERE ingredient_id=?").run(oldRow.id);
-      // 最後才刪食材本身
       db.prepare("DELETE FROM ingredients WHERE id=?").run(oldRow.id);
+      console.log(`dedup: ${oldName} → ${newName} ✓`);
     }
-  } catch(e) { console.error('dedup', oldName, e.message); }
+  } catch(e) { console.error('dedup error', oldName, e.message); }
 });
+db.exec('PRAGMA foreign_keys = ON');
 
 // 新增食材（不存在才加）
 [
