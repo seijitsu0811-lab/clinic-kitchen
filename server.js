@@ -282,13 +282,16 @@ function buildPrepAndPowder(rxId, multiplier, unit, powderMultiplier) {
   const allItems = db.prepare(
     `SELECT pi.qty_per_cup, i.name, i.unit, i.category FROM prescription_ingredients pi
      JOIN ingredients i ON i.id=pi.ingredient_id
-     WHERE pi.prescription_id=? AND pi.qty_per_cup>0 ORDER BY i.category, i.name`
+     WHERE pi.prescription_id=? AND pi.qty_per_cup>0 ORDER BY i.sort_order, i.category, i.name`
   ).all(rxId);
-  const prep = allItems.filter(r => r.category !== '粉類').map(r => ({
+  // prep = 鮮食（蔬菜/水果/油水）
+  const freshCats = new Set(['蔬菜', '水果', '油水', '其他']);
+  const prep = allItems.filter(r => freshCats.has(r.category)).map(r => ({
     name: r.name, unit: r.unit,
     per_serving: r.qty_per_cup,
     total: Math.round(r.qty_per_cup * multiplier * 10) / 10
   }));
+  // powder = 粉類（計重）
   const powderItems = allItems.filter(r => r.category === '粉類');
   const powderPerServing = powderItems.reduce((s, r) => s + r.qty_per_cup, 0);
   const powder = {
@@ -298,7 +301,13 @@ function buildPrepAndPowder(rxId, multiplier, unit, powderMultiplier) {
     powder_multiplier: powderMultiplier,
     items:             powderItems.map(r => ({ name: r.name, qty: r.qty_per_cup, unit: r.unit }))
   };
-  return { prep, powder };
+  // supplements = 保健品（顆/包，獨立顯示）
+  const supplements = allItems.filter(r => r.category === '保健品').map(r => ({
+    name: r.name, unit: r.unit,
+    per_serving: r.qty_per_cup,
+    total: Math.round(r.qty_per_cup * multiplier * 10) / 10
+  }));
+  return { prep, powder, supplements };
 }
 
 app.get('/api/today', (req, res) => {
@@ -356,8 +365,8 @@ app.get('/api/today', (req, res) => {
 
     const casesWithPrep = cases.map(c => {
       const pm = c.powder_type === '罐裝' ? 1.1 : 1.0;
-      const { prep, powder } = buildPrepAndPowder(c.prescription_id, c.cups, prod.unit, pm);
-      return { ...c, prep, powder };
+      const { prep, powder, supplements } = buildPrepAndPowder(c.prescription_id, c.cups, prod.unit, pm);
+      return { ...c, prep, powder, supplements };
     });
 
     return {

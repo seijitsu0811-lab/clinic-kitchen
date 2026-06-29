@@ -7,6 +7,9 @@ const App = (() => {
   let caseDataMap = {};
   let costMonth = new Date().toISOString().slice(0, 7); // YYYY-MM
   let currentCostTab = 'today';
+  let lastTodayData = null;
+  let staffPickedUp = new Set();
+  let casePickedUp  = new Set();
 
   // ── 初始化 ─────────────────────────────────────────────
   async function init() {
@@ -70,19 +73,81 @@ const App = (() => {
   // ── 今日工作單 ─────────────────────────────────────────
   async function loadToday() {
     const d = await api('/api/today');
+    lastTodayData = d;
 
-    // A. 員工出席
-    document.getElementById('staffGrid').innerHTML = d.staff.map(s => `
-      <div class="staff-chip ${s.attending ? 'on' : 'off'}"
-           onclick="App.toggleAttendance(${s.user_id}, ${s.attending ? 0 : 1})">
-        <div class="dot"></div>
-        <div class="sname">${esc(s.name)}</div>
-      </div>`).join('');
     document.getElementById('staffCount').textContent = `${d.attending_count}人`;
+    renderTodaySection1(d);
 
-    // B+C. 每個產品的批次 + 個案（合併渲染）
+    // 2+3. 每個產品的批次 + 個案
     caseDataMap = {};
     document.getElementById('productSections').innerHTML = d.products.map(prod => renderProductSection(prod, d.attending_count)).join('');
+  }
+
+  function renderTodaySection1(d) {
+    // 員工 chips
+    const staffHtml = d.staff.map(s => {
+      const picked = staffPickedUp.has(s.user_id);
+      const cls = picked ? 'picked' : (s.attending ? 'on' : 'off');
+      return `<div class="staff-chip ${cls}" onclick="App.handleStaffChipClick(${s.user_id},${s.attending})">
+        <div class="dot"></div>
+        <div class="sname">${esc(s.name)}</div>
+        ${picked ? '<div class="chip-sub">✓ 已拿取</div>' : ''}
+      </div>`;
+    }).join('');
+    document.getElementById('staffGrid').innerHTML = staffHtml;
+
+    // 個案 chips
+    const allCases = d.products.flatMap(p => p.cases);
+    const freshCases  = allCases.filter(c => c.formula_type === '全配方');
+    const powderCases = allCases.filter(c => c.formula_type === '粉配方');
+
+    function caseChip(c, type) {
+      const picked = casePickedUp.has(c.id);
+      const name = c.patient_name || c.rx_name || c.code;
+      const mt = c.meal_time && c.meal_time.length === 4
+        ? `${c.meal_time.slice(0,2)}:${c.meal_time.slice(2)}` : (c.meal_time || '');
+      const sub = type === 'fresh'
+        ? `${esc(c.rx_name)}${mt ? ' · ' + mt : ''}`
+        : `${c.cups}天 ${esc(c.powder_type || '袋裝')}`;
+      return `<div class="case-chip ${picked ? 'picked' : ''}" data-type="${type}"
+                   onclick="App.toggleCasePickup(${c.id})">
+        <div class="sname">${esc(name)}</div>
+        <div class="chip-sub">${sub}</div>
+      </div>`;
+    }
+
+    let groupsHtml = '';
+    if (freshCases.length > 0) {
+      groupsHtml += `<div class="today-group">
+        <div class="today-group-label">現打精力湯</div>
+        <div class="chips-row">${freshCases.map(c => caseChip(c, 'fresh')).join('')}</div>
+      </div>`;
+    }
+    if (powderCases.length > 0) {
+      groupsHtml += `<div class="today-group">
+        <div class="today-group-label">粉配方</div>
+        <div class="chips-row">${powderCases.map(c => caseChip(c, 'powder')).join('')}</div>
+      </div>`;
+    }
+    document.getElementById('caseChips').innerHTML = groupsHtml;
+  }
+
+  function handleStaffChipClick(userId, isAttending) {
+    if (!isAttending) {
+      // 未出席 → 切換為出席
+      toggleAttendance(userId, 1);
+      return;
+    }
+    // 出席中 → 切換已拿取狀態
+    if (staffPickedUp.has(userId)) staffPickedUp.delete(userId);
+    else staffPickedUp.add(userId);
+    if (lastTodayData) renderTodaySection1(lastTodayData);
+  }
+
+  function toggleCasePickup(caseId) {
+    if (casePickedUp.has(caseId)) casePickedUp.delete(caseId);
+    else casePickedUp.add(caseId);
+    if (lastTodayData) renderTodaySection1(lastTodayData);
   }
 
   function renderProductSection(prod, attendingCount) {
@@ -240,7 +305,7 @@ const App = (() => {
         ${warn}
         ${notesHtml}
         ${casePowderHtml}
-        ${c.prep.length > 0 ? `
+        ${c.formula_type !== '粉配方' && c.prep.length > 0 ? `
         <div class="prep-grid">
           ${c.prep.map(p => `
             <div class="prep-item">
@@ -248,6 +313,24 @@ const App = (() => {
               <div class="pi-val">${p.total}${p.unit}
                 <span style="font-size:11px;color:var(--text3)">×${c.cups}${unit}</span>
               </div>
+            </div>`).join('')}
+        </div>` : ''}
+        ${c.formula_type === '粉配方' && (c.powder?.items || []).length > 0 ? `
+        <div class="prep-grid" style="margin-top:8px">
+          ${(c.powder.items || []).map(p => `
+            <div class="prep-item">
+              <div class="pi-name">${esc(p.name)}</div>
+              <div class="pi-val">${Math.round(p.qty * c.cups * 10)/10}${p.unit}
+                <span style="font-size:11px;color:var(--text3)">×${c.cups}${unit}</span>
+              </div>
+            </div>`).join('')}
+        </div>` : ''}
+        ${(c.supplements || []).length > 0 ? `
+        <div class="supp-grid">
+          ${(c.supplements || []).map(s => `
+            <div class="supp-item">
+              <div class="si-name">${esc(s.name)}</div>
+              <div class="si-val">${s.total}${s.unit}</div>
             </div>`).join('')}
         </div>` : ''}
       </div>`;
@@ -939,7 +1022,8 @@ const App = (() => {
 
   return {
     selectUser, logout, switchTab,
-    toggleAttendance, deleteCase, openAddCase, openEditCase, addCase,
+    toggleAttendance, handleStaffChipClick, toggleCasePickup,
+    deleteCase, openAddCase, openEditCase, addCase,
     loadRx, openAddRx, openEditRx, saveRx,
     openEditRxIngredients, saveRxIngredients,
     loadInventory, openEditInv, saveInventory,

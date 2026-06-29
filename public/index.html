@@ -116,11 +116,34 @@
       background: var(--card); border-radius: 12px; padding: 12px 8px; text-align: center;
       cursor: pointer; border: 2px solid var(--border); transition: all .15s;
     }
-    .staff-chip.on  { border-color: var(--green); background: rgba(52,199,89,.08); }
-    .staff-chip.off { border-color: var(--border); opacity: .5; }
+    .staff-chip.on     { border-color: var(--green);  background: rgba(52,199,89,.08); }
+    .staff-chip.off    { border-color: var(--border); opacity: .5; }
+    .staff-chip.picked { border-color: var(--gray);   background: rgba(142,142,147,.08); opacity: .75; }
     .staff-chip .dot { width: 8px; height: 8px; border-radius: 50%; margin: 0 auto 6px; background: var(--border); }
-    .staff-chip.on .dot { background: var(--green); }
+    .staff-chip.on .dot     { background: var(--green); }
+    .staff-chip.picked .dot { background: var(--gray); }
     .staff-chip .sname { font-size: 12px; font-weight: 600; }
+    .chip-sub { font-size: 10px; color: var(--text3); margin-top: 3px; }
+
+    .today-group-label { font-size: 11px; font-weight: 700; color: var(--text2); text-transform: uppercase; letter-spacing: .5px; }
+    .today-group { margin-top: 14px; }
+    .chips-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+    .case-chip {
+      display: flex; flex-direction: column; align-items: center; text-align: center;
+      min-width: 76px; padding: 10px 10px 8px; border-radius: 12px; cursor: pointer;
+      border: 2px solid var(--blue); background: rgba(0,122,255,.07); transition: all .15s;
+    }
+    .case-chip[data-type="powder"] { border-color: var(--purple); background: rgba(175,82,222,.07); }
+    .case-chip.picked { border-color: var(--gray); background: rgba(142,142,147,.08); opacity: .65; }
+    .case-chip .sname { font-size: 12px; font-weight: 700; color: var(--text); }
+    .case-chip .chip-sub { font-size: 10px; color: var(--text2); margin-top: 3px; }
+
+    .supp-grid { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+    .supp-item { display: flex; flex-direction: column; align-items: center;
+      background: rgba(175,82,222,.07); border: 1px solid rgba(175,82,222,.2);
+      border-radius: 8px; padding: 4px 10px; }
+    .supp-item .si-name { font-size: 11px; color: var(--text2); }
+    .supp-item .si-val  { font-size: 13px; font-weight: 700; }
 
     .batch-box {
       background: linear-gradient(135deg, #007AFF 0%, #5856D6 100%);
@@ -158,6 +181,54 @@
     .cp-val { color: var(--text1); }
     .cp-val strong { font-size: 15px; font-weight: 800; color: #CC4400; }
     .cp-ratio { color: var(--text3); font-size: 12px; }
+    .cp-jar { color: #a05800; font-size: 11px; font-weight: 700;
+      background: rgba(255,149,0,.12); border-radius: 6px; padding: 1px 6px; }
+
+    /* 員工配方個案提醒 */
+    .srx-alert {
+      margin-top: 12px; padding: 10px 12px;
+      background: rgba(255,204,0,.15); border: 1px solid rgba(255,149,0,.4);
+      border-radius: 10px; font-size: 13px;
+    }
+    .srx-icon { font-size: 15px; margin-right: 4px; }
+    .srx-label { font-weight: 700; color: #a05800; }
+    .srx-list { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 6px; }
+    .srx-item {
+      background: white; border: 1px solid rgba(255,149,0,.4);
+      border-radius: 8px; padding: 3px 10px; font-size: 13px; color: var(--text);
+    }
+
+    /* 個案姓名 + 備註 + 出單方式 */
+    .case-patient {
+      display: inline-block; font-size: 15px; font-weight: 800;
+      color: var(--blue); margin-right: 6px;
+    }
+    .case-notes {
+      font-size: 13px; color: var(--text1);
+      background: #fffbe6; border-left: 3px solid var(--orange);
+      border-radius: 0 8px 8px 0; padding: 6px 10px; margin: 6px 0;
+    }
+    .case-dtype {
+      display: inline-block; font-size: 11px; font-weight: 700;
+      background: var(--bg); border-radius: 6px; padding: 1px 6px;
+      color: var(--text2);
+    }
+
+    /* 出單方式選擇器（三選項） */
+    .pkg-selector { display: flex; gap: 8px; }
+    .pkg-opt { flex: 1; cursor: pointer; }
+    .pkg-opt input[type="radio"] { display: none; }
+    .pkg-card {
+      display: flex; flex-direction: column; align-items: center; gap: 3px;
+      padding: 10px 8px; border-radius: 12px; border: 2px solid var(--separator);
+      transition: border-color .15s, background .15s;
+    }
+    .pkg-opt input:checked + .pkg-card {
+      border-color: var(--blue); background: rgba(0,122,255,.08);
+    }
+    .pkg-icon { font-size: 22px; }
+    .pkg-name { font-size: 14px; font-weight: 700; }
+    .pkg-note { font-size: 11px; color: var(--text3); }
 
     /* 產品區塊 */
     .product-section { margin-bottom: 28px; }
@@ -245,16 +316,80 @@
       padding: 14px 0 6px; text-transform: uppercase; }
 
     /* ── 成本 ── */
+    .cost-subtabs {
+      display: flex; align-items: center; gap: 4px;
+      margin: 8px 0 16px; border-bottom: 1px solid var(--border); padding-bottom: 0;
+    }
+    .cost-tab {
+      padding: 8px 14px; font-size: 13px; font-weight: 600; background: none; border: none;
+      color: var(--text2); cursor: pointer; border-bottom: 2px solid transparent;
+      margin-bottom: -1px; transition: all .15s;
+    }
+    .cost-tab.active { color: var(--blue); border-bottom-color: var(--blue); }
+    .cost-settings-btn { margin-left: auto; }
+    .cost-section { display: none; }
+    .cost-section.active { display: block; }
+
+    .cost-grand-card {
+      background: linear-gradient(135deg, #1C1C1E 0%, #3A3A3C 100%);
+      border-radius: 16px; padding: 18px; color: #fff; margin-bottom: 14px;
+    }
+    .cost-grand-label { font-size: 12px; opacity: .7; margin-bottom: 4px; }
+    .cost-grand-num { font-size: 36px; font-weight: 800; line-height: 1; }
+    .cost-grand-sub { display: flex; gap: 16px; margin-top: 8px; font-size: 13px; opacity: .8; }
+
     .cost-card {
       background: var(--card); border-radius: 16px; padding: 16px; margin-bottom: 10px;
       box-shadow: 0 1px 4px rgba(0,0,0,.05);
     }
-    .cost-total { font-size: 28px; font-weight: 800; color: var(--blue); }
-    .cost-breakdown { margin-top: 12px; }
+    .cost-card-head { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 10px; }
+    .cost-card-name { font-size: 16px; font-weight: 700; }
+    .cost-card-cups { font-size: 12px; color: var(--text2); margin-top: 2px; }
+    .cost-card-total { font-size: 24px; font-weight: 800; color: var(--blue); }
+    .cost-card-per  { font-size: 12px; color: var(--text2); text-align: right; margin-top: 2px; }
+    .cost-breakdown { margin-top: 2px; }
     .cb-row { display: flex; justify-content: space-between; padding: 5px 0;
       border-bottom: 1px solid var(--border); font-size: 14px; }
     .cb-row:last-child { border-bottom: none; }
     .cb-zero { color: var(--text3); }
+
+    /* 月報 */
+    .cost-month-nav {
+      display: flex; align-items: center; justify-content: center; gap: 16px;
+      margin-bottom: 14px;
+    }
+    .cost-month-nav button {
+      background: none; border: 1px solid var(--border); border-radius: 8px;
+      padding: 6px 12px; font-size: 16px; cursor: pointer; color: var(--blue);
+    }
+    .cost-month-nav span { font-size: 16px; font-weight: 700; min-width: 90px; text-align: center; }
+    .cost-month-summary {
+      display: flex; gap: 10px; margin-bottom: 14px; overflow-x: auto;
+    }
+    .cms-card {
+      background: var(--card); border-radius: 12px; padding: 12px 16px;
+      min-width: 140px; box-shadow: 0 1px 4px rgba(0,0,0,.05); flex-shrink: 0;
+    }
+    .cms-name { font-size: 12px; font-weight: 700; color: var(--text2); margin-bottom: 4px; }
+    .cms-total { font-size: 20px; font-weight: 800; color: var(--blue); }
+    .cms-detail { font-size: 11px; color: var(--text3); margin-top: 2px; }
+    .cost-month-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .cost-month-table th {
+      text-align: left; padding: 8px 6px; font-size: 11px; font-weight: 700;
+      color: var(--text2); border-bottom: 2px solid var(--border);
+    }
+    .cost-month-table td {
+      padding: 8px 6px; border-bottom: 1px solid var(--border); color: var(--text2);
+    }
+    .cost-month-table tr:last-child td { border-bottom: none; }
+    .cost-month-table .col-date { color: var(--text); font-weight: 600; white-space: nowrap; }
+    .cost-month-table .col-total { font-weight: 700; color: var(--text); }
+    .cost-month-table .col-zero { color: var(--text3); }
+    .cost-month-table .row-total { background: var(--bg); }
+    .cost-month-table .row-total td { font-weight: 700; color: var(--text); border-top: 2px solid var(--border); }
+
+    /* 處方成本參考 */
+    .cost-total { font-size: 28px; font-weight: 800; color: var(--blue); }
 
     /* ── Modal ── */
     .modal-backdrop {
@@ -347,10 +482,15 @@
   <!-- 今日工作單 -->
   <div class="page active" id="page-today">
     <div class="section-head">
-      <h2>▌A  今日出席員工</h2>
-      <span id="staffCount" class="badge badge-blue">0人</span>
+      <h2>▌1 今日總出單</h2>
+      <div style="display:flex;gap:8px;align-items:center">
+        <span id="staffCount" class="badge badge-blue">0人</span>
+        <button class="btn btn-primary btn-sm" onclick="App.openAddCase()" style="font-size:15px;padding:6px 14px">＋ 新增出單</button>
+      </div>
     </div>
+    <div class="today-group-label" style="margin-bottom:6px">出席員工</div>
     <div class="staff-grid" id="staffGrid"></div>
+    <div id="caseChips"></div>
 
     <div id="productSections"></div>
   </div>
@@ -381,11 +521,32 @@
 
   <!-- 成本分析 -->
   <div class="page" id="page-cost">
-    <div class="section-head" style="margin-top:8px">
-      <h2>成本分析</h2>
-      <button class="btn btn-ghost btn-sm" onclick="App.openSettings()">⚙ 設定</button>
+    <div class="cost-subtabs" style="margin-top:8px">
+      <button class="cost-tab active" data-ctab="today"   onclick="App.switchCostTab('today')">今日成本</button>
+      <button class="cost-tab"        data-ctab="monthly" onclick="App.switchCostTab('monthly')">月報</button>
+      <button class="cost-tab"        data-ctab="rx"      onclick="App.switchCostTab('rx')">處方成本</button>
+      <button class="btn btn-ghost btn-sm cost-settings-btn" onclick="App.openSettings()">⚙</button>
     </div>
-    <div id="costList"></div>
+
+    <!-- 今日成本 -->
+    <div id="costSection-today" class="cost-section active">
+      <div id="costToday"></div>
+    </div>
+
+    <!-- 月報 -->
+    <div id="costSection-monthly" class="cost-section">
+      <div class="cost-month-nav">
+        <button onclick="App.prevCostMonth()">◀</button>
+        <span id="costMonthLabel"></span>
+        <button onclick="App.nextCostMonth()">▶</button>
+      </div>
+      <div id="costMonthly"></div>
+    </div>
+
+    <!-- 處方成本參考 -->
+    <div id="costSection-rx" class="cost-section">
+      <div id="costList"></div>
+    </div>
   </div>
 </div>
 
@@ -408,7 +569,12 @@
 <!-- 新增個案出單 -->
 <div class="modal-backdrop" id="modalAddCase">
   <div class="modal">
-    <div class="modal-title">新增個案出單</div>
+    <div class="modal-title" id="caseModalTitle">新增個案出單</div>
+    <input type="hidden" id="caseEditId">
+    <div class="form-group">
+      <label>個案姓名</label>
+      <input id="casePatientName" type="text" placeholder="可留空">
+    </div>
     <div class="form-group">
       <label>選擇處方</label>
       <select id="caseRxSel"></select>
@@ -416,6 +582,35 @@
     <div class="form-group">
       <label id="caseCupsLabel">份數</label>
       <input id="caseCups" type="number" value="1" min="1">
+    </div>
+    <div class="form-group">
+      <label>出單方式</label>
+      <div class="pkg-selector">
+        <label class="pkg-opt">
+          <input type="radio" name="casePowderType" value="袋裝" checked>
+          <span class="pkg-card">
+            <span class="pkg-icon">🛍</span>
+            <span class="pkg-name">袋裝</span>
+            <span class="pkg-note">帶走</span>
+          </span>
+        </label>
+        <label class="pkg-opt">
+          <input type="radio" name="casePowderType" value="罐裝">
+          <span class="pkg-card">
+            <span class="pkg-icon">🫙</span>
+            <span class="pkg-name">罐裝</span>
+            <span class="pkg-note">×1.1（防溢）</span>
+          </span>
+        </label>
+        <label class="pkg-opt">
+          <input type="radio" name="casePowderType" value="內用">
+          <span class="pkg-card">
+            <span class="pkg-icon">🍽</span>
+            <span class="pkg-name">內用</span>
+            <span class="pkg-note">現場飲用</span>
+          </span>
+        </label>
+      </div>
     </div>
     <div class="form-group">
       <label>取餐時間（4位數，如 1330）</label>
@@ -603,9 +798,12 @@
   <div class="modal">
     <div class="modal-title" id="editInvTitle">調整庫存</div>
     <input type="hidden" id="editInvId">
+    <input type="hidden" id="editInvCountUnit">
+    <input type="hidden" id="editInvCountRatio">
     <div class="form-group">
-      <label>目前庫存量</label>
-      <input id="editInvQty" type="number" min="0">
+      <label id="editInvQtyLabel">目前庫存量</label>
+      <input id="editInvQty" type="number" min="0" step="0.1">
+      <small id="editInvQtyHint" style="color:var(--text3);font-size:12px;margin-top:4px;display:none"></small>
     </div>
     <div class="modal-actions">
       <button class="btn btn-ghost" onclick="App.closeModal('modalEditInv')">取消</button>
