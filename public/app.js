@@ -235,8 +235,8 @@ const App = (() => {
         ${prepHtml}`;
     }
 
-    // ── RIGHT：AW 個案配比總量（只計全配方，粉配方有自己的卡片）─────
-    const awCases = prod.cases.filter(c => !c.is_staff_rx && c.formula_type === '全配方');
+    // ── RIGHT：AW 個案配比總量（只計選了 AW 配方的出單）─────────────
+    const awCases = prod.cases.filter(c => c.rx_name === 'AW');
     let rightHtml = '';
     if (awCases.length === 0) {
       rightHtml = `<div class="aw-empty">今日無全配方個案</div>`;
