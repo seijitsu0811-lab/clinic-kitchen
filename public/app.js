@@ -227,8 +227,10 @@ const App = (() => {
       _initBatchGroups(d);
     }
 
-    // 左側：批次分組
-    document.getElementById('staffGrid').innerHTML = _renderBatchGroups();
+    // 左側：批次分組（覆蓋 grid 排版為 block，避免 auto-fill 把批次擠進 80px 欄位）
+    const sg = document.getElementById('staffGrid');
+    sg.style.display = (staffBatchGroups && staffBatchGroups.length > 0) ? 'block' : '';
+    sg.innerHTML = _renderBatchGroups();
 
     // 個案 chips（外帶/內用分組）
     const allCases = d.products.flatMap(p => p.cases);

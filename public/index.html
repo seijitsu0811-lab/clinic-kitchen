@@ -150,8 +150,8 @@
     .prep-btag strong { color: var(--text1); }
 
     /* Left side: batch groups */
-    .batch-groups-wrap { display: flex; flex-direction: column; gap: 8px; }
-    .batch-grp { background: var(--card); border: 1.5px solid var(--border); border-radius: 12px; padding: 10px 12px; transition: opacity .2s; }
+    .batch-groups-wrap { display: flex; flex-direction: row; flex-wrap: wrap; gap: 10px; align-items: flex-start; }
+    .batch-grp { background: var(--card); border: 1.5px solid var(--border); border-radius: 12px; padding: 10px 12px; transition: opacity .2s; min-width: 140px; flex: 1; }
     .batch-grp-done { opacity: 0.55; }
     .batch-grp-head { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
     .batch-grp-label { font-size: 13px; font-weight: 700; }
