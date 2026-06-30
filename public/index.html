@@ -148,6 +148,33 @@
     .prep-btag-row { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
     .prep-btag { font-size: 11px; color: var(--text2); background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 2px 8px; }
     .prep-btag strong { color: var(--text1); }
+
+    /* Left side: batch groups */
+    .batch-groups-wrap { display: flex; flex-direction: column; gap: 8px; }
+    .batch-grp { background: var(--card); border: 1.5px solid var(--border); border-radius: 12px; padding: 10px 12px; transition: opacity .2s; }
+    .batch-grp-done { opacity: 0.55; }
+    .batch-grp-head { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
+    .batch-grp-label { font-size: 13px; font-weight: 700; }
+    .batch-grp-sz { font-size: 11px; color: var(--text3); background: var(--bg); border-radius: 6px; padding: 1px 7px; }
+    .batch-grp-done-tag { font-size: 11px; color: var(--green); font-weight: 600; }
+    .batch-grp-del { margin-left: auto; background: none; border: none; cursor: pointer; color: var(--text3); font-size: 18px; padding: 0 4px; line-height: 1; }
+    .batch-grp-del:hover { color: var(--red); }
+    .batch-grp-members { display: flex; flex-wrap: wrap; gap: 6px; min-height: 32px; }
+    .bmember-chip { background: var(--bg); border: 1.5px solid var(--border); border-radius: 20px; padding: 4px 14px; font-size: 13px; cursor: grab; user-select: none; transition: opacity .15s; }
+    .bmember-chip:active { cursor: grabbing; }
+    .bmember-chip.picked { opacity: 0.45; text-decoration: line-through; }
+    .bmember-chip.bmember-case { border-color: var(--orange); color: var(--orange); }
+    .batch-add-btn { background: none; border: 1.5px dashed var(--border); border-radius: 10px; padding: 6px 0; color: var(--text3); font-size: 13px; cursor: pointer; width: 100%; }
+    .batch-add-btn:hover { border-color: var(--blue); color: var(--blue); }
+
+    /* Right side: schedule drag & done */
+    .sch-draggable { cursor: grab; }
+    .sch-draggable:active { cursor: grabbing; }
+    .sch-drag-handle { color: var(--text3); font-size: 14px; padding-right: 6px; cursor: grab; flex-shrink: 0; }
+    .sch-drag-over { background: rgba(0,122,255,.08); border-radius: 8px; outline: 2px dashed var(--blue); }
+    .sch-done .sch-name { text-decoration: line-through; opacity: 0.5; }
+    .sch-done .sch-detail { opacity: 0.4; }
+    .sch-done-mark { color: var(--green); font-weight: 700; font-size: 14px; margin-left: auto; flex-shrink: 0; }
     .case-chip {
       display: flex; flex-direction: column; align-items: center; text-align: center;
       min-width: 76px; padding: 10px 10px 8px; border-radius: 12px; cursor: pointer;
@@ -558,7 +585,7 @@
     </div>
     <div class="today-split">
       <div class="today-left-col">
-        <div class="today-group-label" style="margin-bottom:6px">出席員工</div>
+        <div class="today-group-label" style="margin-bottom:6px">員工批次分配 <span style="font-weight:400;color:var(--text3);font-size:10px">（可拖曳換批次）</span></div>
         <div class="staff-grid" id="staffGrid"></div>
         <div id="caseChips"></div>
       </div>

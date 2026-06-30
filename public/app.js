@@ -10,6 +10,11 @@ const App = (() => {
   let lastTodayData = null;
   let staffPickedUp = new Set();
   let casePickedUp  = new Set();
+  let staffBatchGroups = null; // [{size, members:[{id,name,type,userId?,caseId?}]}]
+  let batchInitDate    = null; // prevent re-init within same day
+  let schCustomOrder   = null; // [key,...] null=auto time-sort
+  let schDragKey       = null;
+  let batchDragSrc     = null;
 
   // ── 初始化 ─────────────────────────────────────────────
   async function init() {
@@ -84,22 +89,149 @@ const App = (() => {
     document.getElementById('productSections').innerHTML = d.products.map(prod => renderProductSection(prod, d.attending_count)).join('');
   }
 
-  function renderTodaySection1(d) {
-    // 員工 chips
-    const staffHtml = d.staff.map(s => {
-      const picked = staffPickedUp.has(s.user_id);
-      const cls = picked ? 'picked' : (s.attending ? 'on' : 'off');
-      return `<div class="staff-chip ${cls}" onclick="App.handleStaffChipClick(${s.user_id},${s.attending})">
-        <div class="dot"></div>
-        <div class="sname">${esc(s.name)}</div>
-        ${picked ? '<div class="chip-sub">✓ 已拿取</div>' : ''}
-      </div>`;
-    }).join('');
-    document.getElementById('staffGrid').innerHTML = staffHtml;
+  // ── 批次初始化（每日首次或資料重載時執行）────────────────────────
+  function _initBatchGroups(d) {
+    const prod = d.products && d.products[0];
+    if (!prod || d.attending_count === 0) { staffBatchGroups = []; return; }
+    const members = [];
+    (d.staff || []).filter(s => s.attending).forEach(s =>
+      members.push({ id: `s_${s.user_id}`, name: s.name, type: 'staff', userId: s.user_id })
+    );
+    (prod.staff_rx_cases || []).forEach(c =>
+      members.push({ id: `c_${c.id}`, name: c.patient_name || '個案', type: 'case', caseId: c.id })
+    );
+    const batches = prod.batches || [];
+    staffBatchGroups = [];
+    let mi = 0;
+    batches.forEach(b => {
+      for (let i = 0; i < b.count; i++) {
+        const bm = [];
+        for (let j = 0; j < b.size && mi < members.length; j++, mi++) bm.push(members[mi]);
+        staffBatchGroups.push({ size: b.size, members: bm });
+      }
+    });
+    if (mi < members.length) staffBatchGroups.push({ size: members.length - mi, members: members.slice(mi) });
+  }
 
-    // 個案 chips
+  // ── 渲染左側批次分組 ──────────────────────────────────────────
+  function _renderBatchGroups() {
+    if (!staffBatchGroups || staffBatchGroups.length === 0) return '';
+    let html = '<div class="batch-groups-wrap">';
+    staffBatchGroups.forEach((batch, bi) => {
+      const allDone = batch.members.length > 0 && batch.members.every(m =>
+        m.type === 'staff' ? staffPickedUp.has(m.userId) : casePickedUp.has(m.caseId)
+      );
+      html += `<div class="batch-grp${allDone ? ' batch-grp-done' : ''}"
+                    ondragover="event.preventDefault()" ondrop="App.batchDrop(event,${bi})">
+        <div class="batch-grp-head">
+          <span class="batch-grp-label">批次 ${bi + 1}</span>
+          <span class="batch-grp-sz">${batch.size}杯</span>
+          ${allDone ? '<span class="batch-grp-done-tag">✓ 完成</span>' : ''}
+          <button class="batch-grp-del" onclick="App.removeBatch(${bi})">×</button>
+        </div>
+        <div class="batch-grp-members">
+          ${batch.members.map(m => {
+            const picked = m.type === 'staff' ? staffPickedUp.has(m.userId) : casePickedUp.has(m.caseId);
+            const onclick = m.type === 'staff'
+              ? `App.handleStaffChipClick(${m.userId},1)`
+              : `App.toggleCasePickup(${m.caseId})`;
+            return `<div class="bmember-chip${picked ? ' picked' : ''}${m.type === 'case' ? ' bmember-case' : ''}"
+                         draggable="true"
+                         ondragstart="App.batchDragStart(event,${bi},'${m.id}')"
+                         onclick="${onclick}">
+              ${esc(m.name)}${picked ? ' ✓' : ''}
+            </div>`;
+          }).join('')}
+        </div>
+      </div>`;
+    });
+    html += `<button class="batch-add-btn" onclick="App.addBatch()">＋ 新增批次</button>`;
+    html += '</div>';
+    return html;
+  }
+
+  // ── 渲染右側出餐順序 ──────────────────────────────────────────
+  function _renderSchedule(d) {
+    const prod = d.products && d.products[0];
     const allCases = d.products.flatMap(p => p.cases);
-    // 全配方外帶（包含全配方delivery）獨立群組，其餘全配方放現打精力湯
+    const items = [];
+
+    // 員工批次
+    if (staffBatchGroups && staffBatchGroups.length > 0) {
+      staffBatchGroups.forEach((batch, bi) => {
+        const allDone = batch.members.length > 0 && batch.members.every(m =>
+          m.type === 'staff' ? staffPickedUp.has(m.userId) : casePickedUp.has(m.caseId)
+        );
+        items.push({
+          key: `batch_${bi}`,
+          sk: `1130_0_${String(bi).padStart(2,'0')}`,
+          timeLabel: '11:30', type: 'staff',
+          name: `🫙 批次 ${bi + 1}（${batch.size}杯）`,
+          detail: batch.members.map(m => m.name).join('、') || '（空）',
+          done: allDone
+        });
+      });
+    } else if ((prod?.total_staff_cups || 0) > 0) {
+      items.push({ key: 'staff_all', sk: '1130_0', timeLabel: '11:30', type: 'staff',
+        name: '👥 員工出餐', detail: `${d.attending_count}人 · 共 ${prod.total_staff_cups} 杯`, done: false });
+    }
+
+    // 個案（跳過已在批次裡的 is_staff_rx）
+    allCases.filter(c => !c.is_staff_rx).forEach(c => {
+      const mt = c.meal_time || '0000';
+      const tFmt = mt.length === 4 ? `${mt.slice(0,2)}:${mt.slice(2)}` : mt;
+      const who = c.patient_name || c.rx_name || '';
+      let icon, detail;
+      if (c.formula_type === '粉配方')  { icon = '🧪'; detail = `粉配方 ${c.cups}天 ${c.powder_type||'袋裝'}`; }
+      else if (c.powder_type === '全配方') { icon = '📦'; detail = `全配方外帶 ${c.cups}天`; }
+      else                                 { icon = '🥤'; detail = `${c.rx_name} ${c.cups}杯`; }
+      items.push({ key: `case_${c.id}`, sk: `${mt}_1`, timeLabel: tFmt, type: 'case',
+        name: `${icon} ${who}`, detail, done: casePickedUp.has(c.id) });
+    });
+
+    // 套用手動順序或依時間排序
+    let ordered;
+    if (schCustomOrder) {
+      const km = {}; items.forEach(it => { km[it.key] = it; });
+      ordered = schCustomOrder.map(k => km[k]).filter(Boolean);
+      items.filter(it => !schCustomOrder.includes(it.key)).forEach(it => ordered.push(it));
+    } else {
+      ordered = [...items].sort((a, b) => a.sk.localeCompare(b.sk));
+    }
+
+    if (ordered.length === 0) return '<div class="sch-empty">今日無出單</div>';
+    const rows = ordered.map(it => `
+      <div class="sch-item sch-draggable${it.type==='staff'?' sch-staff':''}${it.done?' sch-done':''}"
+           draggable="true" data-key="${it.key}"
+           ondragstart="App.schDragStart(event,'${it.key}')"
+           ondragover="App.schDragOver(event)"
+           ondrop="App.schDrop(event,'${it.key}')">
+        <div class="sch-drag-handle">⠿</div>
+        <div class="sch-time">${it.timeLabel}</div>
+        <div class="sch-body">
+          <div class="sch-name">${esc(it.name)}</div>
+          <div class="sch-detail">${esc(it.detail)}</div>
+        </div>
+        ${it.done ? '<div class="sch-done-mark">✓</div>' : ''}
+      </div>`).join('');
+    return `<div class="schedule-title">📋 今日出餐順序</div><div id="schList">${rows}</div>`;
+  }
+
+  function renderTodaySection1(d) {
+    const prod = d.products && d.products[0];
+
+    // 初始化批次（日期改變才重設）
+    if (staffBatchGroups === null || batchInitDate !== d.date) {
+      batchInitDate = d.date;
+      schCustomOrder = null;
+      _initBatchGroups(d);
+    }
+
+    // 左側：批次分組
+    document.getElementById('staffGrid').innerHTML = _renderBatchGroups();
+
+    // 個案 chips（外帶/內用分組）
+    const allCases = d.products.flatMap(p => p.cases);
     const fullPackageCases = allCases.filter(c => c.powder_type === '全配方');
     const freshCases  = allCases.filter(c => c.formula_type === '全配方' && c.powder_type !== '全配方');
     const powderCases = allCases.filter(c => c.formula_type === '粉配方');
@@ -119,59 +251,20 @@ const App = (() => {
         <div class="chip-sub">${isInuse ? '🍽 內用' : ''}${sub}</div>
       </div>`;
     }
-
-    // 各組再依內用/外帶排序：外帶在前，內用在後
     function chipGroup(cases, type, label) {
       if (cases.length === 0) return '';
-      const takeout = cases.filter(c => c.powder_type !== '內用');
-      const inuse   = cases.filter(c => c.powder_type === '內用');
-      const chips = [...takeout, ...inuse].map(c => caseChip(c, type)).join('');
-      return `<div class="today-group">
-        <div class="today-group-label">${label}</div>
-        <div class="chips-row">${chips}</div>
-      </div>`;
+      const chips = [...cases.filter(c=>c.powder_type!=='內用'), ...cases.filter(c=>c.powder_type==='內用')]
+        .map(c => caseChip(c, type)).join('');
+      return `<div class="today-group"><div class="today-group-label">${label}</div><div class="chips-row">${chips}</div></div>`;
     }
-
     let groupsHtml = '';
     groupsHtml += chipGroup(fullPackageCases, 'full',   '📦 全配方外帶');
     groupsHtml += chipGroup(freshCases,       'fresh',  '現打精力湯');
     groupsHtml += chipGroup(powderCases,      'powder', '粉配方');
     document.getElementById('caseChips').innerHTML = groupsHtml;
 
-    // ── 今日出餐順序（右欄）──────────────────────────────────────
-    const schedItems = [];
-    d.products.forEach(prod => {
-      if ((prod.total_staff_cups || 0) > 0) {
-        schedItems.push({
-          sortKey: '1130_0', timeLabel: '11:30', type: 'staff',
-          name: '👥 員工出餐',
-          detail: `${d.attending_count}人 · 共 ${prod.total_staff_cups} 杯`
-        });
-      }
-      (prod.cases || []).forEach(c => {
-        const mt = c.meal_time || '0000';
-        const tFmt = mt.length === 4 ? `${mt.slice(0,2)}:${mt.slice(2)}` : mt;
-        const who = c.patient_name || c.rx_name || '';
-        let icon, detail;
-        if (c.is_staff_rx)                { icon = '🥗'; detail = `員工配方 ${c.cups}杯`; }
-        else if (c.formula_type==='粉配方'){ icon = '🧪'; detail = `粉配方 ${c.cups}天 ${c.powder_type||'袋裝'}`; }
-        else if (c.powder_type==='全配方') { icon = '📦'; detail = `全配方外帶 ${c.cups}天`; }
-        else                               { icon = '🥤'; detail = `${c.rx_name} ${c.cups}杯`; }
-        schedItems.push({ sortKey: `${mt}_1`, timeLabel: tFmt, type: 'case', name: `${icon} ${who}`, detail });
-      });
-    });
-    schedItems.sort((a, b) => a.sortKey.localeCompare(b.sortKey));
-    const schRows = schedItems.map(item => `
-      <div class="sch-item${item.type==='staff' ? ' sch-staff' : ''}">
-        <div class="sch-time">${item.timeLabel}</div>
-        <div class="sch-body">
-          <div class="sch-name">${esc(item.name)}</div>
-          <div class="sch-detail">${esc(item.detail)}</div>
-        </div>
-      </div>`).join('');
-    document.getElementById('todaySchedule').innerHTML = schedItems.length
-      ? `<div class="schedule-title">📋 今日出餐順序</div>${schRows}`
-      : '<div class="sch-empty">今日無出單</div>';
+    // 右側：出餐順序
+    document.getElementById('todaySchedule').innerHTML = _renderSchedule(d);
   }
 
   function handleStaffChipClick(userId, isAttending) {
@@ -189,6 +282,74 @@ const App = (() => {
   function toggleCasePickup(caseId) {
     if (casePickedUp.has(caseId)) casePickedUp.delete(caseId);
     else casePickedUp.add(caseId);
+    if (lastTodayData) renderTodaySection1(lastTodayData);
+  }
+
+  // ── 批次拖曳（左側員工重新分批）────────────────────────────────
+  function batchDragStart(event, fromBatch, memberId) {
+    batchDragSrc = { fromBatch: +fromBatch, memberId };
+    event.dataTransfer.effectAllowed = 'move';
+  }
+  function batchDrop(event, toBatch) {
+    event.preventDefault();
+    if (!batchDragSrc) return;
+    const { fromBatch, memberId } = batchDragSrc;
+    toBatch = +toBatch;
+    batchDragSrc = null;
+    if (fromBatch === toBatch) return;
+    const from = staffBatchGroups[fromBatch];
+    const to   = staffBatchGroups[toBatch];
+    if (!from || !to) return;
+    const idx = from.members.findIndex(m => m.id === memberId);
+    if (idx === -1) return;
+    const [member] = from.members.splice(idx, 1);
+    from.size = from.members.length;
+    to.members.push(member);
+    to.size = to.members.length;
+    if (lastTodayData) renderTodaySection1(lastTodayData);
+  }
+  function addBatch() {
+    if (!staffBatchGroups) staffBatchGroups = [];
+    staffBatchGroups.push({ size: 0, members: [] });
+    if (lastTodayData) renderTodaySection1(lastTodayData);
+  }
+  function removeBatch(batchIdx) {
+    if (!staffBatchGroups) return;
+    const batch = staffBatchGroups[batchIdx];
+    if (!batch) return;
+    if (batch.members.length > 0) {
+      const targetIdx = batchIdx === 0 ? (staffBatchGroups.length > 1 ? 1 : -1) : 0;
+      if (targetIdx >= 0) staffBatchGroups[targetIdx].members.push(...batch.members);
+    }
+    staffBatchGroups.splice(batchIdx, 1);
+    if (lastTodayData) renderTodaySection1(lastTodayData);
+  }
+
+  // ── 出餐順序拖曳（右側上下排序）────────────────────────────────
+  function schDragStart(event, key) {
+    schDragKey = key;
+    event.dataTransfer.effectAllowed = 'move';
+  }
+  function schDragOver(event) {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+    const el = event.currentTarget;
+    if (el) el.classList.add('sch-drag-over');
+  }
+  function schDrop(event, targetKey) {
+    event.preventDefault();
+    document.querySelectorAll('.sch-drag-over').forEach(el => el.classList.remove('sch-drag-over'));
+    if (!schDragKey || schDragKey === targetKey) { schDragKey = null; return; }
+    const schList = document.getElementById('schList');
+    if (!schList) { schDragKey = null; return; }
+    const currentKeys = [...schList.querySelectorAll('[data-key]')].map(el => el.dataset.key);
+    if (!schCustomOrder) schCustomOrder = [...currentKeys];
+    const fi = schCustomOrder.indexOf(schDragKey);
+    const ti = schCustomOrder.indexOf(targetKey);
+    if (fi === -1 || ti === -1) { schDragKey = null; return; }
+    schCustomOrder.splice(fi, 1);
+    schCustomOrder.splice(ti, 0, schDragKey);
+    schDragKey = null;
     if (lastTodayData) renderTodaySection1(lastTodayData);
   }
 
@@ -1265,6 +1426,8 @@ const App = (() => {
   return {
     selectUser, logout, switchTab,
     toggleAttendance, handleStaffChipClick, toggleCasePickup,
+    batchDragStart, batchDrop, addBatch, removeBatch,
+    schDragStart, schDragOver, schDrop,
     deleteCase, openAddCase, openEditCase, addCase,
     loadRx, openAddRx, openEditRx, saveRx,
     openEditRxIngredients, saveRxIngredients,
