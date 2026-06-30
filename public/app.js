@@ -74,6 +74,7 @@ const App = (() => {
   async function loadToday() {
     const d = await api('/api/today');
     lastTodayData = d;
+    checkInvWarning();
 
     document.getElementById('staffCount').textContent = `${d.attending_count}人`;
     renderTodaySection1(d);
@@ -610,6 +611,8 @@ const App = (() => {
     }
     closeModal('modalAddCase');
     loadToday();
+    // 儲存後重跑庫存檢查，更新警示 badge
+    checkInvWarning();
   }
 
   // ── 處方管理 ────────────────────────────────────────────
@@ -832,7 +835,17 @@ const App = (() => {
 
   // ── 庫存管理 ────────────────────────────────────────────
   async function loadInventory() {
-    const items = await api('/api/inventory');
+    const [items, checkRes] = await Promise.all([
+      api('/api/inventory'),
+      api('/api/inventory/check')
+    ]);
+    // Build shortage map by ingredient_id
+    const shortageMap = {};
+    (checkRes.check || []).forEach(c => { shortageMap[c.ingredient_id] = c; });
+
+    // Update global warning badge
+    updateInvWarningBadge(checkRes.insufficient_count || 0);
+
     const cats = ['蔬菜','水果','粉類','保健品','油','水','其他'];
     let html = '';
     cats.forEach(cat => {
@@ -842,13 +855,21 @@ const App = (() => {
       html += `<div class="cat-header">${cat}</div>`;
       html += '<div class="card" style="padding:0 16px">';
       catItems.forEach(i => {
-        const pct = i.safety_stock > 0 ? i.qty / i.safety_stock : null;
+        const chk = shortageMap[i.id];
         let statusBadge = '';
-        if (pct !== null) {
-          if (pct >= 1) statusBadge = '<span class="badge badge-green">✅ 充足</span>';
-          else if (pct >= 0.5) statusBadge = '<span class="badge badge-orange">⚠ 偏低</span>';
-          else statusBadge = '<span class="badge badge-red">🚨 不足</span>';
+        if (chk) {
+          if (!chk.sufficient) {
+            const short = Math.round((chk.needed - chk.stock) * 10) / 10;
+            statusBadge = `<span class="badge badge-red inv-shortage-badge">🔴 缺 ${short}${i.unit}</span>`;
+          } else {
+            const pct = chk.needed > 0 ? chk.stock / chk.needed : null;
+            if (pct !== null && pct < 1.3) statusBadge = '<span class="badge badge-orange">⚠ 偏低</span>';
+            else if (chk.needed > 0) statusBadge = '<span class="badge badge-green">✅ 充足</span>';
+          }
         }
+        const needInfo = chk && chk.needed > 0
+          ? `<div class="inv-need-row">7天需求 ${chk.needed}${i.unit}，剩餘 <strong style="color:${chk.sufficient?'var(--green)':'var(--red)'}">${chk.remaining}${i.unit}</strong></div>`
+          : '';
         // 顆換算：有 count_unit 的食材（蘋果、帶皮檸檬）
         const hasCount = i.count_unit && i.count_ratio > 1;
         const countQty = hasCount ? Math.round(i.qty / i.count_ratio * 10) / 10 : null;
@@ -856,11 +877,12 @@ const App = (() => {
           ? `${countQty}<span class="inv-unit"> ${i.count_unit}</span><span style="font-size:11px;color:var(--text3)">（${i.qty}${i.unit}）</span>`
           : `${i.qty}<span class="inv-unit"> ${i.unit}</span>`;
         html += `
-          <div class="inv-row">
+          <div class="inv-row${chk && !chk.sufficient ? ' inv-row-shortage' : ''}">
             <div style="flex:1">
               <div class="inv-name">${esc(i.name)} ${statusBadge}</div>
               ${i.safety_stock > 0 ? `<div class="inv-unit">安全量 ${i.safety_stock}${i.unit}</div>` : ''}
               ${hasCount ? `<div class="inv-unit">1${i.count_unit} = ${i.count_ratio}${i.unit}</div>` : ''}
+              ${needInfo}
             </div>
             <div class="inv-qty">${qtyDisplay}</div>
             <div class="inv-edit" onclick="App.openEditInv(${i.id},'${esc(i.name)}',${i.qty},'${i.unit}','${i.count_unit||''}',${i.count_ratio||1})">✏️</div>
@@ -869,6 +891,24 @@ const App = (() => {
       html += '</div>';
     });
     document.getElementById('invList').innerHTML = html || '<div class="empty">尚無食材資料</div>';
+  }
+
+  function updateInvWarningBadge(count) {
+    let badge = document.getElementById('invWarningBadge');
+    if (!badge) return;
+    if (count > 0) {
+      badge.textContent = `🔴 ${count} 項缺貨`;
+      badge.style.display = 'inline-block';
+    } else {
+      badge.style.display = 'none';
+    }
+  }
+
+  async function checkInvWarning() {
+    try {
+      const r = await api('/api/inventory/check');
+      updateInvWarningBadge(r.insufficient_count || 0);
+    } catch(e) {}
   }
 
   function openEditInv(id, name, qty, unit, countUnit, countRatio) {

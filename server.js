@@ -586,6 +586,70 @@ app.post('/api/inventory/purchase', (req, res) => {
   res.json({ ok: true });
 });
 
+// 庫存充足性檢查：固定週期 + 未來 7 天預約出單 vs 現有庫存
+app.get('/api/inventory/check', (req, res) => {
+  const t = today();
+  const endDate = new Date(t);
+  endDate.setDate(endDate.getDate() + 7);
+  const end = endDate.toISOString().slice(0, 10);
+
+  // 現有庫存
+  const stock = {};
+  db.prepare('SELECT ingredient_id, qty FROM inventory').all()
+    .forEach(r => { stock[r.ingredient_id] = r.qty; });
+
+  // 累計配方需求
+  const needs = {};
+  function addRxNeeds(rxId, cups, powderMult) {
+    powderMult = powderMult || 1.0;
+    db.prepare(
+      `SELECT pi.ingredient_id, pi.qty_per_cup, i.category
+       FROM prescription_ingredients pi JOIN ingredients i ON i.id=pi.ingredient_id
+       WHERE pi.prescription_id=? AND pi.qty_per_cup>0`
+    ).all(rxId).forEach(r => {
+      const freshCats = new Set(['蔬菜','水果','油水','油','水','其他']);
+      const mult = freshCats.has(r.category) ? 1.0 : powderMult;
+      needs[r.ingredient_id] = (needs[r.ingredient_id] || 0) + r.qty_per_cup * cups * mult;
+    });
+  }
+
+  // 1. AW 固定每週 7 杯
+  const awRx = db.prepare("SELECT id FROM prescriptions WHERE name='AW' LIMIT 1").get();
+  if (awRx) addRxNeeds(awRx.id, 7);
+
+  // 2. 員工固定週二四五 9人 × 3天 = 27 杯
+  const empRx = db.prepare("SELECT id FROM prescriptions WHERE is_staff_rx=1 LIMIT 1").get();
+  if (empRx) addRxNeeds(empRx.id, 27);
+
+  // 3. 未來 7 天已排的個案出單
+  db.prepare(
+    `SELECT co.prescription_id, co.cups, co.powder_type
+     FROM case_orders co WHERE co.date > ? AND co.date <= ?`
+  ).all(t, end).forEach(c => {
+    const pm = (c.powder_type === '罐裝' || c.powder_type === '全配方') ? 1.1 : 1.0;
+    addRxNeeds(c.prescription_id, c.cups, pm);
+  });
+
+  // 整合結果
+  const ingMap = {};
+  db.prepare('SELECT id, name, unit, category FROM ingredients WHERE active=1').all()
+    .forEach(i => { ingMap[i.id] = i; });
+
+  const check = Object.keys({ ...stock, ...needs })
+    .filter(id => ingMap[id])
+    .map(id => {
+      const ing  = ingMap[id];
+      const s    = Math.round((stock[id] || 0) * 10) / 10;
+      const n    = Math.round((needs[id] || 0) * 10) / 10;
+      const diff = Math.round((s - n) * 10) / 10;
+      return { ingredient_id: +id, name: ing.name, unit: ing.unit, category: ing.category,
+               stock: s, needed: n, remaining: diff, sufficient: s >= n };
+    })
+    .sort((a, b) => a.remaining - b.remaining);
+
+  res.json({ check, insufficient_count: check.filter(r => !r.sufficient).length });
+});
+
 // ════════════════════════════════════════════════════════
 // API: 成本
 // ════════════════════════════════════════════════════════
