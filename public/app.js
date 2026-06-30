@@ -98,7 +98,9 @@ const App = (() => {
 
     // 個案 chips
     const allCases = d.products.flatMap(p => p.cases);
-    const freshCases  = allCases.filter(c => c.formula_type === '全配方');
+    // 全配方外帶（包含全配方delivery）獨立群組，其餘全配方放現打精力湯
+    const fullPackageCases = allCases.filter(c => c.powder_type === '全配方');
+    const freshCases  = allCases.filter(c => c.formula_type === '全配方' && c.powder_type !== '全配方');
     const powderCases = allCases.filter(c => c.formula_type === '粉配方');
 
     function caseChip(c, type) {
@@ -109,7 +111,7 @@ const App = (() => {
         ? `${c.meal_time.slice(0,2)}:${c.meal_time.slice(2)}` : (c.meal_time || '');
       const sub = type === 'fresh'
         ? `${esc(c.rx_name)}${mt ? ' · ' + mt : ''}`
-        : `${c.cups}天 ${esc(c.powder_type || '袋裝')}`;
+        : `${c.cups}天 ${esc(c.powder_type || '袋裝')}${mt ? ' · ' + mt : ''}`;
       return `<div class="case-chip ${picked ? 'picked' : ''}" data-type="${type}" data-inuse="${isInuse?1:0}"
                    onclick="App.toggleCasePickup(${c.id})">
         <div class="sname">${esc(name)}</div>
@@ -130,8 +132,9 @@ const App = (() => {
     }
 
     let groupsHtml = '';
-    groupsHtml += chipGroup(freshCases,  'fresh',  '現打精力湯');
-    groupsHtml += chipGroup(powderCases, 'powder', '粉配方');
+    groupsHtml += chipGroup(fullPackageCases, 'full',   '📦 全配方外帶');
+    groupsHtml += chipGroup(freshCases,       'fresh',  '現打精力湯');
+    groupsHtml += chipGroup(powderCases,      'powder', '粉配方');
     document.getElementById('caseChips').innerHTML = groupsHtml;
   }
 
