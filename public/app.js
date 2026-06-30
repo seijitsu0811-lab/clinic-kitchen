@@ -235,43 +235,46 @@ const App = (() => {
         ${prepHtml}`;
     }
 
-    // ── RIGHT：AW 個案配比總量 ─────────────────────────────
-    const awCases = prod.cases.filter(c => !c.is_staff_rx);
+    // ── RIGHT：AW 個案配比總量（只計全配方，粉配方有自己的卡片）─────
+    const awCases = prod.cases.filter(c => !c.is_staff_rx && c.formula_type === '全配方');
     let rightHtml = '';
     if (awCases.length === 0) {
-      rightHtml = `<div class="aw-empty">今日無個案配料需求</div>`;
+      rightHtml = `<div class="aw-empty">今日無全配方個案</div>`;
     } else {
       const awTotalCups = awCases.reduce((s, c) => s + c.cups, 0);
-      const ingMap = {};
-      const catOf = {};
+      const ingMap  = {};   // name → total
+      const perMap  = {};   // name → per-cup
+      const catOf   = {};
+      const unitOf  = {};
       const catOrder = ['蔬菜','水果','粉類','保健品','油','水','其他'];
+
       awCases.forEach(c => {
         (c.prep || []).forEach(p => {
-          if (!ingMap[p.name]) { ingMap[p.name] = 0; catOf[p.name] = p.category || '其他'; }
+          if (!ingMap[p.name]) { ingMap[p.name] = 0; catOf[p.name] = p.category || '其他'; unitOf[p.name] = p.unit; }
           ingMap[p.name] = Math.round((ingMap[p.name] + p.total) * 10) / 10;
         });
         (c.powder?.items || []).forEach(p => {
-          const t = Math.round(p.qty * c.cups * 10) / 10;
-          if (!ingMap[p.name]) { ingMap[p.name] = 0; catOf[p.name] = '粉類'; }
+          const pm = c.powder.powder_multiplier || 1;
+          const t = Math.round(p.qty * c.cups * pm * 10) / 10;
+          if (!ingMap[p.name]) { ingMap[p.name] = 0; catOf[p.name] = '粉類'; unitOf[p.name] = p.unit; }
           ingMap[p.name] = Math.round((ingMap[p.name] + t) * 10) / 10;
         });
         (c.supplements || []).forEach(s => {
-          if (!ingMap[s.name]) { ingMap[s.name] = 0; catOf[s.name] = '保健品'; }
+          if (!ingMap[s.name]) { ingMap[s.name] = 0; catOf[s.name] = '保健品'; unitOf[s.name] = s.unit; }
           ingMap[s.name] = Math.round((ingMap[s.name] + s.total) * 10) / 10;
         });
       });
-      // get unit per ingredient from cases data
-      const unitOf = {};
-      awCases.forEach(c => {
-        [...(c.prep||[]), ...(c.supplements||[])].forEach(p => { unitOf[p.name] = p.unit; });
-        (c.powder?.items||[]).forEach(p => { unitOf[p.name] = p.unit; });
+
+      // 每杯量 = 總量 ÷ 總杯數
+      Object.keys(ingMap).forEach(name => {
+        perMap[name] = Math.round(ingMap[name] / awTotalCups * 10) / 10;
       });
 
       const grouped = {};
       Object.keys(ingMap).forEach(name => {
         const cat = catOf[name] || '其他';
         if (!grouped[cat]) grouped[cat] = [];
-        grouped[cat].push({ name, total: ingMap[name], unit: unitOf[name] || 'g' });
+        grouped[cat].push({ name, total: ingMap[name], per: perMap[name], unit: unitOf[name] || 'g' });
       });
 
       let rows = '';
@@ -280,8 +283,11 @@ const App = (() => {
         if (!items || items.length === 0) return;
         rows += `<div class="aw-cat">${cat}</div>`;
         items.forEach(item => {
-          rows += `<div class="row"><span class="row-label">${esc(item.name)}</span>
-            <span class="row-value" style="font-weight:700">${item.total}<span style="font-size:12px;color:var(--text3)">${item.unit}</span></span></div>`;
+          rows += `<div class="row">
+            <span class="row-label">${esc(item.name)}</span>
+            <span class="row-value" style="font-weight:700">${item.total}<span style="font-size:12px;color:var(--text3)">${item.unit}</span>
+              <span style="font-size:11px;color:var(--text3);font-weight:400;margin-left:4px">（${item.per}${item.unit}/杯）</span>
+            </span></div>`;
         });
       });
       rightHtml = `
