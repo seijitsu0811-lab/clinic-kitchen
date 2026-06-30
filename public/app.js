@@ -136,6 +136,41 @@ const App = (() => {
     groupsHtml += chipGroup(freshCases,       'fresh',  '現打精力湯');
     groupsHtml += chipGroup(powderCases,      'powder', '粉配方');
     document.getElementById('caseChips').innerHTML = groupsHtml;
+
+    // ── 今日出餐順序（右欄）──────────────────────────────────────
+    const schedItems = [];
+    d.products.forEach(prod => {
+      if ((prod.total_staff_cups || 0) > 0) {
+        schedItems.push({
+          sortKey: '1130_0', timeLabel: '11:30', type: 'staff',
+          name: '👥 員工出餐',
+          detail: `${d.attending_count}人 · 共 ${prod.total_staff_cups} 杯`
+        });
+      }
+      (prod.cases || []).forEach(c => {
+        const mt = c.meal_time || '0000';
+        const tFmt = mt.length === 4 ? `${mt.slice(0,2)}:${mt.slice(2)}` : mt;
+        const who = c.patient_name || c.rx_name || '';
+        let icon, detail;
+        if (c.is_staff_rx)                { icon = '🥗'; detail = `員工配方 ${c.cups}杯`; }
+        else if (c.formula_type==='粉配方'){ icon = '🧪'; detail = `粉配方 ${c.cups}天 ${c.powder_type||'袋裝'}`; }
+        else if (c.powder_type==='全配方') { icon = '📦'; detail = `全配方外帶 ${c.cups}天`; }
+        else                               { icon = '🥤'; detail = `${c.rx_name} ${c.cups}杯`; }
+        schedItems.push({ sortKey: `${mt}_1`, timeLabel: tFmt, type: 'case', name: `${icon} ${who}`, detail });
+      });
+    });
+    schedItems.sort((a, b) => a.sortKey.localeCompare(b.sortKey));
+    const schRows = schedItems.map(item => `
+      <div class="sch-item${item.type==='staff' ? ' sch-staff' : ''}">
+        <div class="sch-time">${item.timeLabel}</div>
+        <div class="sch-body">
+          <div class="sch-name">${esc(item.name)}</div>
+          <div class="sch-detail">${esc(item.detail)}</div>
+        </div>
+      </div>`).join('');
+    document.getElementById('todaySchedule').innerHTML = schedItems.length
+      ? `<div class="schedule-title">📋 今日出餐順序</div>${schRows}`
+      : '<div class="sch-empty">今日無出單</div>';
   }
 
   function handleStaffChipClick(userId, isAttending) {
@@ -191,13 +226,22 @@ const App = (() => {
         prepHtml = `
           <div class="card">
             <div class="card-title">${esc(prod.staff_rx.code)} 鮮食備料（共 ${prod.total_staff_cups} ${unit}）</div>
-            ${prod.staff_prep.map(p => `
+            ${prod.staff_prep.map(p => {
+              const batchRow = batches.length > 0
+                ? `<div class="prep-btag-row">${batches.map(b => {
+                    const pb = Math.round(b.size * p.per_serving * 10) / 10;
+                    return `<span class="prep-btag">${b.size}${unit}批 <strong>${pb}${p.unit}</strong></span>`;
+                  }).join('')}</div>`
+                : '';
+              return `
               <div class="row">
                 <span class="row-label">${esc(p.name)}</span>
                 <span class="row-value" style="font-weight:700">${p.total}${p.unit}
                   <span style="font-size:12px;color:var(--text3)">（${p.per_serving}${p.unit}/${unit}）</span>
+                  ${batchRow}
                 </span>
-              </div>`).join('')}
+              </div>`;
+            }).join('')}
           </div>`;
       }
       const sxc = prod.staff_rx_cases || [];

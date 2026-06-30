@@ -128,6 +128,26 @@
     .today-group-label { font-size: 11px; font-weight: 700; color: var(--text2); text-transform: uppercase; letter-spacing: .5px; }
     .today-group { margin-top: 14px; }
     .chips-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+
+    /* Section 1 two-column layout */
+    .today-split { display: flex; gap: 16px; align-items: flex-start; }
+    .today-left-col { flex: 1; min-width: 0; }
+    .today-right-col { width: 240px; flex-shrink: 0; }
+
+    /* Today's schedule panel */
+    .schedule-title { font-size: 13px; font-weight: 700; color: var(--text2); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 8px; }
+    .sch-item { display: flex; gap: 10px; align-items: flex-start; padding: 8px 0; border-bottom: 1px solid var(--border); }
+    .sch-item:last-child { border-bottom: none; }
+    .sch-time { font-size: 13px; font-weight: 700; color: var(--blue); min-width: 38px; padding-top: 1px; }
+    .sch-staff .sch-time { color: var(--orange); }
+    .sch-name { font-size: 14px; font-weight: 600; color: var(--text1); }
+    .sch-detail { font-size: 11px; color: var(--text3); margin-top: 1px; }
+    .sch-empty { color: var(--text3); font-size: 13px; padding: 12px 0; text-align: center; }
+
+    /* Per-batch tags in fresh ingredient rows */
+    .prep-btag-row { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
+    .prep-btag { font-size: 11px; color: var(--text2); background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 2px 8px; }
+    .prep-btag strong { color: var(--text1); }
     .case-chip {
       display: flex; flex-direction: column; align-items: center; text-align: center;
       min-width: 76px; padding: 10px 10px 8px; border-radius: 12px; cursor: pointer;
@@ -529,9 +549,16 @@
         <button class="btn btn-primary btn-sm" onclick="App.openAddCase()" style="font-size:15px;padding:6px 14px">＋ 新增出單</button>
       </div>
     </div>
-    <div class="today-group-label" style="margin-bottom:6px">出席員工</div>
-    <div class="staff-grid" id="staffGrid"></div>
-    <div id="caseChips"></div>
+    <div class="today-split">
+      <div class="today-left-col">
+        <div class="today-group-label" style="margin-bottom:6px">出席員工</div>
+        <div class="staff-grid" id="staffGrid"></div>
+        <div id="caseChips"></div>
+      </div>
+      <div class="today-right-col">
+        <div id="todaySchedule"></div>
+      </div>
+    </div>
 
     <div id="productSections"></div>
   </div>
