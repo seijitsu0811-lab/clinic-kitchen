@@ -381,7 +381,7 @@ const App = (() => {
     const notesHtml = c.notes ? `<div class="case-notes">📝 ${esc(c.notes)}</div>` : '';
 
     // 出單方式 badge
-    const typeIcons = { '袋裝': '🛍', '罐裝': '🫙', '內用': '🍽' };
+    const typeIcons = { '袋裝': '🛍', '罐裝': '🫙', '全配方': '📦', '內用': '🍽' };
     const typeBadge = `<span class="case-dtype">${typeIcons[c.powder_type] || ''} ${esc(c.powder_type||'袋裝')}</span>`;
 
     let casePowderHtml = '';
@@ -419,30 +419,49 @@ const App = (() => {
         ${warn}
         ${notesHtml}
         ${casePowderHtml}
-        ${c.formula_type !== '粉配方' && c.prep.length > 0 ? `
-        <div class="prep-grid">
-          ${c.prep.map(p => `
-            <div class="prep-item">
-              <div class="pi-name">${esc(p.name)}</div>
-              <div class="pi-val">${p.total}${p.unit}
-                <span style="font-size:11px;color:var(--text3)">×${c.cups}${unit}</span>
-              </div>
-            </div>`).join('')}
-        </div>` : ''}
-        ${c.formula_type === '粉配方' && (c.powder?.items || []).length > 0 ? `
-        <div class="prep-grid" style="margin-top:8px">
-          ${(c.powder.items || []).map(p => {
-            const pm = c.powder.powder_multiplier || 1;
-            const total = Math.round(p.qty * c.cups * pm * 10) / 10;
-            const jarNote = pm > 1 ? ` <span style="font-size:10px;color:var(--orange)">×${pm}</span>` : '';
-            return `<div class="prep-item">
-              <div class="pi-name">${esc(p.name)}</div>
-              <div class="pi-val">${total}${p.unit}${jarNote}
-                <span style="font-size:11px;color:var(--text3)">×${c.cups}${unit}</span>
-              </div>
-            </div>`;
-          }).join('')}
-        </div>` : ''}
+        ${(() => {
+          const pm = c.powder?.powder_multiplier || 1;
+          const powderItems = c.powder?.items || [];
+          function prepGrid(items) {
+            return `<div class="prep-grid">${items.map(p => `
+              <div class="prep-item">
+                <div class="pi-name">${esc(p.name)}</div>
+                <div class="pi-val">${p.total}${p.unit}
+                  <span style="font-size:11px;color:var(--text3)">×${c.cups}${unit}</span>
+                </div>
+              </div>`).join('')}</div>`;
+          }
+          function powderGrid(items, mult) {
+            return `<div class="prep-grid">${items.map(p => {
+              const tot = Math.round(p.qty * c.cups * mult * 10) / 10;
+              const note = mult > 1 ? ` <span style="font-size:10px;color:var(--orange)">×${mult}</span>` : '';
+              return `<div class="prep-item">
+                <div class="pi-name">${esc(p.name)}</div>
+                <div class="pi-val">${tot}${p.unit}${note}
+                  <span style="font-size:11px;color:var(--text3)">×${c.cups}${unit}</span>
+                </div>
+              </div>`;
+            }).join('')}</div>`;
+          }
+
+          if (c.powder_type === '全配方') {
+            // 全配方：蔬菜(冷藏) + 水果(冷凍) + 油水 + 粉×1.1
+            const veg   = c.prep.filter(p => p.category === '蔬菜');
+            const fruit = c.prep.filter(p => p.category === '水果');
+            const oil   = c.prep.filter(p => p.category !== '蔬菜' && p.category !== '水果');
+            let html = '';
+            if (veg.length)   html += `<div class="prep-storage-head">🥬 蔬菜 <span class="storage-badge cold">冷藏</span></div>${prepGrid(veg)}`;
+            if (fruit.length) html += `<div class="prep-storage-head">🍎 水果 <span class="storage-badge freeze">冷凍</span></div>${prepGrid(fruit)}`;
+            if (oil.length)   html += `<div class="prep-storage-head" style="margin-top:8px">🫒 油水</div>${prepGrid(oil)}`;
+            if (powderItems.length) html += `<div class="prep-storage-head">🧪 粉類 <span class="storage-badge jar">罐裝 ×1.1</span></div>${powderGrid(powderItems, pm)}`;
+            return html;
+          } else if (c.formula_type !== '粉配方' && c.prep.length > 0) {
+            return prepGrid(c.prep);
+          } else if (c.formula_type === '粉配方' && powderItems.length > 0) {
+            return powderGrid(powderItems, pm);
+          }
+          return '';
+        })()}
         ${(c.supplements || []).length > 0 ? `
         <div class="supp-grid">
           ${(c.supplements || []).map(s => `

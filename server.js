@@ -376,7 +376,7 @@ app.get('/api/today', (req, res) => {
     }
 
     const casesWithPrep = cases.map(c => {
-      const pm = c.powder_type === '罐裝' ? 1.1 : 1.0;
+      const pm = (c.powder_type === '罐裝' || c.powder_type === '全配方') ? 1.1 : 1.0;
       const { prep, powder, supplements } = buildPrepAndPowder(c.prescription_id, c.cups, prod.unit, pm);
       return { ...c, prep, powder, supplements };
     });
@@ -390,7 +390,7 @@ app.get('/api/today', (req, res) => {
        WHERE co.date>? AND p.product_id=? ORDER BY co.date, co.meal_time`
     ).all(date, prod.id);
     const futureCasesWithPrep = futureCases.map(c => {
-      const pm = c.powder_type === '罐裝' ? 1.1 : 1.0;
+      const pm = (c.powder_type === '罐裝' || c.powder_type === '全配方') ? 1.1 : 1.0;
       const { prep, powder, supplements } = buildPrepAndPowder(c.prescription_id, c.cups, prod.unit, pm);
       return { ...c, prep, powder, supplements };
     });
