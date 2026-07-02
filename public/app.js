@@ -113,6 +113,19 @@ const App = (() => {
     if (mi < members.length) staffBatchGroups.push({ size: members.length - mi, members: members.slice(mi) });
   }
 
+  // ── 批次時間計算（可被手動覆蓋）────────────────────────────────
+  function _getBatchTime(batch) {
+    if (batch.manualTime) {
+      const t = batch.manualTime;
+      return { sk: `${t}_0`, label: `${t.slice(0,2)}:${t.slice(2)}` };
+    }
+    const staffInBatch = batch.members.filter(m => m.type === 'staff');
+    const caseTimes = batch.members.filter(m => m.type === 'case' && m.mealTime).map(m => m.mealTime).sort();
+    if (staffInBatch.length > 0 || caseTimes.length === 0) return { sk: '1130_0', label: '11:30' };
+    const t = caseTimes[0];
+    return { sk: `${t}_0`, label: t.length === 4 ? `${t.slice(0,2)}:${t.slice(2)}` : t };
+  }
+
   // ── 渲染左側批次分組 ──────────────────────────────────────────
   function _renderBatchGroups() {
     if (!staffBatchGroups || staffBatchGroups.length === 0) return '';
@@ -121,11 +134,13 @@ const App = (() => {
       const allDone = batch.members.length > 0 && batch.members.every(m =>
         m.type === 'staff' ? staffPickedUp.has(m.userId) : casePickedUp.has(m.caseId)
       );
+      const { label: timeLabel } = _getBatchTime(batch);
       html += `<div class="batch-grp${allDone ? ' batch-grp-done' : ''}"
                     ondragover="event.preventDefault()" ondrop="App.batchDrop(event,${bi})">
         <div class="batch-grp-head">
           <span class="batch-grp-label">批次 ${bi + 1}</span>
           <span class="batch-grp-sz">${batch.size}杯</span>
+          <span class="batch-grp-time" title="點擊修改時間" onclick="App.editBatchTime(${bi},this)">⏰ ${timeLabel}</span>
           ${allDone ? '<span class="batch-grp-done-tag">✓ 完成</span>' : ''}
           <button class="batch-grp-del" onclick="App.removeBatch(${bi})">×</button>
         </div>
@@ -138,6 +153,7 @@ const App = (() => {
             return `<div class="bmember-chip${picked ? ' picked' : ''}${m.type === 'case' ? ' bmember-case' : ''}"
                          draggable="true"
                          ondragstart="App.batchDragStart(event,${bi},'${m.id}')"
+                         ondragend="App.batchDragEnd()"
                          onclick="${onclick}">
               ${esc(m.name)}${picked ? ' ✓' : ''}
             </div>`;
@@ -146,6 +162,10 @@ const App = (() => {
       </div>`;
     });
     html += `<button class="batch-add-btn" onclick="App.addBatch()">＋ 新增批次</button>`;
+    html += `<div id="batchDeleteZone" class="batch-delete-zone" style="display:none"
+                  ondragover="event.preventDefault();this.classList.add('bdz-over')"
+                  ondragleave="this.classList.remove('bdz-over')"
+                  ondrop="App.batchDropDelete(event)">🗑 拖到這裡刪除</div>`;
     html += '</div>';
     return html;
   }
@@ -162,31 +182,18 @@ const App = (() => {
         const allDone = batch.members.length > 0 && batch.members.every(m =>
           m.type === 'staff' ? staffPickedUp.has(m.userId) : casePickedUp.has(m.caseId)
         );
-        // 若批次全為個案且有 meal_time，用個案時間；否則用員工標準 11:30
-        const staffInBatch  = batch.members.filter(m => m.type === 'staff');
-        const caseTimesInBatch = batch.members
-          .filter(m => m.type === 'case' && m.mealTime)
-          .map(m => m.mealTime).sort();
-        let bSk, bTimeLabel;
-        if (staffInBatch.length > 0 || caseTimesInBatch.length === 0) {
-          bSk = `1130_0_${String(bi).padStart(2,'0')}`;
-          bTimeLabel = '11:30';
-        } else {
-          const t = caseTimesInBatch[0];
-          bSk = `${t}_0_${String(bi).padStart(2,'0')}`;
-          bTimeLabel = t.length === 4 ? `${t.slice(0,2)}:${t.slice(2)}` : t;
-        }
+        const { sk: bSk, label: bTimeLabel } = _getBatchTime(batch);
         items.push({
           key: `batch_${bi}`,
-          sk: bSk, timeLabel: bTimeLabel, type: 'staff',
+          sk: `${bSk}_${String(bi).padStart(2,'0')}`, timeLabel: bTimeLabel, type: 'staff',
           name: `🫙 批次 ${bi + 1}（${batch.size}杯）`,
           detail: batch.members.map(m => m.name).join('、') || '（空）',
-          done: allDone
+          noteText: '', done: allDone
         });
       });
     } else if ((prod?.total_staff_cups || 0) > 0) {
       items.push({ key: 'staff_all', sk: '1130_0', timeLabel: '11:30', type: 'staff',
-        name: '👥 員工出餐', detail: `${d.attending_count}人 · 共 ${prod.total_staff_cups} 杯`, done: false });
+        name: '👥 員工出餐', detail: `${d.attending_count}人 · 共 ${prod.total_staff_cups} 杯`, noteText: '', done: false });
     }
 
     // 個案（跳過已在批次裡的 is_staff_rx）
@@ -198,8 +205,9 @@ const App = (() => {
       if (c.formula_type === '粉配方')  { icon = '🧪'; detail = `粉配方 ${c.cups}天 ${c.powder_type||'袋裝'}`; }
       else if (c.powder_type === '全配方') { icon = '📦'; detail = `全配方外帶 ${c.cups}天`; }
       else                                 { icon = '🥤'; detail = `${c.rx_name} ${c.cups}杯`; }
+      const noteText = [c.contraindications, c.notes].filter(Boolean).join(' · ');
       items.push({ key: `case_${c.id}`, sk: `${mt}_1`, timeLabel: tFmt, type: 'case',
-        name: `${icon} ${who}`, detail, done: casePickedUp.has(c.id) });
+        name: `${icon} ${who}`, detail, noteText, done: casePickedUp.has(c.id) });
     });
 
     // 套用手動順序或依時間排序
@@ -224,6 +232,7 @@ const App = (() => {
         <div class="sch-body">
           <div class="sch-name">${esc(it.name)}</div>
           <div class="sch-detail">${esc(it.detail)}</div>
+          ${it.noteText ? `<div class="sch-note">📝 ${esc(it.noteText)}</div>` : ''}
         </div>
         ${it.done ? '<div class="sch-done-mark">✓</div>' : ''}
       </div>`).join('');
@@ -304,6 +313,15 @@ const App = (() => {
   function batchDragStart(event, fromBatch, memberId) {
     batchDragSrc = { fromBatch: +fromBatch, memberId };
     event.dataTransfer.effectAllowed = 'move';
+    setTimeout(() => {
+      const dz = document.getElementById('batchDeleteZone');
+      if (dz) dz.style.display = '';
+    }, 0);
+  }
+  function batchDragEnd() {
+    const dz = document.getElementById('batchDeleteZone');
+    if (dz) { dz.style.display = 'none'; dz.classList.remove('bdz-over'); }
+    batchDragSrc = null;
   }
   function batchDrop(event, toBatch) {
     event.preventDefault();
@@ -311,6 +329,8 @@ const App = (() => {
     const { fromBatch, memberId } = batchDragSrc;
     toBatch = +toBatch;
     batchDragSrc = null;
+    const dz = document.getElementById('batchDeleteZone');
+    if (dz) { dz.style.display = 'none'; dz.classList.remove('bdz-over'); }
     if (fromBatch === toBatch) return;
     const from = staffBatchGroups[fromBatch];
     const to   = staffBatchGroups[toBatch];
@@ -322,6 +342,46 @@ const App = (() => {
     to.members.push(member);
     to.size = to.members.length;
     if (lastTodayData) renderTodaySection1(lastTodayData);
+  }
+  async function batchDropDelete(event) {
+    event.preventDefault();
+    const dz = event.currentTarget;
+    if (dz) { dz.style.display = 'none'; dz.classList.remove('bdz-over'); }
+    if (!batchDragSrc) return;
+    const { fromBatch, memberId } = batchDragSrc;
+    batchDragSrc = null;
+    const batch = staffBatchGroups[fromBatch];
+    if (!batch) return;
+    const idx = batch.members.findIndex(m => m.id === memberId);
+    if (idx === -1) return;
+    const member = batch.members[idx];
+    if (member.type === 'case') {
+      if (!confirm(`確定要刪除 ${member.name} 的出單嗎？`)) return;
+      await fetch(`/api/today/cases/${member.caseId}`, { method: 'DELETE' });
+      loadToday();
+    } else {
+      batch.members.splice(idx, 1);
+      batch.size = batch.members.length;
+      if (lastTodayData) renderTodaySection1(lastTodayData);
+    }
+  }
+  function editBatchTime(bi, el) {
+    const batch = staffBatchGroups && staffBatchGroups[bi];
+    if (!batch) return;
+    const cur = batch.manualTime || '1130';
+    const input = document.createElement('input');
+    input.type = 'time';
+    input.value = `${cur.slice(0,2)}:${cur.slice(2)}`;
+    input.className = 'batch-time-input';
+    el.replaceWith(input);
+    input.focus();
+    const save = () => {
+      const v = input.value.replace(':', '');
+      if (v && /^\d{4}$/.test(v)) batch.manualTime = v;
+      if (lastTodayData) renderTodaySection1(lastTodayData);
+    };
+    input.addEventListener('change', save);
+    input.addEventListener('blur', save);
   }
   function addBatch() {
     if (!staffBatchGroups) staffBatchGroups = [];
@@ -1441,7 +1501,7 @@ const App = (() => {
   return {
     selectUser, logout, switchTab,
     toggleAttendance, handleStaffChipClick, toggleCasePickup,
-    batchDragStart, batchDrop, addBatch, removeBatch,
+    batchDragStart, batchDragEnd, batchDrop, batchDropDelete, editBatchTime, addBatch, removeBatch,
     schDragStart, schDragOver, schDrop,
     deleteCase, openAddCase, openEditCase, addCase,
     loadRx, openAddRx, openEditRx, saveRx,
