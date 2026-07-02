@@ -16,6 +16,9 @@ const App = (() => {
   let schDragKey       = null;
   let batchDragSrc     = null;
   let _allMembersMap   = {}; // id → member, populated by _initBatchGroups
+  let empRxId          = null; // employee formula prescription id
+  let deductedBatches  = new Set(); // batch indices already inventory-deducted today
+  let deductedCases    = new Set(); // case ids already inventory-deducted today
 
   // ── 初始化 ─────────────────────────────────────────────
   async function init() {
@@ -85,16 +88,20 @@ const App = (() => {
         manualTime: b.manualTime || null,
         memberIds: b.members.map(m => m.id)
       })) : null,
-      schOrder: schCustomOrder || null
+      schOrder: schCustomOrder || null,
+      deductedBatches: [...deductedBatches],
+      deductedCases: [...deductedCases]
     }));
   }
   function _loadDayState(date) {
     try {
       const raw = localStorage.getItem(`clinic_day_${date}`);
       if (!raw) return;
-      const { staff = [], cases = [], batchGroups, schOrder } = JSON.parse(raw);
-      staffPickedUp = new Set(staff);
-      casePickedUp  = new Set(cases);
+      const { staff = [], cases = [], batchGroups, schOrder, deductedBatches: db2 = [], deductedCases: dc2 = [] } = JSON.parse(raw);
+      staffPickedUp   = new Set(staff);
+      casePickedUp    = new Set(cases);
+      deductedBatches = new Set(db2);
+      deductedCases   = new Set(dc2);
       if (batchGroups) {
         const groups = batchGroups.map(b => ({
           manualTime: b.manualTime || null,
@@ -109,6 +116,7 @@ const App = (() => {
   async function loadToday() {
     const d = await api('/api/today');
     lastTodayData = d;
+    empRxId = d.products?.[0]?.staff_rx?.id || null;
     checkInvWarning();
 
     document.getElementById('staffCount').textContent = `${d.attending_count}人`;
@@ -128,7 +136,7 @@ const App = (() => {
       members.push({ id: `s_${s.user_id}`, name: s.name, type: 'staff', userId: s.user_id })
     );
     (prod.staff_rx_cases || []).forEach(c =>
-      members.push({ id: `c_${c.id}`, name: c.patient_name || '個案', type: 'case', caseId: c.id, mealTime: c.meal_time || null, cups: c.cups || 1 })
+      members.push({ id: `c_${c.id}`, name: c.patient_name || '個案', type: 'case', caseId: c.id, mealTime: c.meal_time || null, cups: c.cups || 1, prescriptionId: c.prescription_id || null })
     );
     _allMembersMap = {};
     members.forEach(m => { _allMembersMap[m.id] = m; });
@@ -329,6 +337,27 @@ const App = (() => {
     document.getElementById('todaySchedule').innerHTML = _renderSchedule(d);
   }
 
+  function _checkBatchDeductions() {
+    if (!staffBatchGroups) return;
+    staffBatchGroups.forEach((batch, bi) => {
+      if (deductedBatches.has(bi)) return;
+      const allDone = batch.members.length > 0 && batch.members.every(m =>
+        m.type === 'staff' ? staffPickedUp.has(m.userId) : casePickedUp.has(m.caseId)
+      );
+      if (!allDone) return;
+      deductedBatches.add(bi);
+      // 員工人數 → 員工配方
+      const staffCount = batch.members.filter(m => m.type === 'staff').length;
+      if (staffCount > 0 && empRxId) {
+        api('/api/inventory/consume', 'POST', { prescription_id: empRxId, cups: staffCount }).catch(() => {});
+      }
+      // 個案（is_staff_rx）→ 各自配方
+      batch.members.filter(m => m.type === 'case' && m.prescriptionId).forEach(m => {
+        api('/api/inventory/consume', 'POST', { prescription_id: m.prescriptionId, cups: m.cups }).catch(() => {});
+      });
+    });
+  }
+
   function handleStaffChipClick(userId, isAttending) {
     if (!isAttending) {
       toggleAttendance(userId, 1);
@@ -336,12 +365,26 @@ const App = (() => {
     }
     if (staffPickedUp.has(userId)) staffPickedUp.delete(userId);
     else staffPickedUp.add(userId);
+    _checkBatchDeductions();
     if (lastTodayData) { _saveDayState(lastTodayData.date); renderTodaySection1(lastTodayData); }
   }
 
   function toggleCasePickup(caseId) {
-    if (casePickedUp.has(caseId)) casePickedUp.delete(caseId);
+    const wasPickedUp = casePickedUp.has(caseId);
+    if (wasPickedUp) casePickedUp.delete(caseId);
     else casePickedUp.add(caseId);
+    // 非員工配方個案：首次取餐時扣庫存
+    if (!wasPickedUp && !deductedCases.has(caseId) && lastTodayData) {
+      const allCases = lastTodayData.products?.flatMap(p => p.cases) || [];
+      const c = allCases.find(c => c.id === caseId && !c.is_staff_rx);
+      if (c) {
+        deductedCases.add(caseId);
+        api('/api/inventory/consume', 'POST', {
+          prescription_id: c.prescription_id, cups: c.cups, powder_type: c.powder_type
+        }).catch(() => {});
+      }
+    }
+    _checkBatchDeductions();
     if (lastTodayData) { _saveDayState(lastTodayData.date); renderTodaySection1(lastTodayData); }
   }
 

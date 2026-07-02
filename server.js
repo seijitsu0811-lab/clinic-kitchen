@@ -406,7 +406,7 @@ app.get('/api/today', (req, res) => {
       total_staff_cups: totalStaffCups,
       staff_rx_cases:   staffRxCases.map(c => ({
         id: c.id, patient_name: c.patient_name, rx_name: c.rx_name,
-        cups: c.cups, meal_time: c.meal_time
+        cups: c.cups, meal_time: c.meal_time, prescription_id: c.prescription_id
       })),
       batches,
       staff_rx:         staffRx || null,
@@ -582,6 +582,29 @@ app.post('/api/inventory/purchase', (req, res) => {
       `INSERT INTO inventory (ingredient_id,qty,updated_at) VALUES (?,?,datetime('now','localtime'))
        ON CONFLICT(ingredient_id) DO UPDATE SET qty=qty+excluded.qty, updated_at=excluded.updated_at`
     ).run(ingredient_id, qty);
+  });
+  res.json({ ok: true });
+});
+
+// 出餐扣庫存
+app.post('/api/inventory/consume', (req, res) => {
+  const { prescription_id, cups, powder_type } = req.body;
+  if (!prescription_id || !cups || cups <= 0) return res.status(400).json({ error: 'invalid' });
+  const pm = (powder_type === '罐裝' || powder_type === '全配方') ? 1.1 : 1.0;
+  const freshCats = new Set(['蔬菜','水果','油水','油','水','其他']);
+  const ingRows = db.prepare(
+    `SELECT pi.ingredient_id, pi.qty_per_cup, i.category
+     FROM prescription_ingredients pi JOIN ingredients i ON i.id=pi.ingredient_id
+     WHERE pi.prescription_id=? AND pi.qty_per_cup>0`
+  ).all(prescription_id);
+  tx(() => {
+    ingRows.forEach(r => {
+      const mult = freshCats.has(r.category) ? 1.0 : pm;
+      const amount = Math.round(r.qty_per_cup * cups * mult * 100) / 100;
+      db.prepare(
+        `UPDATE inventory SET qty=MAX(0, ROUND(qty-?,1)), updated_at=datetime('now','localtime') WHERE ingredient_id=?`
+      ).run(amount, r.ingredient_id);
+    });
   });
   res.json({ ok: true });
 });
