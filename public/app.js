@@ -15,6 +15,7 @@ const App = (() => {
   let schCustomOrder   = null; // [key,...] null=auto time-sort
   let schDragKey       = null;
   let batchDragSrc     = null;
+  let _allMembersMap   = {}; // id → member, populated by _initBatchGroups
 
   // ── 初始化 ─────────────────────────────────────────────
   async function init() {
@@ -76,27 +77,38 @@ const App = (() => {
   document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => switchTab(t.dataset.tab)));
 
   // ── 今日工作單 ─────────────────────────────────────────
-  function _savePickupState(date) {
-    const key = `pickup_${date}`;
-    localStorage.setItem(key, JSON.stringify({
+  function _saveDayState(date) {
+    localStorage.setItem(`clinic_day_${date}`, JSON.stringify({
       staff: [...staffPickedUp],
-      cases: [...casePickedUp]
+      cases: [...casePickedUp],
+      batchGroups: staffBatchGroups ? staffBatchGroups.map(b => ({
+        manualTime: b.manualTime || null,
+        memberIds: b.members.map(m => m.id)
+      })) : null,
+      schOrder: schCustomOrder || null
     }));
   }
-  function _loadPickupState(date) {
+  function _loadDayState(date) {
     try {
-      const raw = localStorage.getItem(`pickup_${date}`);
+      const raw = localStorage.getItem(`clinic_day_${date}`);
       if (!raw) return;
-      const { staff = [], cases = [] } = JSON.parse(raw);
+      const { staff = [], cases = [], batchGroups, schOrder } = JSON.parse(raw);
       staffPickedUp = new Set(staff);
       casePickedUp  = new Set(cases);
+      if (batchGroups) {
+        const groups = batchGroups.map(b => ({
+          manualTime: b.manualTime || null,
+          members: (b.memberIds || []).map(id => _allMembersMap[id]).filter(Boolean)
+        }));
+        if (groups.some(g => g.members.length > 0)) staffBatchGroups = groups;
+      }
+      if (schOrder) schCustomOrder = schOrder;
     } catch (e) { /* ignore */ }
   }
 
   async function loadToday() {
     const d = await api('/api/today');
     lastTodayData = d;
-    _loadPickupState(d.date);
     checkInvWarning();
 
     document.getElementById('staffCount').textContent = `${d.attending_count}人`;
@@ -118,6 +130,8 @@ const App = (() => {
     (prod.staff_rx_cases || []).forEach(c =>
       members.push({ id: `c_${c.id}`, name: c.patient_name || '個案', type: 'case', caseId: c.id, mealTime: c.meal_time || null, cups: c.cups || 1 })
     );
+    _allMembersMap = {};
+    members.forEach(m => { _allMembersMap[m.id] = m; });
     const batches = prod.batches || [];
     staffBatchGroups = [];
     let mi = 0;
@@ -270,6 +284,7 @@ const App = (() => {
       batchInitDate = d.date;
       schCustomOrder = null;
       _initBatchGroups(d);
+      _loadDayState(d.date);
     }
 
     // 左側：批次分組（覆蓋 grid 排版為 block，避免 auto-fill 把批次擠進 80px 欄位）
@@ -321,13 +336,13 @@ const App = (() => {
     }
     if (staffPickedUp.has(userId)) staffPickedUp.delete(userId);
     else staffPickedUp.add(userId);
-    if (lastTodayData) { _savePickupState(lastTodayData.date); renderTodaySection1(lastTodayData); }
+    if (lastTodayData) { _saveDayState(lastTodayData.date); renderTodaySection1(lastTodayData); }
   }
 
   function toggleCasePickup(caseId) {
     if (casePickedUp.has(caseId)) casePickedUp.delete(caseId);
     else casePickedUp.add(caseId);
-    if (lastTodayData) { _savePickupState(lastTodayData.date); renderTodaySection1(lastTodayData); }
+    if (lastTodayData) { _saveDayState(lastTodayData.date); renderTodaySection1(lastTodayData); }
   }
 
   // ── 批次拖曳（左側員工重新分批）────────────────────────────────
@@ -360,7 +375,7 @@ const App = (() => {
     if (idx === -1) return;
     const [member] = from.members.splice(idx, 1);
     to.members.push(member);
-    if (lastTodayData) renderTodaySection1(lastTodayData);
+    if (lastTodayData) { _saveDayState(lastTodayData.date); renderTodaySection1(lastTodayData); }
   }
   async function batchDropDelete(event) {
     event.preventDefault();
@@ -380,7 +395,7 @@ const App = (() => {
       loadToday();
     } else {
       batch.members.splice(idx, 1);
-      if (lastTodayData) renderTodaySection1(lastTodayData);
+      if (lastTodayData) { _saveDayState(lastTodayData.date); renderTodaySection1(lastTodayData); }
     }
   }
   function editBatchTime(bi, el) {
@@ -396,7 +411,7 @@ const App = (() => {
     const save = () => {
       const v = input.value.replace(':', '');
       if (v && /^\d{4}$/.test(v)) batch.manualTime = v;
-      if (lastTodayData) renderTodaySection1(lastTodayData);
+      if (lastTodayData) { _saveDayState(lastTodayData.date); renderTodaySection1(lastTodayData); }
     };
     input.addEventListener('change', save);
     input.addEventListener('blur', save);
@@ -404,7 +419,7 @@ const App = (() => {
   function addBatch() {
     if (!staffBatchGroups) staffBatchGroups = [];
     staffBatchGroups.push({ size: 0, members: [] });
-    if (lastTodayData) renderTodaySection1(lastTodayData);
+    if (lastTodayData) { _saveDayState(lastTodayData.date); renderTodaySection1(lastTodayData); }
   }
   function removeBatch(batchIdx) {
     if (!staffBatchGroups) return;
@@ -415,7 +430,7 @@ const App = (() => {
       if (targetIdx >= 0) staffBatchGroups[targetIdx].members.push(...batch.members);
     }
     staffBatchGroups.splice(batchIdx, 1);
-    if (lastTodayData) renderTodaySection1(lastTodayData);
+    if (lastTodayData) { _saveDayState(lastTodayData.date); renderTodaySection1(lastTodayData); }
   }
 
   // ── 出餐順序拖曳（右側上下排序）────────────────────────────────
@@ -443,7 +458,7 @@ const App = (() => {
     schCustomOrder.splice(fi, 1);
     schCustomOrder.splice(ti, 0, schDragKey);
     schDragKey = null;
-    if (lastTodayData) renderTodaySection1(lastTodayData);
+    if (lastTodayData) { _saveDayState(lastTodayData.date); renderTodaySection1(lastTodayData); }
   }
 
   function renderProductSection(prod, attendingCount) {
