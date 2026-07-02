@@ -76,9 +76,27 @@ const App = (() => {
   document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => switchTab(t.dataset.tab)));
 
   // ── 今日工作單 ─────────────────────────────────────────
+  function _savePickupState(date) {
+    const key = `pickup_${date}`;
+    localStorage.setItem(key, JSON.stringify({
+      staff: [...staffPickedUp],
+      cases: [...casePickedUp]
+    }));
+  }
+  function _loadPickupState(date) {
+    try {
+      const raw = localStorage.getItem(`pickup_${date}`);
+      if (!raw) return;
+      const { staff = [], cases = [] } = JSON.parse(raw);
+      staffPickedUp = new Set(staff);
+      casePickedUp  = new Set(cases);
+    } catch (e) { /* ignore */ }
+  }
+
   async function loadToday() {
     const d = await api('/api/today');
     lastTodayData = d;
+    _loadPickupState(d.date);
     checkInvWarning();
 
     document.getElementById('staffCount').textContent = `${d.attending_count}人`;
@@ -293,20 +311,18 @@ const App = (() => {
 
   function handleStaffChipClick(userId, isAttending) {
     if (!isAttending) {
-      // 未出席 → 切換為出席
       toggleAttendance(userId, 1);
       return;
     }
-    // 出席中 → 切換已拿取狀態
     if (staffPickedUp.has(userId)) staffPickedUp.delete(userId);
     else staffPickedUp.add(userId);
-    if (lastTodayData) renderTodaySection1(lastTodayData);
+    if (lastTodayData) { _savePickupState(lastTodayData.date); renderTodaySection1(lastTodayData); }
   }
 
   function toggleCasePickup(caseId) {
     if (casePickedUp.has(caseId)) casePickedUp.delete(caseId);
     else casePickedUp.add(caseId);
-    if (lastTodayData) renderTodaySection1(lastTodayData);
+    if (lastTodayData) { _savePickupState(lastTodayData.date); renderTodaySection1(lastTodayData); }
   }
 
   // ── 批次拖曳（左側員工重新分批）────────────────────────────────
