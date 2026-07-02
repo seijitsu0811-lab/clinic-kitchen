@@ -116,7 +116,7 @@ const App = (() => {
       members.push({ id: `s_${s.user_id}`, name: s.name, type: 'staff', userId: s.user_id })
     );
     (prod.staff_rx_cases || []).forEach(c =>
-      members.push({ id: `c_${c.id}`, name: c.patient_name || '個案', type: 'case', caseId: c.id, mealTime: c.meal_time || null })
+      members.push({ id: `c_${c.id}`, name: c.patient_name || '個案', type: 'case', caseId: c.id, mealTime: c.meal_time || null, cups: c.cups || 1 })
     );
     const batches = prod.batches || [];
     staffBatchGroups = [];
@@ -129,6 +129,11 @@ const App = (() => {
       }
     });
     if (mi < members.length) staffBatchGroups.push({ size: members.length - mi, members: members.slice(mi) });
+  }
+
+  // ── 批次實際杯數（員工1杯，個案用自己的cups）────────────────────
+  function _batchCups(batch) {
+    return batch.members.reduce((sum, m) => sum + (m.type === 'case' ? (m.cups || 1) : 1), 0);
   }
 
   // ── 批次時間計算（可被手動覆蓋）────────────────────────────────
@@ -157,7 +162,7 @@ const App = (() => {
                     ondragover="event.preventDefault()" ondrop="App.batchDrop(event,${bi})">
         <div class="batch-grp-head">
           <span class="batch-grp-label">批次 ${bi + 1}</span>
-          <span class="batch-grp-sz">${batch.size}杯</span>
+          <span class="batch-grp-sz">${_batchCups(batch)}杯</span>
           <span class="batch-grp-time" title="點擊修改時間" onclick="App.editBatchTime(${bi},this)">⏰ ${timeLabel}</span>
           ${allDone ? '<span class="batch-grp-done-tag">✓ 完成</span>' : ''}
           <button class="batch-grp-del" onclick="App.removeBatch(${bi})">×</button>
@@ -204,7 +209,7 @@ const App = (() => {
         items.push({
           key: `batch_${bi}`,
           sk: `${bSk}_${String(bi).padStart(2,'0')}`, timeLabel: bTimeLabel, type: 'staff',
-          name: `🫙 批次 ${bi + 1}（${batch.size}杯）`,
+          name: `🫙 批次 ${bi + 1}（${_batchCups(batch)}杯）`,
           detail: batch.members.map(m => m.name).join('、') || '（空）',
           noteText: '', done: allDone
         });
@@ -354,9 +359,7 @@ const App = (() => {
     const idx = from.members.findIndex(m => m.id === memberId);
     if (idx === -1) return;
     const [member] = from.members.splice(idx, 1);
-    from.size = from.members.length;
     to.members.push(member);
-    to.size = to.members.length;
     if (lastTodayData) renderTodaySection1(lastTodayData);
   }
   async function batchDropDelete(event) {
@@ -377,7 +380,6 @@ const App = (() => {
       loadToday();
     } else {
       batch.members.splice(idx, 1);
-      batch.size = batch.members.length;
       if (lastTodayData) renderTodaySection1(lastTodayData);
     }
   }
