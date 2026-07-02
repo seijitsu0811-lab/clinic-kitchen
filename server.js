@@ -586,12 +586,16 @@ app.post('/api/inventory/purchase', (req, res) => {
   res.json({ ok: true });
 });
 
-// 庫存充足性檢查：固定週期 + 未來 7 天預約出單 vs 現有庫存
+// 庫存充足性檢查：依星期幾遞減的本週剩餘需求 + 安全緩衝 7 杯
 app.get('/api/inventory/check', (req, res) => {
   const t = today();
-  const endDate = new Date(t);
-  endDate.setDate(endDate.getDate() + 7);
-  const end = endDate.toISOString().slice(0, 10);
+  // 本週剩餘到週日
+  const tDate = new Date(t + 'T00:00:00');
+  const dow = tDate.getDay(); // 0=日,1=一,...,6=六
+  const daysToSun = dow === 0 ? 0 : 7 - dow;
+  const endSun = new Date(tDate);
+  endSun.setDate(endSun.getDate() + daysToSun);
+  const endStr = endSun.toISOString().slice(0, 10);
 
   // 現有庫存
   const stock = {};
@@ -601,6 +605,7 @@ app.get('/api/inventory/check', (req, res) => {
   // 累計配方需求
   const needs = {};
   function addRxNeeds(rxId, cups, powderMult) {
+    if (cups <= 0) return;
     powderMult = powderMult || 1.0;
     db.prepare(
       `SELECT pi.ingredient_id, pi.qty_per_cup, i.category
@@ -613,28 +618,42 @@ app.get('/api/inventory/check', (req, res) => {
     });
   }
 
-  // 1. AW 固定每週 7 杯
+  // 1. AW 本週剩餘杯數（週五備週六日外帶，週六日已備妥算 0）
+  //    週一=7, 週二=6, 週三=5, 週四=4, 週五=3(含週六日), 週六=0, 週日=0
+  const awCups = (dow >= 1 && dow <= 4) ? (8 - dow) : (dow === 5 ? 3 : 0);
   const awRx = db.prepare("SELECT id FROM prescriptions WHERE name='AW' LIMIT 1").get();
-  if (awRx) addRxNeeds(awRx.id, 7);
+  if (awRx) {
+    addRxNeeds(awRx.id, awCups);
+    // 安全緩衝：多備 7 杯 AW 以應對臨時個案需求
+    addRxNeeds(awRx.id, 7);
+  }
 
-  // 2. 員工固定週二四五 9人 × 3天 = 27 杯
+  // 2. 員工本週剩餘餐次（週二=2,週四=4,週五=5）× 9 人
+  //    週六日 dow=6/0 → 0；其餘計算今天（含）到週五還有幾個員工餐日
+  const empMealDays = [2, 4, 5]; // 週二四五
+  const empDays = (dow === 0 || dow === 6) ? 0 : empMealDays.filter(d => d >= dow).length;
+  const empCups = empDays * 9;
   const empRx = db.prepare("SELECT id FROM prescriptions WHERE is_staff_rx=1 LIMIT 1").get();
-  if (empRx) addRxNeeds(empRx.id, 27);
+  if (empRx) addRxNeeds(empRx.id, empCups);
 
-  // 3. 未來 7 天已排的個案出單
+  // 3. 本週已排個案出單（排除 AW 和員工配方，避免重複計算）
   db.prepare(
     `SELECT co.prescription_id, co.cups, co.powder_type
-     FROM case_orders co WHERE co.date > ? AND co.date <= ?`
-  ).all(t, end).forEach(c => {
+     FROM case_orders co
+     JOIN prescriptions p ON p.id=co.prescription_id
+     WHERE co.date >= ? AND co.date <= ?
+       AND p.name != 'AW' AND p.is_staff_rx = 0`
+  ).all(t, endStr).forEach(c => {
     const pm = (c.powder_type === '罐裝' || c.powder_type === '全配方') ? 1.1 : 1.0;
     addRxNeeds(c.prescription_id, c.cups, pm);
   });
 
-  // 整合結果
+  // 整合結果（附本週需求說明）
   const ingMap = {};
   db.prepare('SELECT id, name, unit, category FROM ingredients WHERE active=1').all()
     .forEach(i => { ingMap[i.id] = i; });
 
+  const weekLabel = ['日','一','二','三','四','五','六'][dow];
   const check = Object.keys({ ...stock, ...needs })
     .filter(id => ingMap[id])
     .map(id => {
@@ -647,7 +666,11 @@ app.get('/api/inventory/check', (req, res) => {
     })
     .sort((a, b) => a.remaining - b.remaining);
 
-  res.json({ check, insufficient_count: check.filter(r => !r.sufficient).length });
+  res.json({
+    check,
+    insufficient_count: check.filter(r => !r.sufficient).length,
+    week_info: { dow, weekLabel, awCups, empCups, bufferCups: 7, endStr }
+  });
 });
 
 // ════════════════════════════════════════════════════════
