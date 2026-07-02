@@ -98,7 +98,7 @@ const App = (() => {
       members.push({ id: `s_${s.user_id}`, name: s.name, type: 'staff', userId: s.user_id })
     );
     (prod.staff_rx_cases || []).forEach(c =>
-      members.push({ id: `c_${c.id}`, name: c.patient_name || '個案', type: 'case', caseId: c.id })
+      members.push({ id: `c_${c.id}`, name: c.patient_name || '個案', type: 'case', caseId: c.id, mealTime: c.meal_time || null })
     );
     const batches = prod.batches || [];
     staffBatchGroups = [];
@@ -162,10 +162,23 @@ const App = (() => {
         const allDone = batch.members.length > 0 && batch.members.every(m =>
           m.type === 'staff' ? staffPickedUp.has(m.userId) : casePickedUp.has(m.caseId)
         );
+        // 若批次全為個案且有 meal_time，用個案時間；否則用員工標準 11:30
+        const staffInBatch  = batch.members.filter(m => m.type === 'staff');
+        const caseTimesInBatch = batch.members
+          .filter(m => m.type === 'case' && m.mealTime)
+          .map(m => m.mealTime).sort();
+        let bSk, bTimeLabel;
+        if (staffInBatch.length > 0 || caseTimesInBatch.length === 0) {
+          bSk = `1130_0_${String(bi).padStart(2,'0')}`;
+          bTimeLabel = '11:30';
+        } else {
+          const t = caseTimesInBatch[0];
+          bSk = `${t}_0_${String(bi).padStart(2,'0')}`;
+          bTimeLabel = t.length === 4 ? `${t.slice(0,2)}:${t.slice(2)}` : t;
+        }
         items.push({
           key: `batch_${bi}`,
-          sk: `1130_0_${String(bi).padStart(2,'0')}`,
-          timeLabel: '11:30', type: 'staff',
+          sk: bSk, timeLabel: bTimeLabel, type: 'staff',
           name: `🫙 批次 ${bi + 1}（${batch.size}杯）`,
           detail: batch.members.map(m => m.name).join('、') || '（空）',
           done: allDone
