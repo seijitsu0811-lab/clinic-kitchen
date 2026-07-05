@@ -75,6 +75,7 @@ const App = (() => {
     if (tab === 'rx')    loadRx();
     if (tab === 'inv')   loadInventory();
     if (tab === 'cost')  loadCost();
+    if (tab === 'sop')   loadSOP();
   }
 
   document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => switchTab(t.dataset.tab)));
@@ -125,6 +126,9 @@ const App = (() => {
     // 2+3. 每個產品的批次 + 個案
     caseDataMap = {};
     document.getElementById('productSections').innerHTML = d.products.map(prod => renderProductSection(prod, d.attending_count)).join('');
+
+    laborDate = d.date;
+    loadLaborSection(d.date);
   }
 
   // ── 批次初始化（每日首次或資料重載時執行）────────────────────────
@@ -369,23 +373,53 @@ const App = (() => {
     if (lastTodayData) { _saveDayState(lastTodayData.date); renderTodaySection1(lastTodayData); }
   }
 
+  function _showContraConfirm(name, contraText, onConfirm) {
+    const div = document.createElement('div');
+    div.className = 'contra-confirm';
+    div.innerHTML = `
+      <div class="contra-box">
+        <div class="contra-icon">⚠️</div>
+        <div class="contra-title">取餐前確認</div>
+        <div class="contra-name">${esc(name)}</div>
+        <div class="contra-warn">📋 禁忌注意：${esc(contraText)}</div>
+        <div class="contra-actions">
+          <button class="btn btn-ghost" id="contraCancel">取消</button>
+          <button class="btn btn-primary" id="contraOk">已核對，確認取餐</button>
+        </div>
+      </div>`;
+    document.body.appendChild(div);
+    div.querySelector('#contraOk').onclick = () => { div.remove(); onConfirm(); };
+    div.querySelector('#contraCancel').onclick = () => div.remove();
+  }
+
   function toggleCasePickup(caseId) {
     const wasPickedUp = casePickedUp.has(caseId);
-    if (wasPickedUp) casePickedUp.delete(caseId);
-    else casePickedUp.add(caseId);
-    // 非員工配方個案：首次取餐時扣庫存
-    if (!wasPickedUp && !deductedCases.has(caseId) && lastTodayData) {
-      const allCases = lastTodayData.products?.flatMap(p => p.cases) || [];
-      const c = allCases.find(c => c.id === caseId && !c.is_staff_rx);
-      if (c) {
+    // Un-pickup: always allowed without confirmation
+    if (wasPickedUp) {
+      casePickedUp.delete(caseId);
+      _checkBatchDeductions();
+      if (lastTodayData) { _saveDayState(lastTodayData.date); renderTodaySection1(lastTodayData); }
+      return;
+    }
+    // Pickup: check contraindications first
+    const allCases = lastTodayData?.products?.flatMap(p => p.cases) || [];
+    const c = allCases.find(x => x.id === caseId);
+    const doPickup = () => {
+      casePickedUp.add(caseId);
+      if (!deductedCases.has(caseId) && c && !c.is_staff_rx) {
         deductedCases.add(caseId);
         api('/api/inventory/consume', 'POST', {
           prescription_id: c.prescription_id, cups: c.cups, powder_type: c.powder_type
         }).catch(() => {});
       }
+      _checkBatchDeductions();
+      if (lastTodayData) { _saveDayState(lastTodayData.date); renderTodaySection1(lastTodayData); }
+    };
+    if (c && c.contraindications) {
+      _showContraConfirm(c.patient_name || c.rx_name, c.contraindications, doPickup);
+    } else {
+      doPickup();
     }
-    _checkBatchDeductions();
-    if (lastTodayData) { _saveDayState(lastTodayData.date); renderTodaySection1(lastTodayData); }
   }
 
   // ── 批次拖曳（左側員工重新分批）────────────────────────────────
@@ -929,7 +963,11 @@ const App = (() => {
 
   // ── 處方管理 ────────────────────────────────────────────
   async function loadRx() {
-    allPrescriptions = await api('/api/prescriptions');
+    const [rxList, costData] = await Promise.all([api('/api/prescriptions'), api('/api/costs')]);
+    allPrescriptions = rxList;
+    const costMap = {};
+    (costData.prescriptions || []).forEach(p => { costMap[p.id] = p; });
+
     const list = document.getElementById('rxList');
 
     // 按產品分組
@@ -948,7 +986,17 @@ const App = (() => {
     list.innerHTML = Object.entries(byProduct).map(([pname, rxs]) => `
       <div class="rx-product-group">
         <div class="rx-product-label">📦 ${esc(pname)}</div>
-        ${rxs.map(rx => `
+        ${rxs.map(rx => {
+          const cost = costMap[rx.id];
+          const costHtml = cost
+            ? `<div style="margin-top:6px;font-size:12px;color:var(--text2)">
+                🧺 食材 <strong style="color:var(--blue)">NT$${cost.ingredient_cost}</strong>/份
+                &nbsp;+&nbsp; 人工 <strong>NT$${cost.labor_cost}</strong>
+                &nbsp;= <strong style="color:var(--text)">NT$${cost.total_cost}</strong>
+                ${cost.ingredient_cost === 0 ? '<span style="color:var(--orange);font-size:11px">（尚無採購記錄）</span>' : ''}
+               </div>`
+            : '';
+          return `
           <div class="rx-card">
             <div style="display:flex;justify-content:space-between;align-items:flex-start">
               <div>
@@ -961,13 +1009,15 @@ const App = (() => {
                   · ${esc(rx.timing)}
                   ${rx.contraindications ? `· <span style="color:var(--orange)">⚠ ${esc(rx.contraindications)}</span>` : ''}
                 </div>
+                ${costHtml}
               </div>
               <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end">
                 <button class="btn btn-ghost btn-sm" onclick="App.openEditRx(${rx.id})">編輯資訊</button>
                 <button class="btn btn-primary btn-sm" onclick="App.openEditRxIngredients(${rx.id},'${esc(rx.name)}')">編輯配方</button>
               </div>
             </div>
-          </div>`).join('')}
+          </div>`;
+        }).join('')}
       </div>`).join('');
   }
 
@@ -1188,16 +1238,22 @@ const App = (() => {
         const qtyDisplay = hasCount
           ? `${countQty}<span class="inv-unit"> ${i.count_unit}</span><span style="font-size:11px;color:var(--text3)">（${i.qty}${i.unit}）</span>`
           : `${i.qty}<span class="inv-unit"> ${i.unit}</span>`;
+        const slDays = i.shelf_life_days || 0;
+        const shelfBadge = slDays > 0
+          ? `<span class="shelf-life-badge sl-ok">⏳ ${slDays}天效期</span>` : '';
         html += `
           <div class="inv-row${chk && !chk.sufficient ? ' inv-row-shortage' : ''}">
             <div style="flex:1">
               <div class="inv-name">${esc(i.name)} ${statusBadge}</div>
               ${i.safety_stock > 0 ? `<div class="inv-unit">安全量 ${i.safety_stock}${i.unit}</div>` : ''}
               ${hasCount ? `<div class="inv-unit">1${i.count_unit} = ${i.count_ratio}${i.unit}</div>` : ''}
+              ${shelfBadge}
               ${needInfo}
+              <button class="inv-hist-btn" onclick="App.togglePurchaseHistory(${i.id},this)">📋 採購記錄</button>
+              <div id="ph_${i.id}" style="display:none"></div>
             </div>
             <div class="inv-qty">${qtyDisplay}</div>
-            <div class="inv-edit" onclick="App.openEditInv(${i.id},'${esc(i.name)}',${i.qty},'${i.unit}','${i.count_unit||''}',${i.count_ratio||1})">✏️</div>
+            <div class="inv-edit" onclick="App.openEditInv(${i.id},'${esc(i.name)}',${i.qty},'${i.unit}','${i.count_unit||''}',${i.count_ratio||1},${slDays})">✏️</div>
           </div>`;
       });
       html += '</div>';
@@ -1223,11 +1279,12 @@ const App = (() => {
     } catch(e) {}
   }
 
-  function openEditInv(id, name, qty, unit, countUnit, countRatio) {
+  function openEditInv(id, name, qty, unit, countUnit, countRatio, shelfLifeDays) {
     document.getElementById('editInvTitle').textContent = `調整庫存：${name}`;
     document.getElementById('editInvId').value = id;
     document.getElementById('editInvCountUnit').value = countUnit || '';
     document.getElementById('editInvCountRatio').value = countRatio || 1;
+    document.getElementById('editInvShelfLife').value = shelfLifeDays || 0;
     const hasCount = countUnit && countRatio > 1;
     if (hasCount) {
       const countQty = Math.round(qty / countRatio * 10) / 10;
@@ -1250,7 +1307,11 @@ const App = (() => {
     const countUnit = document.getElementById('editInvCountUnit').value;
     const countRatio = parseFloat(document.getElementById('editInvCountRatio').value) || 1;
     const qty = countUnit && countRatio > 1 ? Math.round(inputQty * countRatio * 10) / 10 : inputQty;
-    await api(`/api/inventory/${id}`, 'PUT', { qty });
+    const shelf_life_days = parseInt(document.getElementById('editInvShelfLife').value) || 0;
+    await Promise.all([
+      api(`/api/inventory/${id}`, 'PUT', { qty }),
+      api(`/api/ingredients/${id}`, 'PATCH', { shelf_life_days })
+    ]);
     closeModal('modalEditInv');
     loadInventory();
   }
@@ -1289,9 +1350,11 @@ const App = (() => {
     const qty = parseFloat(document.getElementById('purchaseQty').value);
     const total_price = parseFloat(document.getElementById('purchasePrice').value);
     const purchased_at = document.getElementById('purchaseDate').value;
+    const item_type = document.getElementById('purchaseItemType').value;
+    const purpose = document.getElementById('purchasePurpose').value;
     if (!qty || !total_price) return alert('請填寫採購量和金額');
     await api('/api/inventory/purchase', 'POST', {
-      ingredient_id, qty, total_price, purchased_at,
+      ingredient_id, qty, total_price, purchased_at, item_type, purpose,
       user_id: currentUser?.id || null
     });
     closeModal('modalPurchase');
@@ -1309,6 +1372,7 @@ const App = (() => {
     if (tab === 'today')   loadCostToday();
     if (tab === 'monthly') { document.getElementById('costMonthLabel').textContent = costMonth; loadCostMonthly(); }
     if (tab === 'rx')      loadCostRx();
+    if (tab === 'trial')   loadTrialRecipes();
   }
 
   async function loadCost() {
@@ -1506,6 +1570,296 @@ const App = (() => {
     document.getElementById('costList').innerHTML = html;
   }
 
+  // ── 採購歷史展開 ─────────────────────────────────────────
+  async function togglePurchaseHistory(ingId, btn) {
+    const box = document.getElementById(`ph_${ingId}`);
+    if (!box) return;
+    if (box.style.display !== 'none') { box.style.display = 'none'; btn.textContent = '📋 採購記錄'; return; }
+    btn.textContent = '⏳ 載入中…';
+    const rows = await api(`/api/inventory/${ingId}/purchases`);
+    if (rows.length === 0) {
+      box.innerHTML = '<div class="purchase-history"><div style="color:var(--text3);font-size:12px;padding:6px 0">尚無採購記錄</div></div>';
+    } else {
+      box.innerHTML = `<div class="purchase-history">${rows.map(r => {
+        const uc = r.qty > 0 ? `NT$${(r.total_price/r.qty).toFixed(2)}/${r.qty > 999 ? 'g' : '份'}` : '';
+        const purposeTag = r.purpose && r.purpose !== '精力湯'
+          ? `<span class="ph-purpose">${esc(r.purpose)}</span>` : '';
+        const typeTag = r.item_type === '用具' ? '<span class="ph-purpose" style="background:rgba(175,82,222,.1);color:var(--purple)">用具</span>' : '';
+        return `<div class="ph-row">
+          <span class="ph-date">${r.purchased_at}</span>
+          <span class="ph-qty">${r.qty}${r.unit||''}</span>
+          <span class="ph-price">NT$${r.total_price}</span>
+          <span class="ph-uc">${uc}</span>
+          ${purposeTag}${typeTag}
+        </div>`;
+      }).join('')}</div>`;
+    }
+    box.style.display = '';
+    btn.textContent = '📋 收起';
+  }
+
+  // ── 人力記錄 ────────────────────────────────────────────
+  let laborDate = new Date().toISOString().slice(0, 10);
+
+  async function loadLaborSection(date) {
+    const data = await api(`/api/labor?date=${date}`);
+    const container = document.getElementById('laborSection');
+    if (!container) return;
+    if (data.records.length === 0) {
+      container.innerHTML = '<div style="color:var(--text3);font-size:13px;padding:8px 0">今日尚無工時記錄</div>';
+      return;
+    }
+    container.innerHTML = data.records.map(r => {
+      const cost = Math.round(r.minutes / 60 * 196 * 10) / 10;
+      return `<div class="labor-row">
+        <span class="labor-task">${esc(r.task_type)}</span>
+        <span class="labor-purpose">${esc(r.purpose)}</span>
+        ${r.user_name ? `<span style="font-size:11px;color:var(--text3)">${esc(r.user_name)}</span>` : ''}
+        <span class="labor-min">${r.minutes}分</span>
+        <span class="labor-cost">NT$${cost}</span>
+        <button class="labor-del" onclick="App.deleteLabor(${r.id})">×</button>
+      </div>`;
+    }).join('') + `<div class="labor-total-row">
+      <span>合計 ${data.total_minutes} 分鐘</span>
+      <span style="color:var(--green)">NT$${data.total_cost}</span>
+    </div>`;
+  }
+
+  async function openAddLabor() {
+    const users = await api('/api/users');
+    const sel = document.getElementById('laborUser');
+    sel.innerHTML = `<option value="">（本人 — ${currentUser?.name || ''}）</option>` +
+      users.map(u => `<option value="${u.id}">${esc(u.name)}</option>`).join('');
+    document.getElementById('laborMinutes').value = '';
+    openModal('modalLabor');
+  }
+
+  async function saveLabor() {
+    const minutes = parseInt(document.getElementById('laborMinutes').value) || 0;
+    if (!minutes) return alert('請填寫工時');
+    await api('/api/labor', 'POST', {
+      date: laborDate,
+      user_id: document.getElementById('laborUser').value || currentUser?.id || null,
+      task_type: document.getElementById('laborTaskType').value,
+      purpose: document.getElementById('laborPurpose').value,
+      minutes
+    });
+    closeModal('modalLabor');
+    loadLaborSection(laborDate);
+  }
+
+  async function deleteLabor(id) {
+    if (!confirm('刪除此工時記錄？')) return;
+    await api(`/api/labor/${id}`, 'DELETE');
+    loadLaborSection(laborDate);
+  }
+
+  // ── 試菜記錄 ────────────────────────────────────────────
+  async function loadTrialRecipes() {
+    const recipes = await api('/api/trial_recipes');
+    const el = document.getElementById('trialList');
+    if (!el) return;
+    if (recipes.length === 0) {
+      el.innerHTML = '<div class="empty"><div class="ei">🍳</div>尚無試菜記錄</div>';
+      return;
+    }
+    el.innerHTML = recipes.map(r => {
+      const statusClass = `s${r.status}`;
+      const sessions = (r.sessions || []).map(s => `
+        <div class="trial-session-row">
+          <span class="trial-session-no">第 ${s.session_no} 次</span>
+          <span class="trial-session-date">${s.date}</span>
+          <span class="trial-session-notes">${esc(s.notes || '—')}</span>
+          ${s.labor_minutes > 0 ? `<span style="font-size:11px;color:var(--blue)">${s.labor_minutes}分</span>` : ''}
+          <button class="labor-del" onclick="App.deleteTrialSession(${s.id},${r.id})">×</button>
+        </div>`).join('');
+      return `<div class="trial-card">
+        <div class="trial-card-head">
+          <div>
+            <div class="trial-name">${esc(r.name)}</div>
+            ${r.notes ? `<div style="font-size:12px;color:var(--text3);margin-top:2px">${esc(r.notes)}</div>` : ''}
+          </div>
+          <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end">
+            <span class="trial-status ${statusClass}">${esc(r.status)}</span>
+            <div style="display:flex;gap:6px">
+              <button class="btn btn-ghost btn-sm" onclick="App.openEditTrial(${r.id})">編輯</button>
+              <button class="btn btn-danger btn-sm" onclick="App.deleteTrial(${r.id})">刪除</button>
+            </div>
+          </div>
+        </div>
+        ${sessions || '<div style="color:var(--text3);font-size:12px">尚無試菜記錄</div>'}
+        <div class="trial-cost-row">
+          <span style="color:var(--text3);font-size:12px">累計工時 ${r.total_labor_minutes} 分 → 人力 NT$${r.total_labor_cost}</span>
+          <button class="btn btn-primary btn-sm" onclick="App.openAddTrialSession(${r.id})">＋ 新增記錄</button>
+        </div>
+      </div>`;
+    }).join('');
+  }
+
+  async function openAddTrial() {
+    document.getElementById('modalTrialTitle').textContent = '新增試菜專案';
+    document.getElementById('trialEditId').value = '';
+    document.getElementById('trialName').value = '';
+    document.getElementById('trialStatus').value = '試驗中';
+    document.getElementById('trialNotes').value = '';
+    openModal('modalTrial');
+  }
+
+  async function openEditTrial(id) {
+    const recipes = await api('/api/trial_recipes');
+    const r = recipes.find(x => x.id === id);
+    if (!r) return;
+    document.getElementById('modalTrialTitle').textContent = '編輯試菜專案';
+    document.getElementById('trialEditId').value = id;
+    document.getElementById('trialName').value = r.name;
+    document.getElementById('trialStatus').value = r.status;
+    document.getElementById('trialNotes').value = r.notes || '';
+    openModal('modalTrial');
+  }
+
+  async function saveTrial() {
+    const id = document.getElementById('trialEditId').value;
+    const name = document.getElementById('trialName').value.trim();
+    const status = document.getElementById('trialStatus').value;
+    const notes = document.getElementById('trialNotes').value.trim();
+    if (!name) return alert('請填寫名稱');
+    if (id) await api(`/api/trial_recipes/${id}`, 'PUT', { name, status, notes });
+    else await api('/api/trial_recipes', 'POST', { name, notes });
+    closeModal('modalTrial');
+    loadTrialRecipes();
+  }
+
+  async function deleteTrial(id) {
+    if (!confirm('確定刪除此試菜專案及所有記錄？')) return;
+    await api(`/api/trial_recipes/${id}`, 'DELETE');
+    loadTrialRecipes();
+  }
+
+  function openAddTrialSession(recipeId) {
+    document.getElementById('trialSessionRecipeId').value = recipeId;
+    document.getElementById('trialSessionDate').value = new Date().toISOString().slice(0,10);
+    document.getElementById('trialSessionParticipants').value = '';
+    document.getElementById('trialSessionMinutes').value = '';
+    document.getElementById('trialSessionNotes').value = '';
+    openModal('modalTrialSession');
+  }
+
+  async function saveTrialSession() {
+    const rid = document.getElementById('trialSessionRecipeId').value;
+    const date = document.getElementById('trialSessionDate').value;
+    const participants = document.getElementById('trialSessionParticipants').value.trim();
+    const labor_minutes = parseInt(document.getElementById('trialSessionMinutes').value) || 0;
+    const notes = document.getElementById('trialSessionNotes').value.trim();
+    await api(`/api/trial_recipes/${rid}/sessions`, 'POST', { date, participants, labor_minutes, notes });
+    closeModal('modalTrialSession');
+    loadTrialRecipes();
+  }
+
+  async function deleteTrialSession(sessionId, recipeId) {
+    if (!confirm('刪除此次試菜記錄？')) return;
+    await api(`/api/trial_sessions/${sessionId}`, 'DELETE');
+    loadTrialRecipes();
+  }
+
+  // ── SOP / 品質確認 ───────────────────────────────────────
+  function loadSOP() {
+    const today = new Date().toISOString().slice(0,10);
+    const qcKey = `sop_qc_${today}`;
+    const savedQc = JSON.parse(localStorage.getItem(qcKey) || '{}');
+
+    function qcItem(id, text) {
+      const checked = savedQc[id] || false;
+      return `<div class="sop-qc-item${checked?' checked':''}" id="qci_${id}">
+        <input type="checkbox" id="qcb_${id}" ${checked?'checked':''} onchange="App.toggleQC('${qcKey}','${id}',this.checked)">
+        <label for="qcb_${id}">${esc(text)}</label>
+      </div>`;
+    }
+
+    const html = `
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+        <h2 style="font-size:18px;font-weight:800">SOP 品質管理</h2>
+        <span style="font-size:12px;color:var(--text3)">${today}</span>
+      </div>
+
+      <div class="sop-section-title">📅 每週作業時程</div>
+      <div class="sop-card">
+        <div class="sop-schedule-grid">
+          <div class="sop-day-card"><div class="sop-day-name">週六 / 日</div><div class="sop-day-tasks">採購食材<br>補充庫存<br>記錄進貨</div></div>
+          <div class="sop-day-card"><div class="sop-day-name">週一</div><div class="sop-day-tasks">備料日<br>調配粉包 27份<br>標記日期</div></div>
+          <div class="sop-day-card"><div class="sop-day-name">週二</div><div class="sop-day-tasks">出餐日<br>員工 + 個案<br>品質確認</div></div>
+          <div class="sop-day-card"><div class="sop-day-name">週三</div><div class="sop-day-tasks">（備用日）<br>試菜 / 研發</div></div>
+          <div class="sop-day-card"><div class="sop-day-name">週四</div><div class="sop-day-tasks">出餐日<br>員工 + 個案<br>品質確認</div></div>
+          <div class="sop-day-card"><div class="sop-day-name">週五</div><div class="sop-day-tasks">出餐日<br>外帶備料<br>週末預備</div></div>
+        </div>
+      </div>
+
+      <div class="sop-section-title">🥤 精力湯製作 SOP</div>
+      <div class="sop-card">
+        <div class="sop-step"><span class="sop-step-no">1</span><span>確認今日出單（今日工作單 → 批次分配）</span></div>
+        <div class="sop-step"><span class="sop-step-no">2</span><span>蔬菜三洗：流水 → 鹽水浸泡 3 分鐘 → 再次流水沖洗</span></div>
+        <div class="sop-step"><span class="sop-step-no">3</span><span>依處方秤量食材（遵循 FIFO — 先進先用）</span></div>
+        <div class="sop-step"><span class="sop-step-no">4</span><span>依批次順序加入蔬菜 → 水果 → 油 → 水 → 粉包</span></div>
+        <div class="sop-step"><span class="sop-step-no">5</span><span>打汁 60 秒以上，確認質地均勻</span></div>
+        <div class="sop-step"><span class="sop-step-no">6</span><span>倒出前確認口感與顏色正常</span></div>
+        <div class="sop-step"><span class="sop-step-no">7</span><span>個管助理 + 執行者雙重確認後出餐</span></div>
+      </div>
+
+      <div class="sop-section-title">✅ 今日品質確認清單（${today}）
+        <button class="sop-reset-btn" onclick="App.resetQC('${qcKey}')">重設</button>
+      </div>
+      <div class="sop-card sop-qc-date">
+        <div style="font-size:12px;color:var(--text2);margin-bottom:10px">個管助理確認</div>
+        ${qcItem('qa1', '確認今日出單人數與處方正確')}
+        ${qcItem('qa2', '粉包已依份數備妥且標記日期')}
+        ${qcItem('qa3', '蔬菜已完成三洗程序')}
+        ${qcItem('qa4', '食材依處方秤量，誤差 ≤ 5%')}
+        ${qcItem('qa5', '罐裝個案已多備 10% 粉量')}
+        ${qcItem('qa6', '禁忌症個案已特別確認（對照處方備註）')}
+        <div style="font-size:12px;color:var(--text2);margin:12px 0 8px">執行者確認</div>
+        ${qcItem('qe1', '打汁前確認食材組合與處方一致')}
+        ${qcItem('qe2', '打汁完成，質地均勻無結塊')}
+        ${qcItem('qe3', '口感 / 顏色正常（異常應回報）')}
+        ${qcItem('qe4', '容器清潔，密封妥善')}
+        ${qcItem('qe5', '庫存已在系統更新（出餐後自動扣除）')}
+        ${qcItem('qe6', '工作區域清潔完成')}
+      </div>
+
+      <div class="sop-section-title">📌 關鍵規則</div>
+      <div class="sop-card">
+        <div class="sop-rule">FIFO 原則：先進先用，新入庫放後方</div>
+        <div class="sop-rule">蔬菜三洗：流水→鹽水→流水，缺一不可</div>
+        <div class="sop-rule">罐裝 / 全配方：粉量 ×1.1（防溢損耗）</div>
+        <div class="sop-rule">禁忌症：取餐前必須彈出確認視窗並核對</div>
+        <div class="sop-rule">處方由醫師 / 個管師制定 → 個管助理交執行者</div>
+        <div class="sop-rule">庫存不足時系統自動標紅，採購前必須確認</div>
+        <div class="sop-rule">人力記錄：每次工作後記錄工時（今日成本頁籤）</div>
+      </div>
+
+      <div class="sop-section-title">👥 人員職責</div>
+      <div class="sop-card">
+        <div class="sop-step"><span class="sop-step-no" style="color:var(--purple)">醫師</span><span>制定 / 修改處方、設定禁忌症</span></div>
+        <div class="sop-step"><span class="sop-step-no" style="color:var(--purple)">個管師</span><span>與醫師討論配方，審核確認後交個管助理</span></div>
+        <div class="sop-step"><span class="sop-step-no" style="color:var(--blue)">個管助理</span><span>轉交執行者、品質確認（第一道 QC）、出單管理</span></div>
+        <div class="sop-step"><span class="sop-step-no" style="color:var(--green)">執行者</span><span>備料製作、品質確認（第二道 QC）、庫存更新</span></div>
+      </div>`;
+
+    document.getElementById('sopContent').innerHTML = html;
+  }
+
+  function toggleQC(qcKey, itemId, checked) {
+    const saved = JSON.parse(localStorage.getItem(qcKey) || '{}');
+    saved[itemId] = checked;
+    localStorage.setItem(qcKey, JSON.stringify(saved));
+    const row = document.getElementById(`qci_${itemId}`);
+    if (row) row.classList.toggle('checked', checked);
+  }
+
+  function resetQC(qcKey) {
+    if (!confirm('重設今日品質確認清單？')) return;
+    localStorage.removeItem(qcKey);
+    loadSOP();
+  }
+
   // ── 設定 ────────────────────────────────────────────────
   async function openSettings() {
     const data = await api('/api/costs');
@@ -1582,12 +1936,16 @@ const App = (() => {
     deleteCase, openAddCase, openEditCase, addCase,
     loadRx, openAddRx, openEditRx, saveRx,
     openEditRxIngredients, saveRxIngredients,
-    loadInventory, openEditInv, saveInventory,
+    loadInventory, openEditInv, saveInventory, togglePurchaseHistory,
     openAddIngredient, addIngredient, openPurchase, savePurchase,
     loadCost, switchCostTab, prevCostMonth, nextCostMonth,
     openSettings, saveSettings,
     openAddUser, addUser,
     openAddProduct, openEditProduct, saveProduct,
-    openModal, closeModal
+    openModal, closeModal,
+    openAddLabor, saveLabor, deleteLabor,
+    loadTrialRecipes, openAddTrial, openEditTrial, saveTrial, deleteTrial,
+    openAddTrialSession, saveTrialSession, deleteTrialSession,
+    loadSOP, toggleQC, resetQC
   };
 })();

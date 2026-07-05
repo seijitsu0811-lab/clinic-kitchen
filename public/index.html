@@ -577,6 +577,7 @@
       <div class="tab" data-tab="rx">💊 處方</div>
       <div class="tab" data-tab="inv">📦 庫存 <span id="invWarningBadge" class="inv-warn-tab" style="display:none"></span></div>
       <div class="tab" data-tab="cost">💰 成本</div>
+      <div class="tab" data-tab="sop">🗂 SOP</div>
     </div>
   </div>
 
@@ -601,6 +602,16 @@
     </div>
 
     <div id="productSections"></div>
+
+    <div class="labor-section">
+      <div class="section-head" style="margin-top:20px;margin-bottom:8px">
+        <h2 style="font-size:15px">⏱ 今日工時記錄</h2>
+        <button class="btn btn-ghost btn-sm" onclick="App.openAddLabor()">＋ 記錄工時</button>
+      </div>
+      <div class="card" style="padding:8px 16px">
+        <div id="laborSection"><div style="color:var(--text3);font-size:13px;padding:8px 0">載入中…</div></div>
+      </div>
+    </div>
   </div>
 
   <!-- 個案處方 -->
@@ -633,6 +644,7 @@
       <button class="cost-tab active" data-ctab="today"   onclick="App.switchCostTab('today')">今日成本</button>
       <button class="cost-tab"        data-ctab="monthly" onclick="App.switchCostTab('monthly')">月報</button>
       <button class="cost-tab"        data-ctab="rx"      onclick="App.switchCostTab('rx')">處方成本</button>
+      <button class="cost-tab"        data-ctab="trial"   onclick="App.switchCostTab('trial')">試菜記錄</button>
       <button class="btn btn-ghost btn-sm cost-settings-btn" onclick="App.openSettings()">⚙</button>
     </div>
 
@@ -655,6 +667,20 @@
     <div id="costSection-rx" class="cost-section">
       <div id="costList"></div>
     </div>
+
+    <!-- 試菜記錄 -->
+    <div id="costSection-trial" class="cost-section">
+      <div class="section-head" style="margin-bottom:12px">
+        <h2 style="font-size:15px">試菜專案</h2>
+        <button class="btn btn-primary btn-sm" onclick="App.openAddTrial()">＋ 新增試菜</button>
+      </div>
+      <div id="trialList"></div>
+    </div>
+  </div>
+
+  <!-- SOP / 品質確認 -->
+  <div class="page" id="page-sop">
+    <div id="sopContent"></div>
   </div>
 </div>
 
@@ -906,6 +932,23 @@
       <label>採購日期</label>
       <input id="purchaseDate" type="date">
     </div>
+    <div style="display:flex;gap:10px">
+      <div class="form-group" style="flex:1">
+        <label>品項類型</label>
+        <select id="purchaseItemType">
+          <option value="食材">🥬 食材</option>
+          <option value="用具">🔧 用具</option>
+        </select>
+      </div>
+      <div class="form-group" style="flex:1">
+        <label>用途歸屬</label>
+        <select id="purchasePurpose">
+          <option value="精力湯">精力湯</option>
+          <option value="試菜">試菜</option>
+          <option value="公用">公用</option>
+        </select>
+      </div>
+    </div>
     <div class="modal-actions">
       <button class="btn btn-ghost" onclick="App.closeModal('modalPurchase')">取消</button>
       <button class="btn btn-primary" onclick="App.savePurchase()">確認進貨</button>
@@ -924,6 +967,11 @@
       <label id="editInvQtyLabel">目前庫存量</label>
       <input id="editInvQty" type="number" min="0" step="0.1">
       <small id="editInvQtyHint" style="color:var(--text3);font-size:12px;margin-top:4px;display:none"></small>
+    </div>
+    <div class="form-group">
+      <label>建議使用天數（效期）</label>
+      <input id="editInvShelfLife" type="number" min="0" step="1" placeholder="0 = 未設定">
+      <small style="color:var(--text3);font-size:12px;margin-top:4px;display:block">採購後建議在幾天內使用完畢（0 = 未設定）</small>
     </div>
     <div class="modal-actions">
       <button class="btn btn-ghost" onclick="App.closeModal('modalEditInv')">取消</button>
@@ -958,6 +1006,180 @@
     </div>
   </div>
 </div>
+
+<!-- 記錄人力 -->
+<div class="modal-backdrop" id="modalLabor">
+  <div class="modal">
+    <div class="modal-title">記錄人力工時</div>
+    <div class="form-group">
+      <label>任務類型</label>
+      <select id="laborTaskType">
+        <option value="備料">備料</option>
+        <option value="製作">製作（打汁）</option>
+        <option value="品質確認">品質確認</option>
+        <option value="清潔">清潔</option>
+        <option value="試菜">試菜</option>
+        <option value="採買">採買</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label>用途</label>
+      <select id="laborPurpose">
+        <option value="精力湯">精力湯</option>
+        <option value="試菜">試菜</option>
+        <option value="公用">公用</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label>執行人員（選填）</label>
+      <select id="laborUser">
+        <option value="">（本人）</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label>工時（分鐘）</label>
+      <input id="laborMinutes" type="number" min="1" step="5" placeholder="如：30">
+      <small style="color:var(--text3);font-size:12px;margin-top:4px;display:block">費率 NT$196/小時，自動計算成本</small>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="App.closeModal('modalLabor')">取消</button>
+      <button class="btn btn-primary" onclick="App.saveLabor()">記錄</button>
+    </div>
+  </div>
+</div>
+
+<!-- 新增試菜專案 -->
+<div class="modal-backdrop" id="modalTrial">
+  <div class="modal">
+    <div class="modal-title" id="modalTrialTitle">新增試菜專案</div>
+    <input type="hidden" id="trialEditId">
+    <div class="form-group">
+      <label>菜色名稱</label>
+      <input id="trialName" type="text" placeholder="如：五色蔬菜湯">
+    </div>
+    <div class="form-group">
+      <label>狀態</label>
+      <select id="trialStatus">
+        <option value="試驗中">試驗中</option>
+        <option value="已確定">已確定（列入菜單）</option>
+        <option value="停止">停止試驗</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label>備註</label>
+      <input id="trialNotes" type="text" placeholder="可留空">
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="App.closeModal('modalTrial')">取消</button>
+      <button class="btn btn-primary" onclick="App.saveTrial()">儲存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 新增試菜次數記錄 -->
+<div class="modal-backdrop" id="modalTrialSession">
+  <div class="modal">
+    <div class="modal-title">新增試菜記錄</div>
+    <input type="hidden" id="trialSessionRecipeId">
+    <div class="form-group">
+      <label>試菜日期</label>
+      <input id="trialSessionDate" type="date">
+    </div>
+    <div class="form-group">
+      <label>參與人員</label>
+      <input id="trialSessionParticipants" type="text" placeholder="如：個管師、執行者">
+    </div>
+    <div class="form-group">
+      <label>工時（分鐘）</label>
+      <input id="trialSessionMinutes" type="number" min="0" step="5" placeholder="0">
+    </div>
+    <div class="form-group">
+      <label>本次記錄</label>
+      <input id="trialSessionNotes" type="text" placeholder="調整重點、問題、下次改善方向">
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="App.closeModal('modalTrialSession')">取消</button>
+      <button class="btn btn-primary" onclick="App.saveTrialSession()">儲存</button>
+    </div>
+  </div>
+</div>
+
+<style>
+  /* ── 新增 CSS ── */
+  /* 今日人力記錄 */
+  .labor-section { margin-top: 20px; }
+  .labor-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+  .labor-row:last-child { border-bottom: none; }
+  .labor-task { font-weight: 600; min-width: 60px; }
+  .labor-purpose { color: var(--text3); font-size: 11px; background: var(--bg); border-radius: 6px; padding: 1px 6px; }
+  .labor-min { color: var(--blue); font-weight: 700; }
+  .labor-cost { color: var(--green); font-size: 12px; margin-left: auto; }
+  .labor-del { color: var(--text3); cursor: pointer; font-size: 16px; padding: 0 4px; background: none; border: none; }
+  .labor-del:hover { color: var(--red); }
+  .labor-total-row { display: flex; justify-content: space-between; align-items: center; padding: 10px 0 0; font-size: 14px; font-weight: 700; }
+
+  /* 採購歷史 */
+  .purchase-history { margin-top: 8px; padding: 8px 12px; background: var(--bg); border-radius: 10px; }
+  .ph-row { display: flex; gap: 8px; align-items: center; padding: 4px 0; font-size: 12px; border-bottom: 1px solid var(--border); }
+  .ph-row:last-child { border-bottom: none; }
+  .ph-date { color: var(--text3); min-width: 72px; }
+  .ph-qty { font-weight: 600; min-width: 64px; }
+  .ph-price { color: var(--blue); min-width: 56px; }
+  .ph-uc { color: var(--green); font-size: 11px; }
+  .ph-purpose { font-size: 10px; background: rgba(0,122,255,.1); color: var(--blue); border-radius: 4px; padding: 1px 5px; }
+  .ph-toggle { font-size: 11px; color: var(--blue); cursor: pointer; background: none; border: none; padding: 0; margin-left: auto; }
+
+  /* 試菜記錄 */
+  .trial-card { background: var(--card); border-radius: 14px; padding: 14px 16px; margin-bottom: 10px; box-shadow: 0 1px 4px rgba(0,0,0,.05); }
+  .trial-card-head { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 8px; }
+  .trial-name { font-size: 16px; font-weight: 700; }
+  .trial-status { font-size: 11px; font-weight: 700; border-radius: 10px; padding: 2px 8px; }
+  .trial-status.s試驗中 { background: rgba(255,149,0,.15); color: var(--orange); }
+  .trial-status.s已確定 { background: rgba(52,199,89,.15); color: var(--green); }
+  .trial-status.s停止   { background: rgba(142,142,147,.12); color: var(--gray); }
+  .trial-session-row { font-size: 12px; padding: 5px 0; border-bottom: 1px solid var(--border); display: flex; gap: 8px; align-items: center; }
+  .trial-session-row:last-child { border-bottom: none; }
+  .trial-session-no { font-weight: 700; color: var(--blue); min-width: 28px; }
+  .trial-session-date { color: var(--text3); min-width: 68px; }
+  .trial-session-notes { flex: 1; }
+  .trial-cost-row { font-size: 13px; padding: 8px 0 0; display: flex; justify-content: space-between; align-items: center; }
+
+  /* SOP 頁面 */
+  .sop-section { margin-bottom: 20px; }
+  .sop-section-title { font-size: 15px; font-weight: 800; color: var(--blue); margin: 16px 0 8px; display: flex; align-items: center; gap: 6px; }
+  .sop-card { background: var(--card); border-radius: 14px; padding: 14px 16px; margin-bottom: 10px; box-shadow: 0 1px 4px rgba(0,0,0,.05); }
+  .sop-step { display: flex; gap: 10px; padding: 7px 0; border-bottom: 1px solid var(--border); font-size: 14px; align-items: flex-start; }
+  .sop-step:last-child { border-bottom: none; }
+  .sop-step-no { font-size: 13px; font-weight: 800; color: var(--blue); min-width: 22px; }
+  .sop-qc-item { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 14px; }
+  .sop-qc-item:last-child { border-bottom: none; }
+  .sop-qc-item input[type=checkbox] { width: 18px; height: 18px; cursor: pointer; accent-color: var(--green); }
+  .sop-qc-item.checked label { text-decoration: line-through; color: var(--text3); }
+  .sop-schedule-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px; }
+  .sop-day-card { background: var(--bg); border-radius: 10px; padding: 10px 12px; font-size: 13px; }
+  .sop-day-name { font-weight: 700; color: var(--blue); margin-bottom: 4px; }
+  .sop-day-tasks { color: var(--text2); font-size: 12px; line-height: 1.6; }
+  .sop-rule { font-size: 13px; padding: 6px 0; border-bottom: 1px solid var(--border); color: var(--text); }
+  .sop-rule:last-child { border-bottom: none; }
+  .sop-rule::before { content: '▸ '; color: var(--blue); }
+  .sop-reset-btn { font-size: 11px; color: var(--text3); background: none; border: 1px solid var(--border); border-radius: 6px; padding: 2px 8px; cursor: pointer; margin-left: auto; }
+  .sop-qc-date { font-size: 11px; color: var(--text3); margin-bottom: 8px; }
+
+  /* 採購記錄在庫存行加入按鈕 */
+  .inv-hist-btn { font-size: 11px; color: var(--blue); cursor: pointer; background: rgba(0,122,255,.08); border: 1px solid rgba(0,122,255,.2); border-radius: 6px; padding: 1px 7px; margin-top: 3px; display: inline-block; }
+  .shelf-life-badge { font-size: 10px; color: var(--text3); background: var(--bg); border-radius: 6px; padding: 1px 6px; margin-top: 2px; display: inline-block; }
+  .shelf-life-badge.sl-ok { color: var(--green); background: rgba(52,199,89,.1); }
+
+  /* 禁忌症確認 dialog 強化 - 用自訂 banner 取代 confirm */
+  .contra-confirm { position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 2000; display: flex; align-items: center; justify-content: center; padding: 20px; }
+  .contra-box { background: var(--card); border-radius: 20px; padding: 24px; max-width: 380px; width: 100%; box-shadow: 0 8px 40px rgba(0,0,0,.25); }
+  .contra-icon { font-size: 40px; text-align: center; margin-bottom: 10px; }
+  .contra-title { font-size: 18px; font-weight: 800; text-align: center; margin-bottom: 6px; }
+  .contra-name { font-size: 15px; font-weight: 700; color: var(--blue); text-align: center; margin-bottom: 14px; }
+  .contra-warn { background: rgba(255,149,0,.12); border: 1.5px solid rgba(255,149,0,.4); border-radius: 12px; padding: 12px 16px; font-size: 14px; color: #7a4000; font-weight: 600; margin-bottom: 18px; }
+  .contra-actions { display: flex; gap: 10px; }
+  .contra-actions .btn { flex: 1; justify-content: center; }
+</style>
 
 <script src="app.js"></script>
 </body>

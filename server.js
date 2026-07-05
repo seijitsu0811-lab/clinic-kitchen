@@ -24,6 +24,12 @@ db.exec(fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8'));
   "ALTER TABLE ingredients ADD COLUMN count_unit TEXT DEFAULT ''",
   "ALTER TABLE ingredients ADD COLUMN count_ratio REAL DEFAULT 1",
   "ALTER TABLE ingredients ADD COLUMN sort_order INTEGER DEFAULT 0",
+  "ALTER TABLE purchase_log ADD COLUMN item_type TEXT DEFAULT '食材'",
+  "ALTER TABLE purchase_log ADD COLUMN purpose TEXT DEFAULT '精力湯'",
+  "ALTER TABLE ingredients ADD COLUMN shelf_life_days INTEGER DEFAULT 0",
+  "CREATE TABLE IF NOT EXISTS labor_records (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT NOT NULL, user_id INTEGER, role TEXT DEFAULT '', task_type TEXT DEFAULT '製作', purpose TEXT DEFAULT '精力湯', minutes INTEGER DEFAULT 0, hourly_rate REAL DEFAULT 196, created_at TEXT DEFAULT (datetime('now','localtime')))",
+  "CREATE TABLE IF NOT EXISTS trial_recipes (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, status TEXT DEFAULT '試驗中', notes TEXT DEFAULT '', created_at TEXT DEFAULT (datetime('now','localtime')))",
+  "CREATE TABLE IF NOT EXISTS trial_sessions (id INTEGER PRIMARY KEY AUTOINCREMENT, trial_recipe_id INTEGER, session_no INTEGER DEFAULT 1, date TEXT, notes TEXT DEFAULT '', labor_minutes INTEGER DEFAULT 0, participants TEXT DEFAULT '', created_at TEXT DEFAULT (datetime('now','localtime')))",
 ].forEach(sql => { try { db.exec(sql); } catch(e) {} });
 db.exec("UPDATE prescriptions SET is_staff_rx=1 WHERE code='EMP-00'");
 db.exec("UPDATE prescriptions SET product_id=1 WHERE product_id IS NULL");
@@ -528,12 +534,12 @@ app.get('/api/ingredients', (req, res) => {
 });
 
 app.post('/api/ingredients', (req, res) => {
-  const { name, unit, category, safety_stock, storage_note } = req.body;
+  const { name, unit, category, safety_stock, storage_note, shelf_life_days } = req.body;
   if (!name?.trim()) return res.status(400).json({ error: '請輸入食材名稱' });
   try {
     const r = db.prepare(
-      `INSERT INTO ingredients (name,unit,category,safety_stock,storage_note) VALUES (?,?,?,?,?)`
-    ).run(name.trim(), unit||'g', category||'其他', safety_stock||0, storage_note||'');
+      `INSERT INTO ingredients (name,unit,category,safety_stock,storage_note,shelf_life_days) VALUES (?,?,?,?,?,?)`
+    ).run(name.trim(), unit||'g', category||'其他', safety_stock||0, storage_note||'', shelf_life_days||0);
     db.prepare('INSERT OR IGNORE INTO inventory (ingredient_id, qty) VALUES (?,0)').run(r.lastInsertRowid);
     res.json({ id: r.lastInsertRowid });
   } catch(e) {
@@ -542,10 +548,20 @@ app.post('/api/ingredients', (req, res) => {
 });
 
 app.put('/api/ingredients/:id', (req, res) => {
-  const { name, unit, category, safety_stock, storage_note } = req.body;
+  const { name, unit, category, safety_stock, storage_note, shelf_life_days } = req.body;
   db.prepare(
-    `UPDATE ingredients SET name=?,unit=?,category=?,safety_stock=?,storage_note=? WHERE id=?`
-  ).run(name, unit, category, safety_stock||0, storage_note||'', req.params.id);
+    `UPDATE ingredients SET name=?,unit=?,category=?,safety_stock=?,storage_note=?,shelf_life_days=? WHERE id=?`
+  ).run(name, unit, category, safety_stock||0, storage_note||'', shelf_life_days||0, req.params.id);
+  res.json({ ok: true });
+});
+
+app.patch('/api/ingredients/:id', (req, res) => {
+  const fields = req.body;
+  const allowed = ['shelf_life_days', 'safety_stock', 'storage_note'];
+  const sets = Object.keys(fields).filter(k => allowed.includes(k)).map(k => `${k}=?`);
+  if (sets.length === 0) return res.status(400).json({ error: 'no valid fields' });
+  db.prepare(`UPDATE ingredients SET ${sets.join(',')} WHERE id=?`)
+    .run(...Object.keys(fields).filter(k => allowed.includes(k)).map(k => fields[k]), req.params.id);
   res.json({ ok: true });
 });
 
@@ -573,17 +589,27 @@ app.put('/api/inventory/:id', (req, res) => {
 
 // 記錄採購（更新庫存 + 採購記錄）
 app.post('/api/inventory/purchase', (req, res) => {
-  const { ingredient_id, qty, total_price, purchased_at, user_id } = req.body;
+  const { ingredient_id, qty, total_price, purchased_at, user_id, item_type, purpose } = req.body;
   tx(() => {
     db.prepare(
-      `INSERT INTO purchase_log (ingredient_id,qty,total_price,purchased_at,user_id) VALUES (?,?,?,?,?)`
-    ).run(ingredient_id, qty, total_price, purchased_at || today(), user_id||null);
+      `INSERT INTO purchase_log (ingredient_id,qty,total_price,purchased_at,user_id,item_type,purpose) VALUES (?,?,?,?,?,?,?)`
+    ).run(ingredient_id, qty, total_price, purchased_at || today(), user_id||null, item_type||'食材', purpose||'精力湯');
     db.prepare(
       `INSERT INTO inventory (ingredient_id,qty,updated_at) VALUES (?,?,datetime('now','localtime'))
        ON CONFLICT(ingredient_id) DO UPDATE SET qty=qty+excluded.qty, updated_at=excluded.updated_at`
     ).run(ingredient_id, qty);
   });
   res.json({ ok: true });
+});
+
+// 食材採購歷史
+app.get('/api/inventory/:id/purchases', (req, res) => {
+  const rows = db.prepare(
+    `SELECT pl.*, u.name as user_name
+     FROM purchase_log pl LEFT JOIN users u ON u.id=pl.user_id
+     WHERE pl.ingredient_id=? ORDER BY pl.purchased_at DESC, pl.id DESC`
+  ).all(req.params.id);
+  res.json(rows);
 });
 
 // 出餐扣庫存
@@ -800,6 +826,94 @@ app.put('/api/settings', (req, res) => {
   entries.forEach(([k, v]) => {
     db.prepare('INSERT INTO settings (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value')
       .run(k, String(v));
+  });
+  res.json({ ok: true });
+});
+
+// ════════════════════════════════════════════════════════
+// API: 人力記錄（196元/hr）
+// ════════════════════════════════════════════════════════
+
+app.get('/api/labor', (req, res) => {
+  const date = req.query.date || today();
+  const rows = db.prepare(
+    `SELECT lr.*, u.name as user_name
+     FROM labor_records lr LEFT JOIN users u ON u.id=lr.user_id
+     WHERE lr.date=? ORDER BY lr.id`
+  ).all(date);
+  const total_minutes = rows.reduce((s, r) => s + (r.minutes || 0), 0);
+  const total_cost = Math.round(total_minutes / 60 * 196 * 10) / 10;
+  res.json({ date, records: rows, total_minutes, total_cost });
+});
+
+app.post('/api/labor', (req, res) => {
+  const { date, user_id, role, task_type, purpose, minutes } = req.body;
+  if (!minutes || minutes <= 0) return res.status(400).json({ error: 'invalid' });
+  const r = db.prepare(
+    `INSERT INTO labor_records (date,user_id,role,task_type,purpose,minutes,hourly_rate) VALUES (?,?,?,?,?,?,196)`
+  ).run(date || today(), user_id||null, role||'', task_type||'製作', purpose||'精力湯', minutes);
+  res.json({ id: r.lastInsertRowid });
+});
+
+app.delete('/api/labor/:id', (req, res) => {
+  db.prepare('DELETE FROM labor_records WHERE id=?').run(req.params.id);
+  res.json({ ok: true });
+});
+
+// ════════════════════════════════════════════════════════
+// API: 試菜記錄
+// ════════════════════════════════════════════════════════
+
+app.get('/api/trial_recipes', (req, res) => {
+  const recipes = db.prepare('SELECT * FROM trial_recipes ORDER BY id DESC').all();
+  const result = recipes.map(r => {
+    const sessions = db.prepare(
+      'SELECT * FROM trial_sessions WHERE trial_recipe_id=? ORDER BY session_no, id'
+    ).all(r.id);
+    const total_labor = sessions.reduce((s, ss) => s + (ss.labor_minutes || 0), 0);
+    return { ...r, sessions, total_labor_minutes: total_labor,
+             total_labor_cost: Math.round(total_labor / 60 * 196 * 10) / 10 };
+  });
+  res.json(result);
+});
+
+app.post('/api/trial_recipes', (req, res) => {
+  const { name, notes } = req.body;
+  if (!name?.trim()) return res.status(400).json({ error: '請填寫名稱' });
+  const r = db.prepare(
+    `INSERT INTO trial_recipes (name,notes,created_at) VALUES (?,?,datetime('now','localtime'))`
+  ).run(name.trim(), notes||'');
+  res.json({ id: r.lastInsertRowid });
+});
+
+app.put('/api/trial_recipes/:id', (req, res) => {
+  const { name, status, notes } = req.body;
+  db.prepare(`UPDATE trial_recipes SET name=?,status=?,notes=? WHERE id=?`)
+    .run(name, status||'試驗中', notes||'', req.params.id);
+  res.json({ ok: true });
+});
+
+app.post('/api/trial_recipes/:id/sessions', (req, res) => {
+  const { date, notes, labor_minutes, participants } = req.body;
+  const maxNo = db.prepare(
+    'SELECT COALESCE(MAX(session_no),0) as m FROM trial_sessions WHERE trial_recipe_id=?'
+  ).get(req.params.id).m;
+  const r = db.prepare(
+    `INSERT INTO trial_sessions (trial_recipe_id,session_no,date,notes,labor_minutes,participants,created_at)
+     VALUES (?,?,?,?,?,?,datetime('now','localtime'))`
+  ).run(req.params.id, maxNo+1, date||today(), notes||'', labor_minutes||0, participants||'');
+  res.json({ id: r.lastInsertRowid });
+});
+
+app.delete('/api/trial_sessions/:id', (req, res) => {
+  db.prepare('DELETE FROM trial_sessions WHERE id=?').run(req.params.id);
+  res.json({ ok: true });
+});
+
+app.delete('/api/trial_recipes/:id', (req, res) => {
+  tx(() => {
+    db.prepare('DELETE FROM trial_sessions WHERE trial_recipe_id=?').run(req.params.id);
+    db.prepare('DELETE FROM trial_recipes WHERE id=?').run(req.params.id);
   });
   res.json({ ok: true });
 });
