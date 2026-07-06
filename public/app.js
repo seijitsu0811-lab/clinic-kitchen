@@ -1771,142 +1771,268 @@ const App = (() => {
       const checked = savedQc[id] || false;
       return `<div class="sop-qc-item${checked?' checked':''}" id="qci_${id}">
         <input type="checkbox" id="qcb_${id}" ${checked?'checked':''} onchange="App.toggleQC('${qcKey}','${id}',this.checked)">
-        <label for="qcb_${id}">${esc(text)}</label>
+        <label for="qcb_${id}">${text}</label>
       </div>`;
     }
 
     const html = `
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
-        <h2 style="font-size:18px;font-weight:800">精力湯供應 SOP</h2>
+        <h2 style="font-size:18px;font-weight:800">📌 精力湯供應 SOP</h2>
         <span style="font-size:12px;color:var(--text3)">${today}</span>
       </div>
-      <div style="font-size:12px;color:var(--text3);margin-bottom:12px">所有人員請熟讀此表，每週依此流程執行</div>
+      <div style="font-size:12px;color:var(--text3);margin-bottom:16px">所有人員請熟讀此表，每週依此流程執行</div>
 
-      <div class="sop-section-title">👥 人員分工</div>
+      <div class="sop-section-title">一、人員分工與職責</div>
       <div class="sop-card">
-        <div class="sop-step"><span class="sop-step-no" style="min-width:72px;color:var(--text)">John</span><span>統籌整體運作；每週末採買蔬果＋補粉類；審核成本與月統計；處理供應異常</span></div>
-        <div class="sop-step"><span class="sop-step-no" style="min-width:72px;color:var(--blue)">個管助理</span><span>每日彙整出單；開立今日執行單；監控時程；製作完成品質確認；<strong>週五盤點庫存</strong>並確認週末採買清單</span></div>
-        <div class="sop-step"><span class="sop-step-no" style="min-width:72px;color:var(--purple)">個管師</span><span>依個案回饋與醫師討論配方調整；記錄個案實際反應；填寫個案出單；維護處方箋版本</span></div>
-        <div class="sop-step"><span class="sop-step-no" style="min-width:72px;color:var(--green)">執行單位</span><span>週一備料SOP；供應日依執行單製作；製作完成填入完成時間；廢棄品填入備料單備註</span></div>
+        <div class="sop-step">
+          <span class="sop-step-no" style="min-width:96px;color:var(--text)">John（總負責人）</span>
+          <div>統籌整體精力湯福利運作；每週末執行採買（新鮮蔬果＋粉類補充）；審核成本與月統計報告；處理供應異常狀況</div>
+        </div>
+        <div class="sop-step">
+          <span class="sop-step-no" style="min-width:96px;color:var(--blue)">個管助理</span>
+          <div>每日彙整出單（確認員工與個案當日杯數）；開立今日執行單並通知執行單位；監控執行時程（依「最晚開始」時間追蹤，超時立即通報）；製作完成品質確認；<strong>週五盤點庫存並確認週末採買清單</strong></div>
+        </div>
+        <div class="sop-step">
+          <span class="sop-step-no" style="min-width:96px;color:var(--purple)">個管師<br><small style="font-weight:400">Bonnie / Winnie</small></span>
+          <div>根據個案飲用後回饋，持續與醫師討論配方調整；記錄個案實際反應至知識庫（食材耐受度、療效觀察、禁忌更新）；填寫個案出單、確認配方類型與禁忌；維護處方箋版本並通知相關人員</div>
+        </div>
+        <div class="sop-step">
+          <span class="sop-step-no" style="min-width:96px;color:var(--green)">執行單位</span>
+          <div>負責週一備料 SOP（粉包分裝、葉菜冷藏、水果冷凍）；供應日依今日執行單製作各員工與個案的精力湯；製作完成填入「完成時間」；廢棄品填入備料單備註欄</div>
+        </div>
       </div>
 
-      <div class="sop-section-title">📅 每週作業時程</div>
+      <div class="sop-section-title">二、每週作業時間表</div>
       <div class="sop-card">
         <div class="sop-schedule-grid">
           <div class="sop-day-card">
             <div class="sop-day-name">週六 / 日　採買日</div>
-            <div class="sop-day-tasks">John 採買新鮮蔬果＋補粉類<br>採買後 2 小時內完成冷藏入庫</div>
+            <div class="sop-day-tasks">John 採買新鮮蔬果＋補粉類庫存<br>採買後 2 小時內完成冷藏入庫</div>
           </div>
           <div class="sop-day-card">
-            <div class="sop-day-name">週一　備料日</div>
-            <div class="sop-day-tasks">①燕麥打粉<br>②粉包分裝 27 份<br>③葉菜三道清洗<br>④水果冷凍秤重</div>
+            <div class="sop-day-name">週一上午　備料日</div>
+            <div class="sop-day-tasks"><strong>執行單位負責：</strong><br>① 燕麥打粉<br>② 粉包分裝 27 份<br>③ 葉菜三道清洗→冷藏<br>④ 蘋果切塊冷凍</div>
           </div>
           <div class="sop-day-card">
             <div class="sop-day-name">週二 / 四 / 五　供應日</div>
-            <div class="sop-day-tasks">員工統一一批製作<br>個案依取餐時間個別製作</div>
+            <div class="sop-day-tasks">員工統一一批製作<br>個案依取餐時間個別製作<br>（見三、個案出單情境）</div>
           </div>
           <div class="sop-day-card">
             <div class="sop-day-name">週五下班前　盤點日</div>
-            <div class="sop-day-tasks">個管助理盤點所有食材<br>填入庫存表藍色欄<br>確認採買清單交給 John</div>
+            <div class="sop-day-tasks">個管助理盤點所有食材<br>填入庫存表藍色欄<br>確認橘色欄採買清單<br>交給 John</div>
           </div>
+        </div>
+        <div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--border)">
+          <div style="font-size:12px;font-weight:700;color:var(--text2);margin-bottom:8px">儲藏方式</div>
+          <div class="sop-rule">乾放類（粉包、堅果、膠囊、油）→ 檯台上專用收納盒，分格放置，每格貼食材名稱</div>
+          <div class="sop-rule">冷藏類（蔬菜）→ 冰箱專用盒，各食材分開存放，盒外貼效期標籤</div>
+          <div class="sop-rule">冷凍類（水果、莓果）→ 冰箱冷凍專用盒，分袋密封，袋上貼品名與入庫日</div>
         </div>
       </div>
 
-      <div class="sop-section-title">🥤 破壁機攪打 SOP（現場喝 | 執行者操作標準）</div>
+      <div class="sop-section-title">二ａ、破壁機攪打 SOP（現場喝｜執行者操作標準）</div>
       <div class="sop-card">
-        <div style="font-size:12px;color:var(--text2);margin-bottom:8px">必備器具：破壁機（調理機）｜量杯｜電子秤｜湯匙｜計時器</div>
+        <div style="font-size:12px;color:var(--text2);margin-bottom:10px">必備器具：破壁機（調理機）｜量杯｜電子秤｜湯匙｜計時器</div>
         <div class="sop-step">
           <span class="sop-step-no">Step 1</span>
           <div>
             <div style="font-weight:700">低速 2　攪打 10 秒</div>
-            <div style="font-size:13px;margin-top:3px">放入順序（<strong style="color:var(--red)">不可顛倒</strong>）：<strong>【粉包】→【水】→【蔬菜】→【冷凍水果】</strong></div>
-            <div style="font-size:12px;color:var(--text3);margin-top:3px">低速蓋蓋攪打10秒，讓粉末先充分溶於水。原理：先讓蛋白粉與水融合，防止高速直打起泡，癌友喝下大量空氣易胃脹氣。</div>
+            <div style="font-size:13px;margin-top:4px">放入順序（<strong style="color:var(--red)">不可顛倒</strong>）：</div>
+            <div style="font-size:15px;font-weight:800;letter-spacing:1px;margin:6px 0;color:var(--blue)">【粉包】➜【水】➜【蔬菜】➜【冷凍水果】</div>
+            <div style="font-size:12px;color:var(--text3)">蓋蓋，低速2攪打10秒，讓粉末先充分溶於水。</div>
+            <div style="font-size:12px;color:var(--text3);margin-top:3px">原理：先讓蛋白粉與水融合，防止高速直打造成起泡，癌友喝下大量空氣易胃脹氣。</div>
           </div>
         </div>
         <div class="sop-step">
           <span class="sop-step-no">Step 2</span>
           <div>
             <div style="font-weight:700">高速 10　攪打 40 秒</div>
-            <div style="font-size:12px;color:var(--text3);margin-top:3px">蓋緊蓋子，高速攪打至均勻細滑為止。</div>
+            <div style="font-size:12px;color:var(--text3);margin-top:4px">蓋緊蓋子，高速攪打至均勻細滑為止。</div>
           </div>
         </div>
         <div class="sop-step">
           <span class="sop-step-no">Step 3</span>
           <div>
             <div style="font-weight:700">停機開蓋　加油攪拌</div>
-            <div style="font-size:13px;margin-top:3px">關機開蓋 → 加入指定油種（橄欖油或處方指定）</div>
+            <div style="font-size:13px;margin-top:4px">關機開蓋 → 加入指定油種（橄欖油或處方指定）</div>
             <div style="font-size:13px">湯匙攪拌均勻，或低速轉 2 秒即完成。</div>
-            <div style="font-size:12px;color:var(--orange);margin-top:3px">⚠ 不可在高速下加油。原理：橄欖多酚高速乳化會被破壞，最後加油能包覆脂溶性維生素 A/D/E/K。</div>
+            <div style="font-size:12px;color:var(--orange);margin-top:4px">⚠ 不可在高速下加油。原理：橄欖多酚高速乳化會被破壞，最後加油能包裹脂溶性維生素 A/D/E/K。</div>
           </div>
         </div>
         <div style="margin-top:10px;padding-top:8px;border-top:1px solid var(--border);font-size:12px;color:var(--text2)">
-          ⏱ 時間估算：全配方 1 杯 ≈ 13 分鐘 ｜ 4 杯 ≈ 60 分鐘 ｜ 7 杯 ≈ 90 分鐘
+          ⏱ 全配方（含蔬果）：<strong>1 杯 ≈ 13 分</strong>　｜　<strong>4 杯 ≈ 60 分</strong>　｜　<strong>7 杯 ≈ 90 分</strong>
         </div>
       </div>
 
-      <div class="sop-section-title">🌿 蔬菜三道清洗 SOP（GHP 生鮮即食標準）</div>
+      <div class="sop-section-title">二ｂ、粉類製備 SOP（執行單位負責，個管助理驗收）</div>
       <div class="sop-card">
-        <div class="sop-step"><span class="sop-step-no">第一道</span><span><strong>流動清水沖洗</strong>　葉菜類分葉逐片沖洗，去除泥沙</span></div>
-        <div class="sop-step"><span class="sop-step-no">第二道</span><span><strong>清水浸泡 5 分鐘</strong>　可加食品級蔬果清洗液</span></div>
-        <div class="sop-step"><span class="sop-step-no">第三道</span><span><strong>流動清水沖洗 30 秒以上</strong>　沖畢充分瀝乾</span></div>
-        <div class="sop-step"><span class="sop-step-no">完成後</span><span>分份秤重 → 密封 → 標示日期 → 冷藏 4°C。<strong>葉菜只備 2 日份。</strong></span></div>
-        <div style="font-size:12px;color:var(--orange);margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">⚠ 個案為腫瘤患者，若嚴重免疫低下應諮詢醫師是否適合飲用生食</div>
+        <div style="font-size:13px;font-weight:700;color:var(--text2);margin-bottom:8px">① 燕麥打粉（進貨後執行）</div>
+        <div class="sop-rule">確認燕麥為完整燕麥粒（非即食片）</div>
+        <div class="sop-rule">以乾燥研磨機打成細粉（約 2 分鐘，確認無顆粒感）</div>
+        <div class="sop-rule">裝入乾燥玻璃罐，密封，標示「燕麥粉｜打粉日期：＿＿＿｜效期 60 天（截止日：＿＿＿）」</div>
+        <div class="sop-rule">室溫乾燥陰涼處保存，開罐後保持密封，避免受潮</div>
+        <div style="font-size:13px;font-weight:700;color:var(--text2);margin:12px 0 8px">② 週一粉包分裝（每週執行）</div>
+        <div class="sop-rule">備齊量：員工 9 人 × 3 天（週二＋週四＋週五）＝ <strong>27 份</strong></div>
+        <div style="background:var(--bg);border-radius:8px;padding:10px;font-size:12px;margin:8px 0">
+          <div style="font-weight:700;margin-bottom:6px">每份內容（員工標準配方）</div>
+          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:4px">
+            ${[['蛋白粉','25g'],['燕麥粉','10g'],['薑黃粉','1g'],['肉桂粉','1g'],['藜麥粉','5g'],['黑胡椒','1粒']].map(([n,a])=>
+              `<div style="padding:4px 6px;background:var(--surface,#f8f8f8);border-radius:4px"><span style="color:var(--text3)">${n}</span> <strong>${a}</strong></div>`
+            ).join('')}
+          </div>
+        </div>
+        <div class="sop-rule">逐份用電子秤秤重，裝入夾鏈密封袋</div>
+        <div class="sop-rule">袋上標示「日期＿＿　份數＿＿　員工份」，整袋放置室溫乾燥處，7 天內用完</div>
+        <div class="sop-rule" style="color:var(--blue)">個管助理驗收：確認份數正確、袋口密封、標示清楚</div>
+        <div style="margin-top:10px;padding-top:8px;border-top:1px solid var(--border);font-size:12px;color:var(--text2)">
+          ⏱ 粉包製作時間：<strong>1 天份 ≈ 12 分</strong>　｜　<strong>5 天份 ≈ 60 分</strong>　｜　<strong>9 天份 ≈ 110 分</strong><br>
+          <span style="color:var(--orange)">⚠ 有大量出單時請提前告知執行單位預排時間。</span>
+        </div>
       </div>
 
-      <div class="sop-section-title">✅ 今日品質確認清單（${today}）
-        <button class="sop-reset-btn" onclick="App.resetQC('${qcKey}')">重設</button>
+      <div class="sop-section-title">三、個案出單情境（個管師 &amp; 個管助理必讀）</div>
+      <div class="sop-card">
+        <div class="sop-step">
+          <span class="sop-step-no" style="min-width:72px">A　預約跨日</span>
+          <div>
+            <div style="font-weight:700">今天出單，改天取餐</div>
+            <div style="font-size:12px;color:var(--text3);margin-top:3px">例：週四看診出單 → 下週一取；週二看診 → 週四才取</div>
+            <div style="font-size:13px;margin-top:4px">個管師填出單表（含取餐日期＋配方＋禁忌）；個管助理取餐日前一天確認庫存，預約時間前 30 分鐘製作</div>
+          </div>
+        </div>
+        <div class="sop-step">
+          <span class="sop-step-no" style="min-width:72px">B　當日午後</span>
+          <div>
+            <div style="font-weight:700">今天上午看診出單，今天下午取餐</div>
+            <div style="font-size:12px;color:var(--text3);margin-top:3px">例：10:00 看診出單 → 14:00 取</div>
+            <div style="font-size:13px;margin-top:4px">截單時間：<strong>11:30 前</strong>（超過則順延至次日）；個管助理中午確認後備料，14:00 完成交付</div>
+          </div>
+        </div>
+        <div class="sop-step">
+          <span class="sop-step-no" style="min-width:72px">套組天數<br><small>（3/6/9天）</small></span>
+          <div>出單時在備註欄標記「套組X天已承諾」，庫存需預留對應份量，<strong style="color:var(--red)">不得超賣</strong></div>
+        </div>
+      </div>
+
+      <div class="sop-section-title">四、配方說明</div>
+      <div class="sop-card">
+        <div class="sop-step">
+          <span class="sop-step-no" style="min-width:72px">員工標準<br>配方</span>
+          <span>完整蔬果＋粉類，週一統一備料，週二四五各取一份製作</span>
+        </div>
+        <div class="sop-step">
+          <span class="sop-step-no" style="min-width:72px">個案粉<br>配方</span>
+          <span>僅蛋白粉＋補充品，不需備蔬果。成本較低，適合以補充營養素為主的個案</span>
+        </div>
+        <div class="sop-step">
+          <span class="sop-step-no" style="min-width:72px">個案全<br>配方</span>
+          <div>
+            <div>依醫師處方完整製作（含蔬果）。<strong>製作前必確認禁忌欄。</strong>成本依處方客製計算。</div>
+            <div style="font-size:12px;color:var(--text3);margin-top:3px">個管師需將個案回饋記錄至知識庫供後續配方調整參考</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="sop-section-title">五、食安關鍵規則</div>
+      <div class="sop-card">
+        <div class="sop-rule">🌡 <strong>危險溫度帶</strong>　切好的蔬果不得在 7–60°C 停留超過 2 小時。製作完成立即交付，不得預先製作放置</div>
+        <div class="sop-rule">🗑 <strong>廢棄記錄</strong>　超過 2 小時未飲用即廢棄，在備料單備註欄記錄品項與數量</div>
+        <div class="sop-rule">🧤 <strong>製作衛生</strong>　製作前洗手並戴手套，器具使用前清潔消毒，蔬果分開刀具砧板</div>
+        <div class="sop-rule">⚠ <strong>過敏／禁忌</strong>　個案出單表禁忌欄必填。執行者製作前必須核對。<br><span style="font-size:12px;color:var(--text3)">常見：堅果過敏、腎功能限鉀（限根莖類）、無麩質（限燕麥）</span></div>
+      </div>
+
+      <div class="sop-section-title">六、表單使用說明</div>
+      <div class="sop-card">
+        <div class="sop-step">
+          <span class="sop-step-no" style="min-width:60px">📋 每日出單</span>
+          <span style="font-size:13px">每個供應日填入各人杯數（員工預填1，Joana/丹預設0）。個案依出單填入取餐日、杯數、配方與禁忌</span>
+        </div>
+        <div class="sop-step">
+          <span class="sop-step-no" style="min-width:60px">🍃 備料單</span>
+          <span style="font-size:13px">自動抓今日星期幾顯示對應杯數與需備量。今日非供應日會顯示提示，個管助理按此備料</span>
+        </div>
+        <div class="sop-step">
+          <span class="sop-step-no" style="min-width:60px">📦 庫存</span>
+          <span style="font-size:13px">週五盤點後填入藍色欄。蘋果填顆數（1顆=220g）、檸檬填顆數（1顆=100g），其餘填克數。橘色欄自動顯示週末採買量</span>
+        </div>
+        <div class="sop-step">
+          <span class="sop-step-no" style="min-width:60px">💰 成本</span>
+          <span style="font-size:13px">每次採購填入一筆（日期/食材/量/金額），每杯成本自動以加權平均累積計算並更新頂部數字</span>
+        </div>
+        <div class="sop-step">
+          <span class="sop-step-no" style="min-width:60px">📊 月統計</span>
+          <span style="font-size:13px">C2填年份、E2填月份數字（如6），週次日期自動更新。員工欄預設3可調整，個案費用手動填入</span>
+        </div>
+      </div>
+
+      <div class="sop-section-title">七、每日作業優先順序（依分工與 GHP 規範）
+        <button class="sop-reset-btn" onclick="App.resetQC('${qcKey}')">重設今日</button>
       </div>
       <div class="sop-card">
         <div style="font-size:12px;font-weight:700;color:var(--blue);margin-bottom:8px">08:00　執行單位</div>
-        ${qcItem('e1', '戴口罩、洗手，器具消毒完成')}
-        ${qcItem('e2', '確認冷藏 / 冷凍溫度並記錄')}
-        ${qcItem('e3', '確認週一備料品質（蔬菜新鮮、粉包完整）')}
+        ${qcItem('e1', '戴口罩（GHP強制）、洗手，器具消毒完成')}
+        ${qcItem('e2', '確認冷藏 ≤ 4°C、冷凍 ≤ -18°C，記錄於庫存表溫度記錄欄')}
+        ${qcItem('e3', '確認週一備料品質：粉包密封完整？葉菜無異味？水果冷凍狀態正常？')}
         <div style="font-size:12px;font-weight:700;color:var(--blue);margin:12px 0 8px">08:30　個管助理</div>
-        ${qcItem('a1', '開啟今日執行單，確認各個案取餐時間')}
-        ${qcItem('a2', '通知執行單位今日杯數與完成時間')}
-        ${qcItem('a3', '確認禁忌欄無誤（有禁忌症個案特別標記）')}
-        <div style="font-size:12px;font-weight:700;color:var(--blue);margin:12px 0 8px">備料製作　執行單位</div>
+        ${qcItem('a1', '開啟今日執行單，確認今日出單（員工＋個案）')}
+        ${qcItem('a2', '確認各個案取餐時間，計算最晚開始時間')}
+        ${qcItem('a3', '通知執行單位：今日共幾杯、哪些個案、幾點前完成')}
+        <div style="font-size:12px;font-weight:700;color:var(--blue);margin:12px 0 8px">備料製作　執行單位（依取餐時間倒推）</div>
         ${qcItem('m1', '確認備料單克數')}
-        ${qcItem('m2', '蔬菜三道清洗完成')}
-        ${qcItem('m3', '取冷凍水果、取粉包')}
-        ${qcItem('m4', '攪打順序正確：粉包→水→蔬菜→冷凍水果，油最後加')}
-        ${qcItem('m5', '製作完成，質地均勻、口感顏色正常')}
+        ${qcItem('m2', '蔬菜三道清洗 SOP（見八）完成')}
+        ${qcItem('m3', '取冷凍水果（不解凍直接用）')}
+        ${qcItem('m4', '取粉包（週一分裝份）')}
+        ${qcItem('m5', '攪打順序正確：粉包→水→蔬菜→冷凍水果，油最後停機後加')}
+        ${qcItem('m6', '製作完成，質地均勻、口感顏色正常，立即交付，填寫完成時間')}
         <div style="font-size:12px;font-weight:700;color:var(--blue);margin:12px 0 8px">交付後　個管助理確認</div>
-        ${qcItem('d1', '完成時間在取餐時間之前')}
-        ${qcItem('d2', '超過 2 小時未取走者已廢棄並記錄')}
-        ${qcItem('d3', '禁忌症個案已完成確認視窗核對')}
+        ${qcItem('d1', '每批完成時間在取餐時間前')}
+        ${qcItem('d2', '若有未取走超過 2 小時 → 廢棄並記錄於今日執行單廢棄記錄區')}
+        ${qcItem('d3', '個案取走後確認禁忌無誤、叮囑飲用時間')}
+        <div style="font-size:12px;font-weight:700;color:var(--blue);margin:12px 0 8px">週五下班前</div>
+        ${qcItem('f1', '盤點庫存，填入庫存表藍色欄')}
+        ${qcItem('f2', '確認溫度記錄本週每天都有記錄')}
+        ${qcItem('f3', '確認週末採買清單交給 John')}
+        ${qcItem('f4', '先進先出確認：日期標籤舊的移到前面')}
       </div>
 
-      <div class="sop-section-title">📦 FIFO 標籤管理</div>
+      <div class="sop-section-title">八、蔬菜三道清洗 SOP（GHP 生鮮即食蔬果標準）</div>
       <div class="sop-card">
-        <div class="sop-rule">標籤格式：【品名 ｜ 入庫日期 ｜ 最晚使用日】</div>
-        <div class="sop-rule">從最早入庫開始取用，舊的放前面、新的放後面</div>
-        <div class="sop-rule">超過最長保存天數者立即廢棄，記錄於廢棄記錄區</div>
-        <div style="margin-top:10px;display:grid;grid-template-columns:repeat(3,1fr);gap:6px;font-size:12px">
-          ${[['葉菜','5天'],['根莖','5天'],['水果冷凍','30天'],['莓果','30天'],['燕麥粉','60天'],['蛋白粉','60天'],['油','90天']].map(([n,d])=>
-            `<div style="background:var(--bg);border-radius:8px;padding:6px 10px;text-align:center">
-              <div style="color:var(--text2)">${n}</div><div style="font-weight:700;color:var(--blue)">${d}</div>
+        <div class="sop-step"><span class="sop-step-no">第一道</span><div><strong>去除泥沙</strong>　流動清水沖洗，去除明顯泥沙、蟲卵及農藥附著物。<br><span style="font-size:12px;color:var(--orange)">重點：葉菜類分葉逐片沖洗，不得整把沖。</span></div></div>
+        <div class="sop-step"><span class="sop-step-no">第二道</span><div><strong>浸泡清洗</strong>　清水浸泡 5 分鐘（可加入食品級蔬果清洗液，依產品說明稀釋）。<br><span style="font-size:12px;color:var(--text3)">個案為免疫功能低下族群，建議每次使用。浸泡後倒掉水，<strong>勿直接用浸泡水沖洗。</strong></span></div></div>
+        <div class="sop-step"><span class="sop-step-no">第三道</span><div><strong>清水沖淨</strong>　大量流動清水沖洗 30 秒以上，確保無清洗液殘留。<br><span style="font-size:12px;color:var(--text3)">沖畢充分瀝乾（搖水籃或廚房紙巾吸水），水分是葉菜腐壞最快原因。</span></div></div>
+        <div class="sop-step"><span class="sop-step-no">完成後</span><span>分份秤重 → 密封袋密封 → 標示「清洗日期＿＿」→ 冷藏 4°C 保存。<strong>葉菜類只備 2 日份。</strong></span></div>
+        <div style="font-size:12px;color:var(--orange);margin-top:10px;padding-top:8px;border-top:1px solid var(--border)">
+          ⚠ 個案為腫瘤患者，多數處於化療或術後免疫低下狀態，生食蔬果的微生物風險高於一般人。若個案有嚴重免疫低下（如移植後、ANC&lt;500），請個管師諮詢醫師是否仍適合飲用生食精力湯。
+        </div>
+      </div>
+
+      <div class="sop-section-title">九、先進先出（FIFO）日期標籤管理</div>
+      <div class="sop-card">
+        <div class="sop-rule"><strong>標籤格式：</strong>【品名 ｜ 入庫日期 ｜ 最晚使用日】<br><span style="font-size:12px;color:var(--text3)">例：燕麥粉 ｜ 入庫 06/04 ｜ 最晚 08/03（60天）</span></div>
+        <div class="sop-rule">取用時從最早入庫的開始取，同一品項舊的放前面、新的放後面</div>
+        <div class="sop-rule">發現已超過最長保存天數者，立即廢棄，記錄於今日執行單廢棄記錄區</div>
+        <div class="sop-rule" style="color:var(--orange)">⚠ 不得因「看起來沒壞」而繼續使用，尤其粉類受潮後微生物風險高但外觀無法判斷</div>
+        <div style="margin-top:10px;display:grid;grid-template-columns:repeat(4,1fr);gap:6px;font-size:12px">
+          ${[['葉菜（洗後冷藏）','5天'],['根莖（切開冷藏）','5天'],['水果（切塊冷凍）','30天'],['莓果（冷凍）','30天'],['燕麥粉','60天'],['蛋白粉（開罐）','60天'],['油（開瓶）','90天'],['膠囊','依包裝效期']].map(([n,d])=>
+            `<div style="background:var(--bg);border-radius:8px;padding:6px 8px;text-align:center">
+              <div style="color:var(--text2);font-size:11px">${n}</div>
+              <div style="font-weight:700;color:var(--blue)">${d}</div>
             </div>`).join('')}
         </div>
       </div>
 
-      <div class="sop-section-title">⚠️ 食安關鍵規則（GHP 食安法第 8 條）</div>
+      <div class="sop-section-title">十、GHP 合規強制要求（食安法第 8 條）</div>
       <div class="sop-card">
-        <div class="sop-rule">🌡 切好的蔬果不得在 7–60°C 停留超過 2 小時</div>
-        <div class="sop-rule">🗑 超過 2 小時未飲用即廢棄，記錄品項與數量</div>
-        <div class="sop-rule">🧤 製作前洗手戴手套，器具使用前清潔消毒，蔬果分開刀具砧板</div>
-        <div class="sop-rule">😷 所有作業人員作業時均需戴口罩（強制）</div>
-        <div class="sop-rule">📋 所有記錄文件保存至少 3 年</div>
-        <div class="sop-rule">🌡 冷藏 / 冷凍設備每日記錄溫度，異常記錄原因及處理</div>
-        <div class="sop-rule">🚫 手部皮膚病、出疹、膿瘡人員不得從事食品接觸作業</div>
+        <div class="sop-rule">😷 <strong>口罩規定（強制）</strong>　所有在作業場所工作的人員（備料、製作、盤點）作業時均需戴口罩。2025年新版GHP明確規定，查核時會現場確認。</div>
+        <div class="sop-rule">📚 <strong>教育訓練記錄（強制）</strong>　新進人員：開始作業前至少 3 小時食安訓練，保存訓練紀錄；現有人員：每年至少 3 小時，包含臨時人員。訓練內容：危險溫度帶、清洗SOP、廢棄處理、個人衛生。</div>
+        <div class="sop-rule">🌡 <strong>溫度記錄（強制）</strong>　冷藏／冷凍設備每日記錄溫度，記錄需保存至少 3 年。異常時記錄原因及處理方式。見庫存管理表右側溫度記錄欄。</div>
+        <div class="sop-rule">📋 <strong>文件保存（強制）</strong>　所有紀錄文件保存至少 3 年。包含：溫度記錄、廢棄記錄、採購記錄、教育訓練紀錄。建議每月將當月所有表單存檔至雲端備份。</div>
+        <div class="sop-rule">🚫 <strong>健康管理</strong>　從業人員有下列情形不得從事與食品接觸作業：手部皮膚病、出疹、膿瘡、外傷、患傳染病或有其他可能污染食品的疾病。（2025年新版已刪除結核病強制檢查）</div>
+        <div style="margin-top:10px;padding-top:8px;border-top:1px solid var(--border);font-size:12px;color:var(--text3)">
+          燕麥粉效期依據：燕麥打粉後接觸空氣面積大增，油脂氧化速度加快，60天為業界研磨穀物粉通用保守標準。裝入乾燥玻璃罐密封，標示日期，每次取用後確實蓋緊。
+        </div>
       </div>
-
-      <div class="sop-section-title">📋 個案出單情境</div>
-      <div class="sop-card">
-        <div class="sop-step"><span class="sop-step-no" style="min-width:60px">A 預約跨日</span><span>今天出單，改天取餐。個管助理於取餐日前一天確認庫存，預約前 30 分鐘製作</span></div>
-        <div class="sop-step"><span class="sop-step-no" style="min-width:60px">B 當日午後</span><span>截單時間 11:30 前；超過則順延至次日。個管助理中午確認備料，14:00 完成交付</span></div>
-        <div class="sop-step"><span class="sop-step-no" style="min-width:60px">套組天數</span><span>出單時備註欄標記承諾天數（3/6/9天），庫存需預留對應份量，不得超賣</span></div>
-      </div>`;
+    `;
 
     document.getElementById('sopContent').innerHTML = html;
   }
