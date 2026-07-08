@@ -1108,6 +1108,8 @@ const App = (() => {
     document.getElementById('rxType').value = '粉配方';
     document.getElementById('rxTiming').value = '餐前';
     document.getElementById('rxContra').value = '';
+    const delBtn = document.getElementById('rxDelBtn');
+    if (delBtn) delBtn.style.display = 'none';
     openModal('modalRx');
   }
 
@@ -1123,7 +1125,22 @@ const App = (() => {
     document.getElementById('rxType').value = rx.formula_type;
     document.getElementById('rxTiming').value = rx.timing;
     document.getElementById('rxContra').value = rx.contraindications || '';
+    const delBtn = document.getElementById('rxDelBtn');
+    if (delBtn) delBtn.style.display = 'block';
     openModal('modalRx');
+  }
+
+  async function deleteRx() {
+    const id = document.getElementById('rxEditId').value;
+    if (!id) return;
+    if (!confirm('確定要刪除此處方？')) return;
+    try {
+      await api(`/api/prescriptions/${id}`, 'DELETE');
+      closeModal('modalRx');
+      loadRx();
+    } catch(e) {
+      alert('刪除處方失敗');
+    }
   }
 
   async function saveRx() {
@@ -2193,7 +2210,7 @@ const App = (() => {
     batchDragStart, batchDragEnd, batchDrop, batchDropDelete, editBatchTime, addBatch, removeBatch,
     schDragStart, schDragOver, schDragLeave, schDrop,
     deleteCase, openAddCase, openEditCase, addCase,
-    loadRx, openAddRx, openEditRx, saveRx,
+    loadRx, openAddRx, openEditRx, saveRx, deleteRx,
     openEditRxIngredients, saveRxIngredients,
     loadInventory, openEditInv, saveInventory, togglePurchaseHistory,
     openAddIngredient, addIngredient, openPurchase, savePurchase,

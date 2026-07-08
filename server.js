@@ -563,6 +563,11 @@ app.put('/api/prescriptions/:id', (req, res) => {
   res.json({ ok: true });
 });
 
+app.delete('/api/prescriptions/:id', (req, res) => {
+  db.prepare('UPDATE prescriptions SET active=0 WHERE id=?').run(req.params.id);
+  res.json({ ok: true });
+});
+
 // 取得處方食材
 app.get('/api/prescriptions/:id/ingredients', (req, res) => {
   const all = db.prepare('SELECT id, name, unit, category, sort_order FROM ingredients WHERE active=1 ORDER BY sort_order, category, name').all();
