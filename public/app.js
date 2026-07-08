@@ -2,6 +2,7 @@
 
 const App = (() => {
   let currentUser = null;
+  let kitchenPassword = sessionStorage.getItem('kitchen_password') || '';
   let allIngredients = [];
   let allPrescriptions = [];
   let caseDataMap = {};
@@ -490,7 +491,7 @@ const App = (() => {
     const member = batch.members[idx];
     if (member.type === 'case') {
       if (!confirm(`確定要刪除 ${member.name} 的出單嗎？`)) return;
-      await fetch(`/api/today/cases/${member.caseId}`, { method: 'DELETE' });
+      await api(`/api/today/cases/${member.caseId}`, 'DELETE');
       loadToday();
     } else {
       batch.members.splice(idx, 1);
@@ -2185,10 +2186,32 @@ const App = (() => {
   });
 
   // ── API 工具 ─────────────────────────────────────────────
+  function ensureKitchenPassword(force = false) {
+    if (!force && kitchenPassword) return kitchenPassword;
+    const value = prompt('請輸入廚房系統密碼');
+    if (!value) throw new Error('需要密碼才能使用廚房系統');
+    kitchenPassword = value;
+    sessionStorage.setItem('kitchen_password', value);
+    return value;
+  }
+
   async function api(url, method = 'GET', body = null) {
-    const opts = { method, headers: { 'Content-Type': 'application/json' } };
+    const opts = {
+      method,
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Kitchen-Password': ensureKitchenPassword()
+      }
+    };
     if (body) opts.body = JSON.stringify(body);
     const r = await fetch(url, opts);
+    if (r.status === 401) {
+      sessionStorage.removeItem('kitchen_password');
+      kitchenPassword = '';
+      opts.headers['X-Kitchen-Password'] = ensureKitchenPassword(true);
+      const retry = await fetch(url, opts);
+      if (retry.ok) return retry.json();
+    }
     if (!r.ok) {
       const err = await r.json().catch(() => ({ error: r.statusText }));
       throw new Error(err.error || r.statusText);

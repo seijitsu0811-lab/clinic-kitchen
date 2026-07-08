@@ -6,6 +6,7 @@ const path = require('path');
 const app  = express();
 const PORT = process.env.PORT || 3000;
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'clinic.db');
+const KITCHEN_PASSWORD = process.env.KITCHEN_PASSWORD || '';
 
 // ── 資料庫 ────────────────────────────────────────────────
 const db = new DatabaseSync(DB_PATH);
@@ -142,6 +143,23 @@ db.exec('PRAGMA foreign_keys = ON');
 // ── 中介層 ────────────────────────────────────────────────
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
+
+function safeEqual(a, b) {
+  const ab = Buffer.from(String(a || ''));
+  const bb = Buffer.from(String(b || ''));
+  return ab.length === bb.length && require('crypto').timingSafeEqual(ab, bb);
+}
+
+app.use('/api', (req, res, next) => {
+  if (!KITCHEN_PASSWORD) {
+    return res.status(503).json({ error: 'API password is not configured' });
+  }
+  const supplied = req.get('x-kitchen-password');
+  if (!safeEqual(supplied, KITCHEN_PASSWORD)) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  next();
+});
 
 // ── Healthcheck ───────────────────────────────────────────
 app.get('/health', (req, res) => res.send('ok'));
