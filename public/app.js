@@ -69,7 +69,7 @@ const App = (() => {
 
   // ── Tab 切換 ────────────────────────────────────────────
   function switchTab(tab) {
-    document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+    document.querySelectorAll('[data-tab]').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
     document.querySelectorAll('.page').forEach(p => p.classList.toggle('active', p.id === 'page-' + tab));
     if (tab === 'today') loadToday();
     if (tab === 'rx')    loadRx();
@@ -119,6 +119,27 @@ const App = (() => {
     lastTodayData = d;
     empRxId = d.products?.[0]?.staff_rx?.id || null;
     checkInvWarning();
+
+    // 顯示日期與星期
+    const dowNames = ['週日', '週一', '週二', '週三', '週四', '週五', '週六'];
+    const dow = new Date(d.date).getDay();
+    const dowName = dowNames[dow];
+    const mealDayHint = d.is_meal_day ? ' (員工餐日)' : ' (非員工餐日)';
+    const dateLabel = document.getElementById('todayDateLabel');
+    if (dateLabel) {
+      dateLabel.textContent = `${d.date} ${dowName}${mealDayHint}`;
+    }
+
+    // 顯示今日休假人員
+    const leavesAlert = document.getElementById('todayLeavesAlert');
+    if (leavesAlert) {
+      if (d.leaves && d.leaves.length > 0) {
+        leavesAlert.innerHTML = `🌴 今日休假人員：<strong>${d.leaves.join('、')}</strong>（已自動排除本機預設出單）`;
+        leavesAlert.style.display = 'block';
+      } else {
+        leavesAlert.style.display = 'none';
+      }
+    }
 
     document.getElementById('staffCount').textContent = `${d.attending_count}人`;
     renderTodaySection1(d);
@@ -275,6 +296,7 @@ const App = (() => {
            draggable="true" data-key="${it.key}"
            ondragstart="App.schDragStart(event,'${it.key}')"
            ondragover="App.schDragOver(event)"
+           ondragleave="App.schDragLeave(event)"
            ondrop="App.schDrop(event,'${it.key}')">
         <div class="sch-drag-handle">⠿</div>
         <div class="sch-time">${it.timeLabel}</div>
@@ -521,6 +543,10 @@ const App = (() => {
     const el = event.currentTarget;
     if (el) el.classList.add('sch-drag-over');
   }
+  function schDragLeave(event) {
+    const el = event.currentTarget;
+    if (el) el.classList.remove('sch-drag-over');
+  }
   function schDrop(event, targetKey) {
     event.preventDefault();
     document.querySelectorAll('.sch-drag-over').forEach(el => el.classList.remove('sch-drag-over'));
@@ -553,18 +579,60 @@ const App = (() => {
       const pw = prod.staff_powder;
       let powderHtml = '';
       if (pw && pw.per_serving > 0) {
-        const ratioTip = pw.items.map(i => `${i.name} ${i.qty}${i.unit}`).join('、');
+        // Collect all distinct batch sizes active today (e.g. 2, 3, etc.)
+        const activeSizes = Array.from(new Set(batches.map(b => b.size))).sort((a, b) => a - b);
+        // We always want to make sure we show 1, 2, and 3 cups ratios!
+        const sizesToShow = Array.from(new Set([1, 2, 3, ...activeSizes])).sort((a, b) => a - b);
+
+        const tableHeaders = sizesToShow.map(s => `<th style="padding:6px 8px; text-align:right; border-left:1px solid var(--border)">${s}杯量</th>`).join('');
+        
+        const tableRows = pw.items.map(item => {
+          const cols = sizesToShow.map(s => {
+            const val = Math.round(item.qty * s * 100) / 100;
+            return `<td style="padding:6px 8px; text-align:right; border-left:1px solid var(--border); font-weight:600">${val}${item.unit}</td>`;
+          }).join('');
+          return `
+            <tr style="border-bottom:1px solid var(--border)">
+              <td style="padding:6px 8px; font-weight:500; color:var(--text1)">${esc(item.name)}</td>
+              ${cols}
+            </tr>`;
+        }).join('');
+
+        // Total powder row
+        const totalCols = sizesToShow.map(s => {
+          const val = Math.round(pw.per_serving * s * 100) / 100;
+          return `<td style="padding:6px 8px; text-align:right; border-left:1px solid var(--border); font-weight:700; color:var(--green)">${val}g</td>`;
+        }).join('');
+        const totalRow = `
+          <tr style="background:rgba(16,185,129,0.04); font-weight:700">
+            <td style="padding:6px 8px; color:var(--green)">⚡ 總粉量（取粉）</td>
+            ${totalCols}
+          </tr>`;
+
         powderHtml = `
-          <div class="powder-box">
-            <div class="powder-title">🧪 預調粉包（${esc(prod.staff_rx.code)}）</div>
-            <div class="powder-ratio">配比／${unit}：${ratioTip}</div>
-            <div class="powder-per-cup">每${unit}取粉 <strong>${pw.per_serving}g</strong></div>
-            <div class="powder-batch-row">
-              ${pw.batches.map(b => `
-                <div class="powder-batch-item">
-                  <div class="pb-label">${b.label}</div>
-                  <div class="pb-val">${b.per_batch}<span class="pb-unit">g</span></div>
-                </div>`).join('')}
+          <div class="powder-box" style="padding:14px; margin-bottom:12px; background:var(--card-bg); border:1px solid var(--border); border-radius:var(--radius-md); box-shadow:var(--shadow-sm)">
+            <div class="powder-title" style="font-size:14px; font-weight:700; color:var(--text1); display:flex; align-items:center; gap:6px; margin-bottom:10px">
+              <span>🧪 預調粉包比例與杯數換算（${esc(prod.staff_rx.code)}）</span>
+            </div>
+            
+            <div style="overflow-x:auto">
+              <table style="width:100%; border-collapse:collapse; font-size:13px; text-align:left; border:1px solid var(--border); border-radius:var(--radius-sm)">
+                <thead>
+                  <tr style="background:var(--bg); border-bottom:1px solid var(--border); color:var(--text2); font-weight:600">
+                    <th style="padding:6px 8px">配方粉類</th>
+                    ${tableHeaders}
+                  </tr>
+                </thead>
+                <tbody>
+                  ${tableRows}
+                  ${totalRow}
+                </tbody>
+              </table>
+            </div>
+
+            <div style="margin-top:12px; font-size:12px; color:var(--text3); line-height:1.5">
+              💡 <strong>今日出餐批次建議量：</strong><br>
+              ${pw.batches.map(b => `• <strong>${b.label}</strong>：每批取總粉量 <strong>${b.per_batch}g</strong>`).join('<br>')}
             </div>
           </div>`;
       }
@@ -2123,7 +2191,7 @@ const App = (() => {
     selectUser, logout, switchTab,
     toggleAttendance, handleStaffChipClick, toggleCasePickup,
     batchDragStart, batchDragEnd, batchDrop, batchDropDelete, editBatchTime, addBatch, removeBatch,
-    schDragStart, schDragOver, schDrop,
+    schDragStart, schDragOver, schDragLeave, schDrop,
     deleteCase, openAddCase, openEditCase, addCase,
     loadRx, openAddRx, openEditRx, saveRx,
     openEditRxIngredients, saveRxIngredients,

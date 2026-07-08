@@ -328,14 +328,42 @@ function buildPrepAndPowder(rxId, multiplier, unit, powderMultiplier) {
   return { prep, powder, supplements };
 }
 
-app.get('/api/today', (req, res) => {
+app.get('/api/today', async (req, res) => {
   const date = today();
 
-  // 確保所有員工今日出席記錄存在（預設出席）
-  db.prepare('SELECT * FROM users').all().forEach(u => {
-    db.prepare(
-      `INSERT OR IGNORE INTO staff_attendance (date,user_id,attending,meal_time) VALUES (?,?,1,'1330')`
-    ).run(date, u.id);
+  // 1. Fetch leaves from Firebase clinic system
+  const leavesSet = new Set();
+  const leavesToday = [];
+  try {
+    const response = await fetch('https://clinic-system-1224f-default-rtdb.asia-southeast1.firebasedatabase.app/clinic_v3/leaves.json', { signal: AbortSignal.timeout(3000) });
+    const leavesList = await response.json();
+    if (Array.isArray(leavesList)) {
+      leavesList.forEach(l => {
+        if (l && l.date === date && l.name) {
+          leavesSet.add(l.name);
+          leavesToday.push(l.name);
+        }
+      });
+    }
+  } catch (err) {
+    console.error('Failed to fetch leaves from clinic system:', err.message);
+  }
+
+  // 2. Check if it's Tuesday, Thursday, or Friday (2, 4, 5)
+  const dow = new Date(date).getDay(); // Sunday=0, Monday=1, Tuesday=2, Wednesday=3, Thursday=4, Friday=5, Saturday=6
+  const isMealDay = [2, 4, 5].includes(dow);
+
+  // 3. Initialize attendance table
+  const users = db.prepare('SELECT * FROM users').all();
+  users.forEach(u => {
+    const exists = db.prepare('SELECT 1 FROM staff_attendance WHERE date=? AND user_id=?').get(date, u.id);
+    if (!exists) {
+      const isOnLeave = leavesSet.has(u.name);
+      const defaultAttending = (isMealDay && !isOnLeave) ? 1 : 0;
+      db.prepare(
+        `INSERT INTO staff_attendance (date,user_id,attending,meal_time) VALUES (?,?,?, '1330')`
+      ).run(date, u.id, defaultAttending);
+    }
   });
 
   const staff = db.prepare(
@@ -423,7 +451,7 @@ app.get('/api/today', (req, res) => {
     };
   });
 
-  res.json({ date, staff, attending_count: attendingCount, products: productData });
+  res.json({ date, staff, attending_count: attendingCount, products: productData, leaves: leavesToday, is_meal_day: isMealDay });
 });
 
 // 更新員工出席
