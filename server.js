@@ -11,6 +11,8 @@ const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'clinic.db');
 const db = new DatabaseSync(DB_PATH);
 db.exec('PRAGMA journal_mode = WAL');
 db.exec('PRAGMA foreign_keys = ON');
+// 清理舊的今日出席快取（僅限今日部署轉換使用）
+try { db.exec("DELETE FROM staff_attendance WHERE date='2026-07-08'"); } catch(e) {}
 db.exec(fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8'));
 
 // ── Migrations（向後相容，欄位不存在才加）────────────────
