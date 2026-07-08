@@ -11,8 +11,42 @@ const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'clinic.db');
 const db = new DatabaseSync(DB_PATH);
 db.exec('PRAGMA journal_mode = WAL');
 db.exec('PRAGMA foreign_keys = ON');
-// 清理舊的今日出席快取（僅限今日部署轉換使用）
-try { db.exec("DELETE FROM staff_attendance WHERE date='2026-07-08'"); } catch(e) {}
+// 採購歷史合併與重置為 2026-06-20 (一次性遷移)
+try {
+  const hasOldLogs = db.prepare("SELECT 1 FROM purchase_log WHERE purchased_at='2026-06-01' LIMIT 1").get();
+  if (hasOldLogs) {
+    db.exec("BEGIN TRANSACTION");
+    db.exec("DELETE FROM purchase_log");
+    const stmt = db.prepare(
+      `INSERT INTO purchase_log (ingredient_id, qty, total_price, purchased_at, item_type, purpose)
+       VALUES (?, ?, ?, '2026-06-20', '食材', '精力湯')`
+    );
+    const list = [
+      { id: 10,  q: 5315.0,  p: 1460.0 }, // 莓果
+      { id: 2,   q: 1500.0,  p: 831.0  }, // 羽衣甘藍
+      { id: 8,   q: 20540.0, p: 3557.0 }, // 蘋果(帶皮)
+      { id: 1,   q: 200.0,   p: 155.0  }, // 芽菜
+      { id: 3,   q: 1600.0,  p: 1816.0 }, // 貝比生菜
+      { id: 5,   q: 250.0,   p: 59.0   }, // 胡蘿蔔
+      { id: 237, q: 1800.0,  p: 148.0  }, // 檸檬
+      { id: 16,  q: 680.0,   p: 268.0  }, // 薑黃粉
+      { id: 25,  q: 3000.0,  p: 1556.0 }, // 橄欖油
+      { id: 15,  q: 1360.0,  p: 489.0  }, // 核桃
+      { id: 14,  q: 7340.0,  p: 1219.0 }, // 燕麥
+      { id: 26,  q: 600.0,   p: 1254.0 }, // 苦茶油
+      { id: 20,  q: 4500.0,  p: 2970.0 }, // 蛋白粉
+      { id: 11,  q: 1440.0,  p: 85.0   }  // 香蕉
+    ];
+    for (const item of list) {
+      stmt.run(item.id, item.q, item.p);
+    }
+    db.exec("COMMIT");
+    console.log("Production purchase log successfully migrated to 2026-06-20!");
+  }
+} catch (e) {
+  try { db.exec("ROLLBACK"); } catch(r) {}
+  console.error("Failed to migrate production purchase log:", e.message);
+}
 db.exec(fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8'));
 
 // ── Migrations（向後相容，欄位不存在才加）────────────────
