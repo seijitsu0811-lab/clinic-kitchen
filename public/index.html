@@ -1729,6 +1729,78 @@
     .modal-backdrop.open .modal {
       transform: scale(1) translateY(0);
     }
+
+    /* ── Contra Confirm Modal ── */
+    .contra-confirm {
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.5);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 1200;
+      animation: fadeIn 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+    .contra-box {
+      background: var(--card-solid);
+      border-radius: var(--radius-xl);
+      width: 90%;
+      max-width: 420px;
+      padding: 28px 24px;
+      box-shadow: var(--shadow-xl);
+      border: 1px solid var(--border);
+      text-align: center;
+      animation: popIn 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
+    }
+    .contra-icon {
+      font-size: 40px;
+      margin-bottom: 12px;
+    }
+    .contra-title {
+      font-family: var(--font-title);
+      font-size: 20px;
+      font-weight: 800;
+      color: var(--text1);
+      margin-bottom: 8px;
+    }
+    .contra-name {
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--primary);
+      margin-bottom: 16px;
+    }
+    .contra-warn {
+      background: rgba(245, 158, 11, 0.08);
+      border: 1px solid rgba(245, 158, 11, 0.2);
+      border-radius: var(--radius-md);
+      padding: 12px 14px;
+      color: var(--amber);
+      font-size: 14px;
+      font-weight: 600;
+      text-align: left;
+      line-height: 1.5;
+      margin-bottom: 24px;
+    }
+    .contra-actions {
+      display: flex;
+      gap: 12px;
+      justify-content: center;
+    }
+    .contra-actions .btn {
+      flex: 1;
+      padding: 10px 16px;
+      font-size: 14px;
+      font-weight: 600;
+      border-radius: var(--radius-md);
+      cursor: pointer;
+    }
+    @keyframes popIn {
+      from { transform: scale(0.9) translateY(10px); opacity: 0; }
+      to { transform: scale(1) translateY(0); opacity: 1; }
+    }
+
     .modal-title {
       font-family: var(--font-title);
       font-size: 20px;
