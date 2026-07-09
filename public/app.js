@@ -33,7 +33,7 @@ const App = (() => {
   async function showUserSelect() {
     document.getElementById('screen-user').style.display = 'flex';
     document.getElementById('screen-main').style.display = 'none';
-    const users = await api('/api/users');
+    const users = await publicApi('/api/public/users');
     const grid = document.getElementById('userGrid');
     grid.innerHTML = users.map(u => `
       <div class="user-card" onclick="App.selectUser(${u.id},'${esc(u.name)}')">
@@ -47,10 +47,17 @@ const App = (() => {
       </div>`;
   }
 
-  function selectUser(id, name) {
-    currentUser = { id, name };
-    localStorage.setItem('kitchen_user', JSON.stringify(currentUser));
-    showMain();
+  async function selectUser(id, name) {
+    try {
+      currentUser = { id, name };
+      ensureKitchenPassword(true, name);
+      await api('/api/users');
+      localStorage.setItem('kitchen_user', JSON.stringify(currentUser));
+      showMain();
+    } catch (e) {
+      currentUser = null;
+      alert(e.message || '密碼驗證失敗');
+    }
   }
 
   function showMain() {
@@ -2186,9 +2193,19 @@ const App = (() => {
   });
 
   // ── API 工具 ─────────────────────────────────────────────
-  function ensureKitchenPassword(force = false) {
+  async function publicApi(url) {
+    const r = await fetch(url);
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({ error: r.statusText }));
+      throw new Error(err.error || r.statusText);
+    }
+    return r.json();
+  }
+
+  function ensureKitchenPassword(force = false, userName = '') {
     if (!force && kitchenPassword) return kitchenPassword;
-    const value = prompt('請輸入廚房系統密碼');
+    const label = userName ? `（${userName}）` : '';
+    const value = prompt(`請輸入廚房系統密碼${label}`);
     if (!value) throw new Error('需要密碼才能使用廚房系統');
     kitchenPassword = value;
     sessionStorage.setItem('kitchen_password', value);
