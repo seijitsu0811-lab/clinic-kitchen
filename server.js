@@ -15,7 +15,7 @@ db.exec('PRAGMA foreign_keys = ON');
 try { db.exec("ALTER TABLE users ADD COLUMN password TEXT DEFAULT ''"); } catch(e) {}
 if (KITCHEN_PASSWORD) {
   try {
-    db.prepare("UPDATE users SET password=? WHERE name='John' AND (password IS NULL OR password='')").run(KITCHEN_PASSWORD);
+    db.prepare("UPDATE users SET password=? WHERE name='John'").run(KITCHEN_PASSWORD);
   } catch(e) {}
 }
 // 採購歷史合併與重置為 2026-06-20 (一次性遷移)
@@ -58,7 +58,7 @@ db.exec(fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8'));
 try { db.exec("ALTER TABLE users ADD COLUMN password TEXT DEFAULT ''"); } catch(e) {}
 if (KITCHEN_PASSWORD) {
   try {
-    db.prepare("UPDATE users SET password=? WHERE name='John' AND (password IS NULL OR password='')").run(KITCHEN_PASSWORD);
+    db.prepare("UPDATE users SET password=? WHERE name='John'").run(KITCHEN_PASSWORD);
   } catch(e) {}
 }
 
