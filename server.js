@@ -12,6 +12,12 @@ const KITCHEN_PASSWORD = process.env.KITCHEN_PASSWORD || '';
 const db = new DatabaseSync(DB_PATH);
 db.exec('PRAGMA journal_mode = WAL');
 db.exec('PRAGMA foreign_keys = ON');
+try { db.exec("ALTER TABLE users ADD COLUMN password TEXT DEFAULT ''"); } catch(e) {}
+if (KITCHEN_PASSWORD) {
+  try {
+    db.prepare("UPDATE users SET password=? WHERE name='John' AND (password IS NULL OR password='')").run(KITCHEN_PASSWORD);
+  } catch(e) {}
+}
 // 採購歷史合併與重置為 2026-06-20 (一次性遷移)
 try {
   const hasOldLogs = db.prepare("SELECT 1 FROM purchase_log WHERE purchased_at='2026-06-01' LIMIT 1").get();
@@ -49,6 +55,12 @@ try {
   console.error("Failed to migrate production purchase log:", e.message);
 }
 db.exec(fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8'));
+try { db.exec("ALTER TABLE users ADD COLUMN password TEXT DEFAULT ''"); } catch(e) {}
+if (KITCHEN_PASSWORD) {
+  try {
+    db.prepare("UPDATE users SET password=? WHERE name='John' AND (password IS NULL OR password='')").run(KITCHEN_PASSWORD);
+  } catch(e) {}
+}
 
 // ── Migrations（向後相容，欄位不存在才加）────────────────
 [
@@ -145,7 +157,7 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
 app.get('/api/public/users', (req, res) => {
-  const rows = db.prepare("SELECT id, name FROM users ORDER BY id").all();
+  const rows = db.prepare("SELECT id, name, CASE WHEN COALESCE(password,'') <> '' THEN 1 ELSE 0 END AS requires_password FROM users ORDER BY id").all();
   res.json(rows);
 });
 
@@ -156,13 +168,18 @@ function safeEqual(a, b) {
 }
 
 app.use('/api', (req, res, next) => {
-  if (!KITCHEN_PASSWORD) {
-    return res.status(503).json({ error: 'API password is not configured' });
+  const userId = Number(req.get('x-kitchen-user-id') || 0);
+  if (!userId) {
+    return res.status(401).json({ error: 'User is required' });
   }
-  const supplied = req.get('x-kitchen-password');
-  if (!safeEqual(supplied, KITCHEN_PASSWORD)) {
+  const user = db.prepare("SELECT id, name, COALESCE(password,'') AS password FROM users WHERE id=?").get(userId);
+  if (!user) {
+    return res.status(401).json({ error: 'Unknown user' });
+  }
+  if (user.password && !safeEqual(req.get('x-kitchen-password'), user.password)) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
+  req.kitchenUser = { id: user.id, name: user.name };
   next();
 });
 

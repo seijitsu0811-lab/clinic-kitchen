@@ -24,7 +24,7 @@ const App = (() => {
   // ── 初始化 ─────────────────────────────────────────────
   async function init() {
     const saved = localStorage.getItem('kitchen_user');
-    if (saved && kitchenPassword) {
+    if (saved) {
       try { currentUser = JSON.parse(saved); showMain(); return; } catch(e) {}
     }
     showUserSelect();
@@ -36,7 +36,7 @@ const App = (() => {
     const users = await publicApi('/api/public/users');
     const grid = document.getElementById('userGrid');
     grid.innerHTML = users.map(u => `
-      <div class="user-card" onclick="App.selectUser(${u.id},'${esc(u.name)}')">
+      <div class="user-card" onclick="App.selectUser(${u.id},'${esc(u.name)}',${u.requires_password ? 'true' : 'false'})">
         <div class="avatar">${u.name[0]}</div>
         <div class="uname">${esc(u.name)}</div>
       </div>
@@ -47,10 +47,10 @@ const App = (() => {
       </div>`;
   }
 
-  async function selectUser(id, name) {
+  async function selectUser(id, name, requiresPassword = false) {
     try {
-      currentUser = { id, name };
-      ensureKitchenPassword(true, name);
+      currentUser = { id, name, requires_password: !!requiresPassword };
+      if (currentUser.requires_password) ensureKitchenPassword(true, name);
       await api('/api/users');
       localStorage.setItem('kitchen_user', JSON.stringify(currentUser));
       showMain();
@@ -2213,21 +2213,27 @@ const App = (() => {
   }
 
   async function api(url, method = 'GET', body = null) {
+    if (!currentUser || !currentUser.id) {
+      throw new Error('請先選擇廚房人員');
+    }
     const opts = {
       method,
       headers: {
         'Content-Type': 'application/json',
-        'X-Kitchen-Password': ensureKitchenPassword()
+        'X-Kitchen-User-Id': String(currentUser.id)
       }
     };
+    if (kitchenPassword) opts.headers['X-Kitchen-Password'] = kitchenPassword;
     if (body) opts.body = JSON.stringify(body);
     const r = await fetch(url, opts);
     if (r.status === 401) {
       sessionStorage.removeItem('kitchen_password');
       kitchenPassword = '';
-      opts.headers['X-Kitchen-Password'] = ensureKitchenPassword(true);
-      const retry = await fetch(url, opts);
-      if (retry.ok) return retry.json();
+      if (currentUser.requires_password || !kitchenPassword) {
+        opts.headers['X-Kitchen-Password'] = ensureKitchenPassword(true, currentUser.name);
+        const retry = await fetch(url, opts);
+        if (retry.ok) return retry.json();
+      }
     }
     if (!r.ok) {
       const err = await r.json().catch(() => ({ error: r.statusText }));
