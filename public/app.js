@@ -24,7 +24,7 @@ const App = (() => {
   // ── 初始化 ─────────────────────────────────────────────
   async function init() {
     const saved = localStorage.getItem('kitchen_user');
-    if (saved) {
+    if (saved && kitchenPassword) {
       try { currentUser = JSON.parse(saved); showMain(); return; } catch(e) {}
     }
     showUserSelect();
