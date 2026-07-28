@@ -112,11 +112,12 @@ const App = (() => {
       deductedBatches = new Set(db2);
       deductedCases   = new Set(dc2);
       if (batchGroups) {
+        // 二次過濾：確保休假人員（不在 _allMembersMap）不會從舊 localStorage 復活
         const groups = batchGroups.map(b => ({
           manualTime: b.manualTime || null,
           members: (b.memberIds || []).map(id => _allMembersMap[id]).filter(Boolean)
-        }));
-        if (groups.some(g => g.members.length > 0)) staffBatchGroups = groups;
+        })).filter(g => g.members.length > 0);
+        if (groups.length > 0) staffBatchGroups = groups;
       }
       if (schOrder) schCustomOrder = schOrder;
     } catch (e) { /* ignore */ }
@@ -164,8 +165,10 @@ const App = (() => {
   function _initBatchGroups(d) {
     const prod = d.products && d.products[0];
     if (!prod || d.attending_count === 0) { staffBatchGroups = []; return; }
+    // 排除今日休假人員（不加入 _allMembersMap，_loadDayState 恢復時也會自動過濾）
+    const leaveSet = new Set((d.leaves || []).map(n => n.toLowerCase().trim()));
     const members = [];
-    (d.staff || []).filter(s => s.attending).forEach(s =>
+    (d.staff || []).filter(s => s.attending && !leaveSet.has(s.name.toLowerCase().trim())).forEach(s =>
       members.push({ id: `s_${s.user_id}`, name: s.name, type: 'staff', userId: s.user_id })
     );
     (prod.staff_rx_cases || []).forEach(c =>
