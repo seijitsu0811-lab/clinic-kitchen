@@ -76,6 +76,11 @@ if (KITCHEN_PASSWORD) {
   "ALTER TABLE purchase_log ADD COLUMN item_type TEXT DEFAULT '食材'",
   "ALTER TABLE purchase_log ADD COLUMN purpose TEXT DEFAULT '精力湯'",
   "ALTER TABLE ingredients ADD COLUMN shelf_life_days INTEGER DEFAULT 0",
+  // 預約系統帶入的出單：source_key 用來避免重複建單（同一筆預約的同一種包裝只會建一次）
+  "ALTER TABLE case_orders ADD COLUMN source_key TEXT DEFAULT ''",
+  "CREATE UNIQUE INDEX IF NOT EXISTS idx_case_orders_source ON case_orders(source_key) WHERE source_key <> ''",
+  // 被廚房人員刪掉的預約帶入出單：記下來，之後同步不再重建
+  "CREATE TABLE IF NOT EXISTS appt_sync_dismissed (source_key TEXT PRIMARY KEY, dismissed_at TEXT DEFAULT (datetime('now','localtime')))",
   "CREATE TABLE IF NOT EXISTS labor_records (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT NOT NULL, user_id INTEGER, role TEXT DEFAULT '', task_type TEXT DEFAULT '製作', purpose TEXT DEFAULT '精力湯', minutes INTEGER DEFAULT 0, hourly_rate REAL DEFAULT 196, created_at TEXT DEFAULT (datetime('now','localtime')))",
   "CREATE TABLE IF NOT EXISTS trial_recipes (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, status TEXT DEFAULT '試驗中', notes TEXT DEFAULT '', created_at TEXT DEFAULT (datetime('now','localtime')))",
   "CREATE TABLE IF NOT EXISTS trial_sessions (id INTEGER PRIMARY KEY AUTOINCREMENT, trial_recipe_id INTEGER, session_no INTEGER DEFAULT 1, date TEXT, notes TEXT DEFAULT '', labor_minutes INTEGER DEFAULT 0, participants TEXT DEFAULT '', created_at TEXT DEFAULT (datetime('now','localtime')))",
@@ -195,6 +200,95 @@ function tx(fn) {
 
 function today() {
   return new Date().toISOString().slice(0,10);
+}
+
+// ══════════════════════════════════════════════════════════
+// 預約系統帶入：把喜悅預約系統裡的四種精力湯／基底粉項目，
+// 自動建立成廚房的個案出單。只新增、不修改也不刪除既有出單。
+// ══════════════════════════════════════════════════════════
+const APPTS_URL = process.env.APPTS_URL || 'https://clinic-system-1224f-default-rtdb.asia-southeast1.firebasedatabase.app/clinic_v3/appts.json';
+// 預約系統的治療項目 → 廚房的出單包裝類型
+const APPT_ITEM_MAP = {
+  '罐裝基底粉':   '罐裝',
+  '袋裝基底粉':   '袋裝',
+  '全配方精力湯': '全配方',
+  '內用精力湯':   '內用'
+};
+const SYNC_AHEAD_DAYS = 14;          // 往後同步幾天的預約
+let _apptCache = { at: 0, data: null };
+
+async function fetchAppts() {
+  const now = Date.now();
+  if (_apptCache.data && now - _apptCache.at < 120000) return _apptCache.data;   // 快取 2 分鐘
+  const r = await fetch(APPTS_URL, { signal: AbortSignal.timeout(8000) });
+  const j = await r.json();
+  _apptCache = { at: now, data: j || {} };
+  return _apptCache.data;
+}
+
+// '09:30' → '0930'；取不到就用預設用餐時間
+function apptTimeToMeal(t) {
+  const m = String(t || '').match(/(\d{1,2}):(\d{2})/);
+  return m ? String(m[1]).padStart(2, '0') + m[2] : '1330';
+}
+
+async function syncApptOrders() {
+  let appts;
+  try {
+    appts = await fetchAppts();
+  } catch (err) {
+    console.error('讀取預約系統失敗:', err.message);
+    return { created: 0, error: err.message };
+  }
+
+  const from = today();
+  const to   = new Date(Date.now() + SYNC_AHEAD_DAYS * 86400000).toISOString().slice(0, 10);
+
+  // 患者姓名 → 自己的處方（個案處方，不含員工標準）
+  const rxByName = {};
+  db.prepare("SELECT id,name FROM prescriptions WHERE active=1 AND is_staff_rx=0").all()
+    .forEach(r => { if (r.name) rxByName[String(r.name).trim()] = r.id; });
+  // 沒有自己處方的患者，先掛員工標準配方並在備註標明，讓廚房人員確認
+  const emp = db.prepare("SELECT id FROM prescriptions WHERE code='EMP-00'").get();
+  const fallbackId = emp ? emp.id : 1;
+
+  // 已被廚房人員刪掉的，不再重建
+  const dismissed = new Set(
+    db.prepare('SELECT source_key FROM appt_sync_dismissed').all().map(r => r.source_key)
+  );
+
+  const ins = db.prepare(
+    `INSERT OR IGNORE INTO case_orders
+       (date,prescription_id,cups,meal_time,powder_type,patient_name,notes,source_key)
+     VALUES (?,?,?,?,?,?,?,?)`
+  );
+
+  let created = 0, skipped = 0;
+  Object.keys(appts || {}).forEach(date => {
+    if (date < from || date > to) return;
+    const raw = appts[date];
+    const list = Array.isArray(raw) ? raw : (raw && typeof raw === 'object' ? Object.values(raw) : []);
+    list.forEach(a => {
+      if (!a || typeof a !== 'object' || !a.id) return;
+      (a.items || []).forEach(item => {
+        const powder = APPT_ITEM_MAP[item];
+        if (!powder) return;
+        if (dismissed.has('appt:' + a.id + ':' + powder)) return;
+        const name = String(a.name || '').trim();
+        const rxId = rxByName[name];
+        const note = rxId
+          ? '[預約帶入]'
+          : '[預約帶入] 此患者尚未建立處方，暫用員工標準配方，請確認';
+        const r = ins.run(
+          date, rxId || fallbackId, 1, apptTimeToMeal(a.start),
+          powder, name, note, 'appt:' + a.id + ':' + powder
+        );
+        if (r.changes) created++; else skipped++;
+      });
+    });
+  });
+  if (created) console.log('預約帶入：新建 ' + created + ' 筆出單（已存在 ' + skipped + ' 筆略過）');
+  return { created, skipped };
 }
 
 // 計算批次：batch_size=3 用 3+2 最佳化，其他用整除
@@ -407,6 +501,9 @@ function buildPrepAndPowder(rxId, multiplier, unit, powderMultiplier) {
 app.get('/api/today', async (req, res) => {
   const date = today();
 
+  // 0. 先把預約系統的精力湯／基底粉項目帶入成個案出單（只新增，不動既有資料）
+  try { await syncApptOrders(); } catch (err) { console.error('預約帶入失敗:', err.message); }
+
   // 1. Fetch leaves from Firebase clinic system
   const leavesSet = new Set();
   const leavesToday = [];
@@ -563,6 +660,11 @@ app.put('/api/today/cases/:id', (req, res) => {
 
 // 刪除今日個案出單
 app.delete('/api/today/cases/:id', (req, res) => {
+  // 預約帶入的出單被刪掉時記下來，避免下次同步又長回來
+  const row = db.prepare('SELECT source_key FROM case_orders WHERE id=?').get(req.params.id);
+  if (row && row.source_key) {
+    db.prepare('INSERT OR IGNORE INTO appt_sync_dismissed (source_key) VALUES (?)').run(row.source_key);
+  }
   db.prepare('DELETE FROM case_orders WHERE id=?').run(req.params.id);
   res.json({ ok: true });
 });
