@@ -20,6 +20,10 @@ const App = (() => {
   let empRxId          = null; // employee formula prescription id
   let deductedBatches  = new Set(); // batch indices already inventory-deducted today
   let deductedCases    = new Set(); // case ids already inventory-deducted today
+  let restoredLeaves   = new Set(); // leave members manually restored by user
+
+  const PTYPE_LABEL = { '袋裝': '袋裝基底粉', '罐裝': '罐裝基底粉', '全配方': '全配方精力湯', '內用': '內用精力湯' };
+  function ptLabel(v) { return PTYPE_LABEL[v] || v || '袋裝基底粉'; }
 
   // ── 初始化 ─────────────────────────────────────────────
   async function init() {
@@ -99,20 +103,30 @@ const App = (() => {
       })) : null,
       schOrder: schCustomOrder || null,
       deductedBatches: [...deductedBatches],
-      deductedCases: [...deductedCases]
+      deductedCases: [...deductedCases],
+      restoredLeaves: [...restoredLeaves]
     }));
   }
   function _loadDayState(date) {
     try {
       const raw = localStorage.getItem(`clinic_day_${date}`);
       if (!raw) return;
-      const { staff = [], cases = [], batchGroups, schOrder, deductedBatches: db2 = [], deductedCases: dc2 = [] } = JSON.parse(raw);
+      const { staff = [], cases = [], batchGroups, schOrder, deductedBatches: db2 = [], deductedCases: dc2 = [], restoredLeaves: rl2 = [] } = JSON.parse(raw);
       staffPickedUp   = new Set(staff);
       casePickedUp    = new Set(cases);
       deductedBatches = new Set(db2);
       deductedCases   = new Set(dc2);
+      restoredLeaves  = new Set(rl2);
+      // 若有手動復原的休假人員，補回 _allMembersMap（否則 batchGroups 恢復時會被 filter 掉）
+      if (restoredLeaves.size > 0 && lastTodayData) {
+        (lastTodayData.staff || []).forEach(s => {
+          if (restoredLeaves.has(s.name.toLowerCase().trim())) {
+            const member = { id: `s_${s.user_id}`, name: s.name, type: 'staff', userId: s.user_id };
+            _allMembersMap[member.id] = member;
+          }
+        });
+      }
       if (batchGroups) {
-        // 二次過濾：確保休假人員（不在 _allMembersMap）不會從舊 localStorage 復活
         const groups = batchGroups.map(b => ({
           manualTime: b.manualTime || null,
           members: (b.memberIds || []).map(id => _allMembersMap[id]).filter(Boolean)
@@ -121,6 +135,50 @@ const App = (() => {
       }
       if (schOrder) schCustomOrder = schOrder;
     } catch (e) { /* ignore */ }
+  }
+
+  function updateLeaveAlert(d) {
+    const leavesAlert = document.getElementById('todayLeavesAlert');
+    if (!leavesAlert) return;
+    if (!d || !d.leaves || d.leaves.length === 0) { leavesAlert.style.display = 'none'; return; }
+    const chips = d.leaves.map(name => {
+      const lower = name.toLowerCase().trim();
+      const restored = restoredLeaves.has(lower);
+      return `<span class="leave-chip${restored ? ' leave-restored' : ''}" onclick="App.toggleLeaveRestore('${name.replace(/'/g, "\\'")}')" title="${restored ? '點擊重新排除' : '點擊恢復出單'}">${esc(name)}${restored ? ' ↩' : ''}</span>`;
+    }).join('');
+    leavesAlert.innerHTML = `🌴 今日休假：${chips}<span class="leave-tip">（點姓名可復原出單）</span>`;
+    leavesAlert.style.display = 'block';
+  }
+
+  function toggleLeaveRestore(name) {
+    const lower = name.toLowerCase().trim();
+    if (restoredLeaves.has(lower)) {
+      restoredLeaves.delete(lower);
+      if (staffBatchGroups) {
+        staffBatchGroups.forEach(b => {
+          b.members = b.members.filter(m => m.name.toLowerCase().trim() !== lower);
+        });
+        staffBatchGroups = staffBatchGroups.filter(b => b.members.length > 0);
+      }
+      Object.keys(_allMembersMap).forEach(id => {
+        if (_allMembersMap[id].name.toLowerCase().trim() === lower) delete _allMembersMap[id];
+      });
+    } else {
+      restoredLeaves.add(lower);
+      const staffMember = (lastTodayData?.staff || []).find(s => s.name.toLowerCase().trim() === lower);
+      if (staffMember) {
+        const member = { id: `s_${staffMember.user_id}`, name: staffMember.name, type: 'staff', userId: staffMember.user_id };
+        _allMembersMap[member.id] = member;
+        if (staffBatchGroups && staffBatchGroups.length > 0) {
+          staffBatchGroups[staffBatchGroups.length - 1].members.push(member);
+        } else if (staffBatchGroups) {
+          staffBatchGroups.push({ members: [member] });
+        }
+      }
+    }
+    _saveDayState(lastTodayData.date);
+    renderTodaySection1(lastTodayData);
+    updateLeaveAlert(lastTodayData);
   }
 
   async function loadToday() {
@@ -140,15 +198,7 @@ const App = (() => {
     }
 
     // 顯示今日休假人員
-    const leavesAlert = document.getElementById('todayLeavesAlert');
-    if (leavesAlert) {
-      if (d.leaves && d.leaves.length > 0) {
-        leavesAlert.innerHTML = `🌴 今日休假人員：<strong>${d.leaves.join('、')}</strong>（已自動排除本機預設出單）`;
-        leavesAlert.style.display = 'block';
-      } else {
-        leavesAlert.style.display = 'none';
-      }
-    }
+    updateLeaveAlert(d);
 
     document.getElementById('staffCount').textContent = `${d.attending_count}人`;
     renderTodaySection1(d);
@@ -168,7 +218,7 @@ const App = (() => {
     // 排除今日休假人員（不加入 _allMembersMap，_loadDayState 恢復時也會自動過濾）
     const leaveSet = new Set((d.leaves || []).map(n => n.toLowerCase().trim()));
     const members = [];
-    (d.staff || []).filter(s => s.attending && !leaveSet.has(s.name.toLowerCase().trim())).forEach(s =>
+    (d.staff || []).filter(s => s.attending && (!leaveSet.has(s.name.toLowerCase().trim()) || restoredLeaves.has(s.name.toLowerCase().trim()))).forEach(s =>
       members.push({ id: `s_${s.user_id}`, name: s.name, type: 'staff', userId: s.user_id })
     );
     (prod.staff_rx_cases || []).forEach(c =>
@@ -283,7 +333,7 @@ const App = (() => {
       const tFmt = mt.length === 4 ? `${mt.slice(0,2)}:${mt.slice(2)}` : mt;
       const who = c.patient_name || c.rx_name || '';
       let icon, detail;
-      if (c.formula_type === '粉配方')  { icon = '🧪'; detail = `粉配方 ${c.cups}天 ${c.powder_type||'袋裝'}`; }
+      if (c.formula_type === '粉配方')  { icon = '🧪'; detail = `粉配方 ${c.cups}天 ${ptLabel(c.powder_type)}`; }
       else if (c.powder_type === '全配方') { icon = '📦'; detail = `全配方外帶 ${c.cups}天`; }
       else                                 { icon = '🥤'; detail = `${c.rx_name} ${c.cups}杯`; }
       const noteText = [c.contraindications, c.notes].filter(Boolean).join(' · ');
@@ -351,11 +401,11 @@ const App = (() => {
         ? `${c.meal_time.slice(0,2)}:${c.meal_time.slice(2)}` : (c.meal_time || '');
       const sub = type === 'fresh'
         ? `${esc(c.rx_name)}${mt ? ' · ' + mt : ''}`
-        : `${c.cups}天 ${esc(c.powder_type || '袋裝')}${mt ? ' · ' + mt : ''}`;
+        : `${c.cups}天 ${esc(ptLabel(c.powder_type))}${mt ? ' · ' + mt : ''}`;
       return `<div class="case-chip ${picked ? 'picked' : ''}" data-type="${type}" data-inuse="${isInuse?1:0}"
                    onclick="App.toggleCasePickup(${c.id})">
         <div class="sname">${esc(name)}</div>
-        <div class="chip-sub">${isInuse ? '🍽 內用' : ''}${sub}</div>
+        <div class="chip-sub">${isInuse ? '🍽 內用精力湯' : ''}${sub}</div>
       </div>`;
     }
     function chipGroup(cases, type, label) {
@@ -861,7 +911,7 @@ const App = (() => {
 
     // 出單方式 badge
     const typeIcons = { '袋裝': '🛍', '罐裝': '🫙', '全配方': '📦', '內用': '🍽' };
-    const typeBadge = `<span class="case-dtype">${typeIcons[c.powder_type] || ''} ${esc(c.powder_type||'袋裝')}</span>`;
+    const typeBadge = `<span class="case-dtype">${typeIcons[c.powder_type] || ''} ${esc(ptLabel(c.powder_type))}</span>`;
 
     let casePowderHtml = '';
     // 內用不顯示粉包行
@@ -2271,6 +2321,7 @@ const App = (() => {
     openAddLabor, saveLabor, deleteLabor,
     loadTrialRecipes, openAddTrial, openEditTrial, saveTrial, deleteTrial,
     openAddTrialSession, saveTrialSession, deleteTrialSession,
-    loadSOP, toggleQC, resetQC
+    loadSOP, toggleQC, resetQC,
+    toggleLeaveRestore
   };
 })();

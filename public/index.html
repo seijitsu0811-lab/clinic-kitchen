@@ -1844,6 +1844,20 @@
       justify-content: center;
     }
 
+    /* ── 休假人員 chips ── */
+    .leave-chip {
+      display: inline-block; cursor: pointer;
+      background: rgba(239,68,68,.1); border: 1px solid rgba(239,68,68,.25);
+      border-radius: 8px; padding: 1px 8px; margin: 0 2px;
+      font-weight: 700; transition: all .15s;
+    }
+    .leave-chip:hover { background: rgba(239,68,68,.2); }
+    .leave-chip.leave-restored {
+      background: rgba(52,199,89,.12); border-color: rgba(52,199,89,.3);
+      color: var(--green); text-decoration: line-through;
+    }
+    .leave-tip { color: var(--text3); font-size: 11px; font-weight: 400; margin-left: 4px; }
+
     /* ── 底部 Tab Bar（手機專用）── */
     .tabbar {
       position: fixed;
@@ -2202,7 +2216,7 @@
           <input type="radio" name="casePowderType" value="袋裝" checked>
           <span class="pkg-card">
             <span class="pkg-icon">🛍</span>
-            <span class="pkg-name">袋裝</span>
+            <span class="pkg-name">袋裝基底粉</span>
             <span class="pkg-note">帶走</span>
           </span>
         </label>
@@ -2210,7 +2224,7 @@
           <input type="radio" name="casePowderType" value="罐裝">
           <span class="pkg-card">
             <span class="pkg-icon">🫙</span>
-            <span class="pkg-name">罐裝</span>
+            <span class="pkg-name">罐裝基底粉</span>
             <span class="pkg-note">×1.1（防溢）</span>
           </span>
         </label>
@@ -2218,7 +2232,7 @@
           <input type="radio" name="casePowderType" value="全配方">
           <span class="pkg-card">
             <span class="pkg-icon">📦</span>
-            <span class="pkg-name">全配方</span>
+            <span class="pkg-name">全配方精力湯</span>
             <span class="pkg-note">蔬果＋粉×1.1</span>
           </span>
         </label>
@@ -2226,7 +2240,7 @@
           <input type="radio" name="casePowderType" value="內用">
           <span class="pkg-card">
             <span class="pkg-icon">🍽</span>
-            <span class="pkg-name">內用</span>
+            <span class="pkg-name">內用精力湯</span>
             <span class="pkg-note">現場飲用</span>
           </span>
         </label>
