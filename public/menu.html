@@ -84,7 +84,9 @@
     font-size: 25px; font-weight: 900; color: var(--ink);
     margin-top: 6px; padding-top: 10px; border-top: 2px dashed var(--line);
   }
-  .approx { font-size: 18px; font-weight: 700; color: var(--chick); }
+  /* 專用的深琥珀色：--chick 用在大字標籤上沒問題，但這行是 18px 內文，
+     依 AAA 需要 7:1，--chick 只有 5.92:1，所以這裡另外指定。 */
+  .approx { font-size: 18px; font-weight: 700; color: #5F3D04; }
 
   .foot { font-size: 18px; color: var(--ink-2); border-top: 2px solid var(--line); padding-top: 20px; }
   .err  { font-size: 22px; color: var(--pork); padding: 40px 0; }
