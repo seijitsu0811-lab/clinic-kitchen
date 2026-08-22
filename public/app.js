@@ -944,6 +944,8 @@ const App = (() => {
             </div>
           </div>
           <div style="display:flex;gap:6px">
+            <button class="btn btn-ghost btn-sm" title="用這位個案的處方熱量開啟套餐菜單"
+              onclick="App.openCaseMenuFor(${c.prescription_id}, '${esc(c.powder_type || '袋裝')}')">🍱 菜單</button>
             <button class="btn btn-ghost btn-sm" onclick="App.openEditCase(${c.id})">編輯</button>
             <button class="btn btn-danger btn-sm" onclick="App.deleteCase(${c.id})">刪除</button>
           </div>
@@ -2304,9 +2306,29 @@ const App = (() => {
   let mealMenu   = null;   // { series:[{items:[]}], vendors:[] }
   let mealDay    = null;   // 今日出單與採購清單
   let mealCards  = null;
-  let currentMealTab = 'today';
+  let currentMealTab  = 'today';
+  let currentMealView = 'buy';   // buy = 採購清單（上午）｜serve = 出餐核對（中午）
 
   const PTAG_ICON = { '豬': '🥩', '雞': '🍗', '魚': '🐟' };
+  // 一筆餐盒出單的生命週期。點狀態晶片往前推一格，點錯了在編輯視窗改回來
+  const STATUS_FLOW = ['待採購', '已採購', '已擺盤', '已出餐'];
+
+  function hhmm(t) {
+    return (t && t.length === 4) ? t.slice(0, 2) + ':' + t.slice(2) : (t || '');
+  }
+  function nowHHMM() {
+    const d = new Date();
+    return String(d.getHours()).padStart(2, '0') + String(d.getMinutes()).padStart(2, '0');
+  }
+
+  function statusChip(o) {
+    const i    = STATUS_FLOW.indexOf(o.status);
+    const next = (i >= 0 && i < STATUS_FLOW.length - 1) ? STATUS_FLOW[i + 1] : null;
+    const hint = next ? `<span class="st-next">→ ${esc(next)}</span>` : '';
+    const title = next ? `點一下改為「${next}」` : '已完成';
+    return `<span class="status-chip st-${esc(o.status)}" title="${title}"
+              onclick="App.advanceMealStatus(${o.id})">${esc(o.status)}${hint}</span>`;
+  }
   function ptag(p) {
     return `<span class="ptag ptag-${esc(p)}">${PTAG_ICON[p] || ''} ${esc(p)}</span>`;
   }
@@ -2332,6 +2354,14 @@ const App = (() => {
   }
 
   // ── 今日採購單 ────────────────────────────────────────
+  function switchMealView(v) {
+    currentMealView = v;
+    ['buy', 'serve'].forEach(k => {
+      document.getElementById('mealViewBtn-' + k)?.classList.toggle('active', k === v);
+      document.getElementById('mealPane-' + k)?.classList.toggle('active', k === v);
+    });
+  }
+
   function renderMealToday() {
     const el = document.getElementById('mealToday');
     if (!el || !mealDay) return;
@@ -2341,7 +2371,10 @@ const App = (() => {
       return;
     }
 
-    const lists = mealDay.purchase_lists.map(g => `
+    // 採購檢視：一間店一張單，一次結帳
+    const lists = mealDay.purchase_lists.map(g => {
+      const allDone = g.lines.every(l => l.all_purchased);
+      return `
       <div class="vendor-card">
         <div class="vendor-head">
           <span class="vendor-name">${esc(g.vendor)}</span>
@@ -2354,40 +2387,67 @@ const App = (() => {
             <span class="mode-tag">${esc(l.mode)}</span>
             <span class="pline-qty">×${l.qty}</span>
             <span class="pline-money">@$${l.unit_price} = $${l.subtotal}</span>
-            ${l.all_purchased
-              ? '<span class="badge badge-green" style="margin-left:8px">已買</span>'
-              : `<button class="btn btn-ghost btn-sm" style="margin-left:8px"
-                   onclick="App.openMealPurchase('${esc(l.key)}')">已買</button>`}
           </div>`).join('')}
-      </div>`).join('');
+        <div style="margin-top:12px">
+          ${allDone
+            ? '<span class="badge badge-green" style="font-size:13px;padding:6px 14px">這間買齊了</span>'
+            : `<button class="btn btn-primary" onclick="App.openVendorPurchase(${g.vendor_id})">
+                 這間買齊了・填總金額
+               </button>`}
+        </div>
+      </div>`;
+    }).join('');
 
+    // 出餐檢視：依個案核對，狀態一路推到出餐
     const orders = mealDay.orders.map(o => `
       <div class="meal-order-row">
         <span class="who">${esc(o.patient_name || '員工')}</span>
-        ${ptag(o.protein || guessProtein(o.meal_item_id))}
-        <span class="dish">${esc(o.display_name)}</span>
+        <span class="mode-tag">${hhmm(o.meal_time)}</span>
+        ${ptag(guessProtein(o.meal_item_id))}
+        <span class="dish">${esc(o.display_name)}${o.qty > 1 ? ' ×' + o.qty : ''}</span>
         <span class="spacer">
-          <span class="mode-tag">${esc(o.purchase_mode)}</span>
           <span class="kcal-badge">${o.kcal} kcal</span>
-          <span class="badge ${o.status === '待採購' ? 'badge-orange' : 'badge-green'}">${esc(o.status)}</span>
+          ${statusChip(o)}
           <button class="btn btn-ghost btn-sm" onclick="App.openEditMealOrder(${o.id})">編輯</button>
           <button class="btn btn-ghost btn-sm" onclick="App.deleteMealOrder(${o.id})">刪除</button>
         </span>
       </div>`).join('');
 
+    const doneCount = mealDay.orders.filter(o => o.status === '已出餐').length;
+
     el.innerHTML = `
       <div class="card" style="padding:14px 18px;margin-bottom:16px;display:flex;gap:20px;flex-wrap:wrap;align-items:center">
-        <div><div style="font-size:11px;color:var(--text3);font-weight:600">今日份數</div>
+        <div><div style="font-size:12px;color:var(--text3);font-weight:600">今日份數</div>
              <div style="font-size:20px;font-weight:800">${mealDay.orders.reduce((s, o) => s + o.qty, 0)} 份</div></div>
-        <div><div style="font-size:11px;color:var(--text3);font-weight:600">預計採購</div>
+        <div><div style="font-size:12px;color:var(--text3);font-weight:600">預計採購</div>
              <div style="font-size:20px;font-weight:800">$${mealDay.planned_total}</div></div>
-        <div><div style="font-size:11px;color:var(--text3);font-weight:600">已回填實付</div>
+        <div><div style="font-size:12px;color:var(--text3);font-weight:600">已回填實付</div>
              <div style="font-size:20px;font-weight:800;color:var(--primary)">$${mealDay.spent_total}</div></div>
+        <div><div style="font-size:12px;color:var(--text3);font-weight:600">已出餐</div>
+             <div style="font-size:20px;font-weight:800">${doneCount} / ${mealDay.orders.length}</div></div>
       </div>
-      <div class="today-group-label" style="margin-bottom:8px">採購清單（一間店家一張單）</div>
-      ${lists}
-      <div class="today-group-label" style="margin:18px 0 8px">出單明細</div>
-      ${orders}`;
+
+      <div id="mealPane-buy" class="view-pane ${currentMealView === 'buy' ? 'active' : ''}">
+        ${lists}
+      </div>
+      <div id="mealPane-serve" class="view-pane ${currentMealView === 'serve' ? 'active' : ''}">
+        <div class="today-group-label" style="margin-bottom:8px">
+          點狀態可以往下一步推進：待採購 → 已採購 → 已擺盤 → 已出餐
+        </div>
+        ${orders}
+      </div>`;
+
+    switchMealView(currentMealView);
+  }
+
+  async function advanceMealStatus(id) {
+    const o = mealDay?.orders.find(x => x.id === id);
+    if (!o) return;
+    const i = STATUS_FLOW.indexOf(o.status);
+    if (i < 0 || i === STATUS_FLOW.length - 1) return;   // 已出餐是終點
+    await api('/api/meals/orders/' + id, 'PUT', { status: STATUS_FLOW[i + 1] });
+    await loadMeals();
+    if (lastTodayData) { lastTodayData.meals = mealDay; renderTodayMeals(mealDay); }
   }
 
   function guessProtein(itemId) {
@@ -2399,28 +2459,71 @@ const App = (() => {
     return '';
   }
 
-  // ── 今日工作單裡的餐盒摘要 ────────────────────────────
+  // ── 今日頁頂部行動列 ──────────────────────────────────
+  // 買便當有時間壓力，所以它出現在畫面最上方，而不是捲三分之二頁之後
+  function renderMealAlert(meals) {
+    const el = document.getElementById('todayMealAlert');
+    if (!el) return;
+
+    const pending = meals ? meals.orders.filter(o => o.status === '待採購') : [];
+    if (!meals || !pending.length) { el.innerHTML = ''; return; }
+
+    const shops   = new Set(pending.map(o => o.vendor_name).filter(Boolean)).size;
+    const t       = meals.timing;
+    const overdue = t && nowHHMM() > t.depart_by;
+
+    // 金額只算還沒買的，否則會出現「要買 2 間」卻標示 3 間總額
+    const remaining = (meals.purchase_lists || []).reduce((s, g) =>
+      s + g.lines.filter(l => !l.all_purchased).reduce((n, l) => n + l.subtotal, 0), 0);
+
+    const timeBlock = t ? `
+      <div>
+        <div class="ma-time">${hhmm(t.depart_by)}</div>
+        <div class="ma-time-label">${overdue ? '已超過出發時間' : '前要出發'}</div>
+      </div>` : '';
+
+    const detail = t
+      ? `最早 ${hhmm(t.earliest_meal)} 用餐・來回步行與取餐 ${t.travel_minutes} 分・擺盤預留 ${t.plating_buffer} 分`
+      : '尚未設定用餐時間';
+
+    el.innerHTML = `
+      <div class="meal-alert ${overdue ? 'urgent' : ''}">
+        ${timeBlock}
+        <div>
+          <div class="ma-lead">今天要出門買 ${shops} 間・$${Math.round(remaining)}</div>
+          <div class="ma-sub">${detail}</div>
+        </div>
+        <div class="ma-go">
+          <button onclick="App.goBuyMeals()">看採購清單</button>
+        </div>
+      </div>`;
+  }
+
+  function goBuyMeals() {
+    currentMealView = 'buy';
+    switchTab('meal');
+  }
+
+  // ── 今日工作單裡的餐盒出餐清單 ────────────────────────
   function renderTodayMeals(meals) {
+    renderMealAlert(meals);
+
     const block = document.getElementById('todayMealBlock');
     const el    = document.getElementById('todayMeals');
     if (!block || !el) return;
     if (!meals || !meals.orders.length) { block.style.display = 'none'; return; }
     block.style.display = 'block';
-
-    const byVendor = meals.purchase_lists.map(g =>
-      `<span class="badge badge-blue" style="margin-right:6px">${esc(g.vendor)} $${g.total}</span>`).join('');
+    mealDay = meals;   // 讓狀態晶片在今日頁也能推進
 
     el.innerHTML = `
       <div class="card" style="padding:12px 16px">
-        <div style="margin-bottom:10px">${byVendor}</div>
         ${meals.orders.map(o => `
           <div class="pline">
             <span class="pline-name">${esc(o.patient_name || '員工')}</span>
-            <span>${esc(o.display_name)}</span>
-            <span class="mode-tag">${esc(o.purchase_mode)}</span>
-            <span class="pline-qty">×${o.qty}</span>
+            <span class="mode-tag">${hhmm(o.meal_time)}</span>
+            <span>${esc(o.display_name)}${o.qty > 1 ? ' ×' + o.qty : ''}</span>
             <span class="pline-money">${o.kcal} kcal</span>
-            <span class="badge ${o.status === '待採購' ? 'badge-orange' : 'badge-green'}" style="margin-left:8px">${esc(o.status)}</span>
+            <span style="margin-left:8px">${statusChip(o)}</span>
           </div>`).join('')}
       </div>`;
   }
@@ -2454,6 +2557,7 @@ const App = (() => {
     document.getElementById('mealOrderName').value  = '';
     document.getElementById('mealOrderNotes').value = '';
     document.getElementById('mealOrderCase').innerHTML = caseOrderOptions(null);
+    document.getElementById('mealOrderStatusGroup').style.display = 'none';
     openModal('modalMealOrder');
   }
 
@@ -2470,6 +2574,8 @@ const App = (() => {
     document.getElementById('mealOrderName').value  = o.patient_name || '';
     document.getElementById('mealOrderNotes').value = o.notes || '';
     document.getElementById('mealOrderCase').innerHTML = caseOrderOptions(o.case_order_id);
+    document.getElementById('mealOrderStatusGroup').style.display = 'block';
+    document.getElementById('mealOrderStatus').value = o.status;
     openModal('modalMealOrder');
   }
 
@@ -2484,6 +2590,7 @@ const App = (() => {
       case_order_id: Number(document.getElementById('mealOrderCase').value) || null,
       notes:         document.getElementById('mealOrderNotes').value.trim()
     };
+    if (id) body.status = document.getElementById('mealOrderStatus').value;
     try {
       if (id) await api('/api/meals/orders/' + id, 'PUT', body);
       else    await api('/api/meals/orders', 'POST', body);
@@ -2500,31 +2607,49 @@ const App = (() => {
   }
 
   // ── 採購回填 ──────────────────────────────────────────
-  function openMealPurchase(key) {
-    let line = null;
-    mealDay.purchase_lists.forEach(g => { const l = g.lines.find(x => x.key === key); if (l) line = l; });
-    if (!line) return;
-    const [itemId, mode] = key.split('|');
-    document.getElementById('mealPurchItemId').value   = itemId;
-    document.getElementById('mealPurchMode').value     = mode;
-    document.getElementById('mealPurchOrderIds').value = JSON.stringify(line.order_ids);
-    document.getElementById('mealPurchName').value     = line.item + '（' + mode + '）';
-    document.getElementById('mealPurchQty').value      = line.qty;
-    document.getElementById('mealPurchPrice').value    = line.subtotal;
-    document.getElementById('mealPurchNote').value     = '';
+  // 一趟採購 = 一間店 = 一張收據 = 一個總金額，所以回填是以店家為單位。
+  // 後端會按預計金額比例把總額拆回各品項，每品項成本仍然可以分析。
+  function openVendorPurchase(vendorId) {
+    const g = mealDay?.purchase_lists.find(x => x.vendor_id === vendorId);
+    if (!g) return;
+    const open = g.lines.filter(l => !l.all_purchased);
+    if (!open.length) return;
+
+    document.getElementById('mealPurchTitle').textContent  = '回填採購金額';
+    document.getElementById('mealPurchNameLabel').textContent = '店家';
+    document.getElementById('mealPurchName').value = g.vendor + (g.branch ? '（' + g.branch + '）' : '');
+    document.getElementById('mealPurchLines').value = JSON.stringify(
+      open.map(l => ({
+        meal_item_id:  Number(l.key.split('|')[0]),
+        purchase_mode: l.mode,
+        qty:           l.qty,
+        planned:       l.subtotal
+      })));
+    document.getElementById('mealPurchOrderIds').value =
+      JSON.stringify(open.flatMap(l => l.order_ids));
+
+    const bd = document.getElementById('mealPurchBreakdown');
+    bd.style.display = 'block';
+    bd.innerHTML = open.map(l =>
+      `${esc(l.item)}〔${esc(l.mode)}〕×${l.qty}　預計 $${l.subtotal}`).join('<br>');
+
+    document.getElementById('mealPurchQty').value   = open.reduce((s, l) => s + l.qty, 0);
+    document.getElementById('mealPurchPriceLabel').textContent = '這間實付總金額';
+    document.getElementById('mealPurchPrice').value = open.reduce((s, l) => s + l.subtotal, 0);
+    document.getElementById('mealPurchNote').value  = g.vendor;
     openModal('modalMealPurchase');
   }
 
   async function saveMealPurchase() {
     try {
+      const linesRaw = document.getElementById('mealPurchLines').value;
       await api('/api/meals/purchase', 'POST', {
-        meal_item_id:  Number(document.getElementById('mealPurchItemId').value),
-        purchase_mode: document.getElementById('mealPurchMode').value,
-        qty:           Number(document.getElementById('mealPurchQty').value) || 1,
-        total_price:   Number(document.getElementById('mealPurchPrice').value) || 0,
-        order_ids:     JSON.parse(document.getElementById('mealPurchOrderIds').value || '[]'),
-        note:          document.getElementById('mealPurchNote').value.trim()
+        lines:       linesRaw ? JSON.parse(linesRaw) : null,
+        total_price: Number(document.getElementById('mealPurchPrice').value) || 0,
+        order_ids:   JSON.parse(document.getElementById('mealPurchOrderIds').value || '[]'),
+        note:        document.getElementById('mealPurchNote').value.trim()
       });
+      document.getElementById('mealPurchLines').value = '';
       closeModal('modalMealPurchase');
       await loadMeals();
     } catch (e) { alert(e.message); }
@@ -2684,7 +2809,15 @@ const App = (() => {
     const rx = document.getElementById('caseMenuRx').value;
     const pt = document.getElementById('caseMenuPowder').value;
     closeModal('modalCaseMenu');
-    window.open(`menu.html?prescription_id=${rx}&powder_type=${encodeURIComponent(pt)}`, '_blank');
+    openCaseMenuFor(rx, pt);
+  }
+
+  // 今日頁的個案列直接開菜單，省掉「選處方 → 選包裝」那兩步
+  function openCaseMenuFor(prescriptionId, powderType) {
+    if (!prescriptionId) return alert('這筆出單沒有對應的處方');
+    window.open(
+      `menu.html?prescription_id=${prescriptionId}&powder_type=${encodeURIComponent(powderType || '袋裝')}`,
+      '_blank');
   }
 
   function esc(s) {
@@ -2715,11 +2848,11 @@ const App = (() => {
     openAddTrialSession, saveTrialSession, deleteTrialSession,
     loadSOP, toggleQC, resetQC,
     toggleLeaveRestore,
-    loadMeals, switchMealTab,
+    loadMeals, switchMealTab, switchMealView, advanceMealStatus, goBuyMeals,
     openAddMealOrder, openEditMealOrder, saveMealOrder, deleteMealOrder,
-    openMealPurchase, saveMealPurchase,
+    openVendorPurchase, saveMealPurchase,
     openEditMealItem, saveMealItem,
     openEditNutritionCard, saveNutritionCard, reviewCard, openPrintCards,
-    openCaseMenu, showCaseMenu
+    openCaseMenu, showCaseMenu, openCaseMenuFor
   };
 })();

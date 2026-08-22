@@ -71,17 +71,52 @@ check('餐盒 → 單點，價格與熱量同步',
       changed.price === 89 && changed.kcal === 280,
       `${changed.display_name} ${money(changed.price)} / ${changed.kcal} kcal`);
 
-line('\n━━ 5. 採購回填 ━━');
-const l1 = day2.purchase_lists[0].lines[0];
+line('\n━━ 5. 出發時間 ━━');
+const tm = day2.timing;
+check('由最早用餐時間往前推出發時間', !!tm && /^\d{4}$/.test(tm.depart_by),
+      `最早 ${tm.earliest_meal} 用餐 → ${tm.depart_by} 出發（來回步行取餐 ${tm.travel_minutes} 分＋擺盤 ${tm.plating_buffer} 分）`);
+check('前置時間 ＝ 步行取餐 ＋ 擺盤緩衝',
+      tm.lead_minutes === tm.travel_minutes + tm.plating_buffer);
+
+line('\n━━ 6. 整間買齊（一張收據一個總額）━━');
+const g1      = day2.purchase_lists[0];
+const open    = g1.lines.filter(l => !l.all_purchased);
+const planned = open.reduce((s, l) => s + l.subtotal, 0);
+const actual  = planned + 30;              // 當天漲價，實付比預計多 30
 await api('/api/meals/purchase', 'POST', {
-  meal_item_id: 1, qty: l1.qty, total_price: 280, purchase_mode: '餐盒', order_ids: l1.order_ids
+  lines: open.map(l => ({
+    meal_item_id:  Number(l.key.split('|')[0]),
+    purchase_mode: l.mode, qty: l.qty, planned: l.subtotal
+  })),
+  total_price: actual,
+  order_ids:   open.flatMap(l => l.order_ids),
+  note:        g1.vendor
 });
 const day3 = await api('/api/meals/today');
-const purchased = day3.orders.filter(o => l1.order_ids.includes(o.id));
-check('出單轉為已採購', purchased.every(o => o.status === '已採購'));
-check('實付金額入帳', day3.spent_total === 280, money(day3.spent_total));
+const purchased = day3.orders.filter(o => open.flatMap(l => l.order_ids).includes(o.id));
+check('該店出單全部轉為已採購', purchased.every(o => o.status === '已採購'));
+check('拆帳總和精準等於實付', Math.abs(day3.spent_total - actual) < 0.05,
+      `預計 ${money(planned)} → 實付 ${money(actual)} → 入帳 ${money(day3.spent_total)}`);
+const splitRows = (await api('/api/meals/purchases')).filter(p => p.note === g1.vendor);
+check('總額拆回各品項，成本仍可分析', splitRows.length === open.length,
+      splitRows.map(r => `${r.display_name} ${money(r.total_price)}`).join('、'));
 
-line('\n━━ 6. 隨餐小卡 ━━');
+line('\n━━ 7. 狀態一路走到出餐 ━━');
+const FLOW  = ['待採購', '已採購', '已擺盤', '已出餐'];
+const tgt   = purchased[0];
+const seen  = [];
+for (let i = 0; i < 3; i++) {
+  const cur = (await api('/api/meals/today')).orders.find(o => o.id === tgt.id);
+  const idx = FLOW.indexOf(cur.status);
+  if (idx < FLOW.length - 1) {
+    await api('/api/meals/orders/' + tgt.id, 'PUT', { status: FLOW[idx + 1] });
+  }
+  seen.push((await api('/api/meals/today')).orders.find(o => o.id === tgt.id).status);
+}
+check('已採購 → 已擺盤 → 已出餐', seen[0] === '已擺盤' && seen[1] === '已出餐', seen.join(' → '));
+check('走到終點就不再前進', seen[2] === '已出餐');
+
+line('\n━━ 8. 隨餐小卡 ━━');
 const cards = await api('/api/meals/cards/today');
 check('每份餐點各一張小卡', cards.cards.length === 4, `${cards.cards.length} 張`);
 check('未覆核的小卡擋住列印', cards.blocked_count === cards.cards.length,
@@ -89,7 +124,7 @@ check('未覆核的小卡擋住列印', cards.blocked_count === cards.cards.leng
 const c0 = cards.cards[0];
 check('小卡帶入該個案的套餐總熱量', c0.meal_kcal > 0, `${c0.meal_name} ${c0.meal_kcal} kcal`);
 
-line('\n━━ 7. 覆核流程 ━━');
+line('\n━━ 9. 覆核流程 ━━');
 const all = await api('/api/meals/cards');
 const tonicCard = all.cards.find(c => c.subject_type === 'product');
 await api('/api/meals/cards/' + tonicCard.id, 'PUT', { review: true });
@@ -103,14 +138,14 @@ check('改文案後覆核狀態自動失效',
 // 還原
 await api('/api/meals/cards/' + tonicCard.id, 'PUT', { story: t2.story });
 
-line('\n━━ 8. 成本整合 ━━');
+line('\n━━ 10. 成本整合 ━━');
 const costs = await api('/api/costs');
 check('今日成本含餐盒', !!costs.today.meals, JSON.stringify(costs.today.meals));
 const monthly = await api('/api/costs/monthly');
 check('月報含餐盒合計', !!monthly.meals,
       `${monthly.meals.count} 份 / ${money(monthly.meals.total)} / 每份 ${money(monthly.meals.cost_per_box)}`);
 
-line('\n━━ 9. 精力湯零回歸 ━━');
+line('\n━━ 11. 精力湯零回歸 ━━');
 const t = await api('/api/today');
 check('/api/today 仍回傳 products', Array.isArray(t.products) && t.products.length > 0);
 check('精力湯批次計算未受影響', !!t.products[0].batches);
@@ -118,12 +153,12 @@ check('/api/today 新增 meals 區塊', !!t.meals);
 const rxCost = costs.prescriptions.find(p => p.code === 'EMP-00');
 check('處方成本表仍正常', rxCost && rxCost.total_cost > 0, `EMP-00 每杯 ${money(rxCost.total_cost)}`);
 
-line('\n━━ 10. 清理測試資料 ━━');
+line('\n━━ 12. 清理測試資料 ━━');
 for (const o of (await api('/api/meals/today')).orders) {
   if (String(o.patient_name).startsWith('測試')) await api('/api/meals/orders/' + o.id, 'DELETE');
 }
 const purchases = await api('/api/meals/purchases');
-for (const p of purchases) if (p.total_price === 280) await api('/api/meals/purchases/' + p.id, 'DELETE');
+for (const p of purchases) if (p.note === g1.vendor) await api('/api/meals/purchases/' + p.id, 'DELETE');
 const final = await api('/api/meals/today');
 check('測試資料清乾淨', final.orders.filter(o => String(o.patient_name).startsWith('測試')).length === 0);
 

@@ -1433,6 +1433,34 @@ function powderMultFor(powderType) {
   return (powderType === '罐裝' || powderType === '全配方') ? 1.1 : 1.0;
 }
 
+// 買便當是有時間壓力的事：最早用餐時間往前推來回步行、每間店的取餐等候，
+// 再留擺盤時間。回一個「幾點要出發」給畫面，而不是只給步行分鐘數。
+const PICKUP_MIN_PER_VENDOR = 5;   // 每間店等餐
+const PLATING_BUFFER_MIN    = 10;  // 拆盒、轉盤、貼封口貼紙
+
+function computeDepartBy(orders, vendorGroups) {
+  const times = orders.map(o => o.meal_time).filter(t => /^\d{4}$/.test(t)).sort();
+  if (!times.length || !vendorGroups.length) return null;
+
+  const earliest = times[0];
+  const travel   = vendorGroups.reduce(
+    (s, g) => s + (g.walk_minutes || 0) * 2 + PICKUP_MIN_PER_VENDOR, 0);
+  const lead     = travel + PLATING_BUFFER_MIN;
+
+  let mins = Number(earliest.slice(0, 2)) * 60 + Number(earliest.slice(2)) - lead;
+  if (mins < 0) mins = 0;
+  const hh = String(Math.floor(mins / 60)).padStart(2, '0');
+  const mm = String(mins % 60).padStart(2, '0');
+
+  return {
+    earliest_meal:  earliest,
+    depart_by:      hh + mm,
+    travel_minutes: travel,
+    plating_buffer: PLATING_BUFFER_MIN,
+    lead_minutes:   lead
+  };
+}
+
 function mealItemKcal(item, mode) {
   return mode === '單點' ? (item.kcal_single || 0) : (item.kcal || 0);
 }
@@ -1566,8 +1594,11 @@ function buildMealDay(date) {
     'SELECT COALESCE(SUM(total_price),0) t FROM meal_purchase_log WHERE date=?'
   ).get(date).t;
 
+  const vendorGroups = Object.values(byVendor).sort((a, b) => a.vendor_id - b.vendor_id);
+
   return {
     date,
+    timing: computeDepartBy(orders, vendorGroups),
     orders: orders.map(o => ({
       id: o.id, meal_item_id: o.meal_item_id, item_code: o.item_code,
       display_name: o.display_name, vendor_item_name: o.vendor_item_name,
@@ -1581,8 +1612,8 @@ function buildMealDay(date) {
       price: mealItemPrice(o, o.purchase_mode),
       notes: o.notes
     })),
-    purchase_lists: Object.values(byVendor).sort((a, b) => a.vendor_id - b.vendor_id),
-    planned_total: Object.values(byVendor).reduce((s, g) => s + g.total, 0),
+    purchase_lists: vendorGroups,
+    planned_total: vendorGroups.reduce((s, g) => s + g.total, 0),
     spent_total:   Math.round(spent * 10) / 10
   };
 }
@@ -1650,16 +1681,41 @@ app.delete('/api/meals/orders/:id', (req, res) => {
   res.json({ ok: true });
 });
 
-// 採購回填：記下實付金額，並把對應出單轉為「已採購」
+// 採購回填：記下實付金額，並把對應出單轉為「已採購」。
+// 兩種用法：
+//   單品項 → 帶 meal_item_id / qty
+//   整間店 → 帶 lines[]，一張收據一個總額，這裡按預計金額比例拆回各品項，
+//            差額算在最後一列，讓每品項成本仍可分析、總額又和收據一致
 app.post('/api/meals/purchase', (req, res) => {
-  const { date, meal_item_id, qty, total_price, purchase_mode, order_ids, note } = req.body;
-  const d = date || today();
+  const { date, meal_item_id, qty, total_price, purchase_mode, order_ids, note, lines } = req.body;
+  const d     = date || today();
+  const total = Number(total_price) || 0;
+
   tx(() => {
-    db.prepare(
+    const ins = db.prepare(
       `INSERT INTO meal_purchase_log (date,meal_item_id,qty,total_price,purchase_mode,user_id,note)
        VALUES (?,?,?,?,?,?,?)`
-    ).run(d, meal_item_id || null, qty || 1, total_price || 0,
-          purchase_mode || '餐盒', req.kitchenUser.id, note || '');
+    );
+
+    if (Array.isArray(lines) && lines.length) {
+      const plannedSum = lines.reduce((s, l) => s + (Number(l.planned) || 0), 0);
+      let allocated = 0;
+      lines.forEach((l, idx) => {
+        const isLast = idx === lines.length - 1;
+        const share  = isLast
+          ? Math.round((total - allocated) * 10) / 10
+          : (plannedSum > 0
+              ? Math.round(total * (Number(l.planned) || 0) / plannedSum * 10) / 10
+              : Math.round(total / lines.length * 10) / 10);
+        allocated += share;
+        ins.run(d, l.meal_item_id || null, l.qty || 1, share,
+                l.purchase_mode || '餐盒', req.kitchenUser.id, note || '');
+      });
+    } else {
+      ins.run(d, meal_item_id || null, qty || 1, total,
+              purchase_mode || '餐盒', req.kitchenUser.id, note || '');
+    }
+
     (order_ids || []).forEach(id => {
       db.prepare("UPDATE meal_orders SET status='已採購' WHERE id=? AND status='待採購'").run(id);
     });
