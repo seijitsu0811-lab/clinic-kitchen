@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>喜悅診所 調理套餐菜單</title>
+<style>
+  /* 這一頁是給個案看的。字級與對比是硬規格，不要為了排版好看調小。
+     店家名稱與價格永遠不會出現在這裡 —— 後端 /api/meals/menu/case 就不回傳這些欄位。 */
+  :root {
+    --ink:      #14201A;   /* 對主要背景對比 > 13:1 */
+    --ink-2:    #3A4A42;   /* > 7:1 */
+    --paper:    #FBFAF6;
+    --card:     #FFFFFF;
+    --line:     #DCE3DC;
+    --green:    #1F6B4A;
+    --green-bg: #EAF3ED;
+    --pork:     #B3261E;
+    --pork-bg:  #FBEBEA;
+    --chick:    #8A5A08;
+    --chick-bg: #FCF2E0;
+    --fish:     #14508F;
+    --fish-bg:  #E8F0FA;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", sans-serif;
+    font-size: 22px;
+    line-height: 1.75;
+    -webkit-text-size-adjust: 100%;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 0 20px 80px; }
+
+  header {
+    padding: 34px 0 24px;
+    border-bottom: 3px solid var(--ink);
+    margin-bottom: 28px;
+  }
+  h1 { font-size: 40px; font-weight: 900; margin: 0 0 10px; letter-spacing: .02em; }
+  .who { font-size: 24px; font-weight: 700; color: var(--green); }
+
+  /* 精力湯：每份套餐的固定標配，熱量依個案處方算出 */
+  .tonic {
+    background: var(--green-bg);
+    border: 3px solid var(--green);
+    border-radius: 16px;
+    padding: 22px 26px;
+    margin-bottom: 34px;
+  }
+  .tonic-label { font-size: 20px; font-weight: 700; color: var(--green); margin-bottom: 4px; }
+  .tonic-name  { font-size: 32px; font-weight: 900; margin-bottom: 8px; }
+  .tonic-num   { font-size: 26px; font-weight: 800; }
+  .tonic-note  { font-size: 19px; color: var(--ink-2); margin-top: 6px; }
+
+  .series { margin-bottom: 44px; }
+  .series-name {
+    font-size: 30px; font-weight: 900; margin: 0 0 6px;
+    padding-bottom: 10px; border-bottom: 3px solid var(--line);
+  }
+  .series-tag { font-size: 20px; color: var(--ink-2); margin: 10px 0 20px; }
+
+  .dish {
+    background: var(--card);
+    border: 2px solid var(--line);
+    border-radius: 16px;
+    padding: 20px 24px;
+    margin-bottom: 16px;
+  }
+  .dish-top { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
+  .tag {
+    font-size: 22px; font-weight: 900;
+    padding: 4px 16px; border-radius: 999px;
+    border: 2px solid currentColor;
+  }
+  .tag-豬 { color: var(--pork);  background: var(--pork-bg); }
+  .tag-雞 { color: var(--chick); background: var(--chick-bg); }
+  .tag-魚 { color: var(--fish);  background: var(--fish-bg); }
+  .dish-name { font-size: 34px; font-weight: 900; line-height: 1.35; }
+  .dish-nums { font-size: 21px; color: var(--ink-2); }
+  .dish-total {
+    font-size: 25px; font-weight: 900; color: var(--ink);
+    margin-top: 6px; padding-top: 10px; border-top: 2px dashed var(--line);
+  }
+  .approx { font-size: 18px; font-weight: 700; color: var(--chick); }
+
+  .foot { font-size: 18px; color: var(--ink-2); border-top: 2px solid var(--line); padding-top: 20px; }
+  .err  { font-size: 22px; color: var(--pork); padding: 40px 0; }
+
+  @media (max-width: 520px) {
+    body { font-size: 20px; }
+    h1 { font-size: 32px; }
+    .dish-name { font-size: 28px; }
+    .tonic-name { font-size: 26px; }
+    .series-name { font-size: 25px; }
+  }
+  @media print {
+    body { background: #fff; }
+    .dish, .tonic { break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap" id="root"><p style="padding:40px 0">載入中…</p></div>
+
+<script>
+const qs = new URLSearchParams(location.search);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c =>
+  ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+const ICON = { '豬': '🥩', '雞': '🍗', '魚': '🐟' };
+
+async function load() {
+  const root = document.getElementById('root');
+  let user = null;
+  try { user = JSON.parse(localStorage.getItem('kitchen_user') || 'null'); } catch (e) {}
+  if (!user || !user.id) {
+    root.innerHTML = '<p class="err">請先從廚房系統登入後，再由「套餐 → 個案菜單」開啟這一頁。</p>';
+    return;
+  }
+
+  const headers = { 'X-Kitchen-User-Id': String(user.id) };
+  const pw = sessionStorage.getItem('kitchen_password');
+  if (pw) headers['X-Kitchen-Password'] = pw;
+
+  const url = '/api/meals/menu/case?prescription_id=' + encodeURIComponent(qs.get('prescription_id') || '')
+            + '&powder_type=' + encodeURIComponent(qs.get('powder_type') || '袋裝');
+
+  let d;
+  try {
+    const r = await fetch(url, { headers });
+    if (!r.ok) throw new Error('讀取失敗（' + r.status + '）');
+    d = await r.json();
+  } catch (e) {
+    root.innerHTML = '<p class="err">' + esc(e.message) + '</p>';
+    return;
+  }
+
+  const tonicKcal = d.tonic.kcal;
+  root.innerHTML = `
+    <header>
+      <h1>調理套餐菜單</h1>
+      ${d.case ? `<div class="who">${esc(d.case.name)} 專屬</div>` : ''}
+    </header>
+
+    <div class="tonic">
+      <div class="tonic-label">每一份套餐都包含</div>
+      <div class="tonic-name">${esc(d.tonic.name)}（${d.tonic.volume_ml} 毫升）</div>
+      <div class="tonic-num">${tonicKcal != null ? tonicKcal + ' 大卡' : '熱量依處方計算'}${
+        d.tonic.protein_g != null ? '　蛋白質 ' + d.tonic.protein_g + ' 公克' : ''}</div>
+      <div class="tonic-note">這杯的熱量是依您的個人配方算出來的，和別人不一樣。</div>
+    </div>
+
+    ${d.series.map(s => `
+      <section class="series">
+        <h2 class="series-name">${esc(s.name)}</h2>
+        <p class="series-tag">${esc(s.tagline)}</p>
+        ${s.items.map(i => `
+          <div class="dish">
+            <div class="dish-top">
+              <span class="tag tag-${esc(i.protein)}">${ICON[i.protein] || ''} ${esc(i.protein)}</span>
+              <span class="dish-name">${esc(i.name)}</span>
+            </div>
+            <div class="dish-nums">
+              餐盒 ${i.kcal} 大卡${i.estimated ? ' <span class="approx">（約略值）</span>' : ''}
+              ＋ 精力湯 ${tonicKcal != null ? tonicKcal : '—'} 大卡
+            </div>
+            ${i.set_kcal != null ? `<div class="dish-total">整份套餐 ${i.set_kcal} 大卡</div>` : ''}
+          </div>`).join('')}
+      </section>`).join('')}
+
+    <p class="foot">
+      熱量為每份的估計值，會因當日食材份量略有增減。<br>
+      有任何飲食上的疑問，請直接告訴我們的護理人員。
+    </p>`;
+}
+load();
+</script>
+</body>
+</html>

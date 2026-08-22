@@ -87,6 +87,7 @@ const App = (() => {
     if (tab === 'rx')    loadRx();
     if (tab === 'inv')   loadInventory();
     if (tab === 'cost')  loadCost();
+    if (tab === 'meal')  loadMeals();
     if (tab === 'sop')   loadSOP();
   }
 
@@ -206,6 +207,8 @@ const App = (() => {
     // 2+3. 每個產品的批次 + 個案
     caseDataMap = {};
     document.getElementById('productSections').innerHTML = d.products.map(prod => renderProductSection(prod, d.attending_count)).join('');
+
+    renderTodayMeals(d.meals);
 
     laborDate = d.date;
     loadLaborSection(d.date);
@@ -2295,6 +2298,395 @@ const App = (() => {
     return r.json();
   }
 
+  // ══════════════════════════════════════════════════════
+  // 套餐模組：外購餐盒 + 精力湯
+  // ══════════════════════════════════════════════════════
+  let mealMenu   = null;   // { series:[{items:[]}], vendors:[] }
+  let mealDay    = null;   // 今日出單與採購清單
+  let mealCards  = null;
+  let currentMealTab = 'today';
+
+  const PTAG_ICON = { '豬': '🥩', '雞': '🍗', '魚': '🐟' };
+  function ptag(p) {
+    return `<span class="ptag ptag-${esc(p)}">${PTAG_ICON[p] || ''} ${esc(p)}</span>`;
+  }
+
+  function switchMealTab(tab) {
+    currentMealTab = tab;
+    document.querySelectorAll('[data-mtab]').forEach(t => t.classList.toggle('active', t.dataset.mtab === tab));
+    document.querySelectorAll('.meal-section').forEach(s =>
+      s.classList.toggle('active', s.id === 'mealSection-' + tab));
+    if (tab === 'today') renderMealToday();
+    if (tab === 'menu')  renderMealMenuAdmin();
+    if (tab === 'cards') renderMealCards();
+  }
+
+  async function loadMeals() {
+    const [menu, day] = await Promise.all([
+      api('/api/meals/menu'),
+      api('/api/meals/today')
+    ]);
+    mealMenu = menu;
+    mealDay  = day;
+    switchMealTab(currentMealTab);
+  }
+
+  // ── 今日採購單 ────────────────────────────────────────
+  function renderMealToday() {
+    const el = document.getElementById('mealToday');
+    if (!el || !mealDay) return;
+
+    if (!mealDay.orders.length) {
+      el.innerHTML = `<div class="empty-note">今天還沒有餐盒出單。按右上角「＋ 新增餐盒」建立，或等預約系統帶入。</div>`;
+      return;
+    }
+
+    const lists = mealDay.purchase_lists.map(g => `
+      <div class="vendor-card">
+        <div class="vendor-head">
+          <span class="vendor-name">${esc(g.vendor)}</span>
+          <span class="vendor-meta">${esc(g.branch)}${g.walk_minutes ? ' ・步行 ' + g.walk_minutes + ' 分' : ''}${g.phone ? ' ・' + esc(g.phone) : ''}</span>
+          <span class="vendor-total">$${g.total}</span>
+        </div>
+        ${g.lines.map(l => `
+          <div class="pline ${l.all_purchased ? 'done' : ''}">
+            <span class="pline-name">${esc(l.item)}</span>
+            <span class="mode-tag">${esc(l.mode)}</span>
+            <span class="pline-qty">×${l.qty}</span>
+            <span class="pline-money">@$${l.unit_price} = $${l.subtotal}</span>
+            ${l.all_purchased
+              ? '<span class="badge badge-green" style="margin-left:8px">已買</span>'
+              : `<button class="btn btn-ghost btn-sm" style="margin-left:8px"
+                   onclick="App.openMealPurchase('${esc(l.key)}')">已買</button>`}
+          </div>`).join('')}
+      </div>`).join('');
+
+    const orders = mealDay.orders.map(o => `
+      <div class="meal-order-row">
+        <span class="who">${esc(o.patient_name || '員工')}</span>
+        ${ptag(o.protein || guessProtein(o.meal_item_id))}
+        <span class="dish">${esc(o.display_name)}</span>
+        <span class="spacer">
+          <span class="mode-tag">${esc(o.purchase_mode)}</span>
+          <span class="kcal-badge">${o.kcal} kcal</span>
+          <span class="badge ${o.status === '待採購' ? 'badge-orange' : 'badge-green'}">${esc(o.status)}</span>
+          <button class="btn btn-ghost btn-sm" onclick="App.openEditMealOrder(${o.id})">編輯</button>
+          <button class="btn btn-ghost btn-sm" onclick="App.deleteMealOrder(${o.id})">刪除</button>
+        </span>
+      </div>`).join('');
+
+    el.innerHTML = `
+      <div class="card" style="padding:14px 18px;margin-bottom:16px;display:flex;gap:20px;flex-wrap:wrap;align-items:center">
+        <div><div style="font-size:11px;color:var(--text3);font-weight:600">今日份數</div>
+             <div style="font-size:20px;font-weight:800">${mealDay.orders.reduce((s, o) => s + o.qty, 0)} 份</div></div>
+        <div><div style="font-size:11px;color:var(--text3);font-weight:600">預計採購</div>
+             <div style="font-size:20px;font-weight:800">$${mealDay.planned_total}</div></div>
+        <div><div style="font-size:11px;color:var(--text3);font-weight:600">已回填實付</div>
+             <div style="font-size:20px;font-weight:800;color:var(--primary)">$${mealDay.spent_total}</div></div>
+      </div>
+      <div class="today-group-label" style="margin-bottom:8px">採購清單（一間店家一張單）</div>
+      ${lists}
+      <div class="today-group-label" style="margin:18px 0 8px">出單明細</div>
+      ${orders}`;
+  }
+
+  function guessProtein(itemId) {
+    if (!mealMenu) return '';
+    for (const s of mealMenu.series) {
+      const it = s.items.find(i => i.id === itemId);
+      if (it) return it.protein;
+    }
+    return '';
+  }
+
+  // ── 今日工作單裡的餐盒摘要 ────────────────────────────
+  function renderTodayMeals(meals) {
+    const block = document.getElementById('todayMealBlock');
+    const el    = document.getElementById('todayMeals');
+    if (!block || !el) return;
+    if (!meals || !meals.orders.length) { block.style.display = 'none'; return; }
+    block.style.display = 'block';
+
+    const byVendor = meals.purchase_lists.map(g =>
+      `<span class="badge badge-blue" style="margin-right:6px">${esc(g.vendor)} $${g.total}</span>`).join('');
+
+    el.innerHTML = `
+      <div class="card" style="padding:12px 16px">
+        <div style="margin-bottom:10px">${byVendor}</div>
+        ${meals.orders.map(o => `
+          <div class="pline">
+            <span class="pline-name">${esc(o.patient_name || '員工')}</span>
+            <span>${esc(o.display_name)}</span>
+            <span class="mode-tag">${esc(o.purchase_mode)}</span>
+            <span class="pline-qty">×${o.qty}</span>
+            <span class="pline-money">${o.kcal} kcal</span>
+            <span class="badge ${o.status === '待採購' ? 'badge-orange' : 'badge-green'}" style="margin-left:8px">${esc(o.status)}</span>
+          </div>`).join('')}
+      </div>`;
+  }
+
+  // ── 出單 CRUD ─────────────────────────────────────────
+  function mealItemOptions(selectedId) {
+    if (!mealMenu) return '';
+    return mealMenu.series.map(s => `
+      <optgroup label="${esc(s.name)}">
+        ${s.items.map(i => `<option value="${i.id}" ${i.id === selectedId ? 'selected' : ''}>${PTAG_ICON[i.protein] || ''} ${esc(i.display_name)}（${i.kcal} kcal / $${i.price_box}）</option>`).join('')}
+      </optgroup>`).join('');
+  }
+
+  function caseOrderOptions(selectedId) {
+    const cases = [];
+    (lastTodayData?.products || []).forEach(p => (p.cases || []).forEach(c => cases.push(c)));
+    return '<option value="">不綁定</option>' + cases.map(c =>
+      `<option value="${c.id}" ${c.id === selectedId ? 'selected' : ''}>${esc(c.patient_name || c.rx_name)}｜${esc(ptLabel(c.powder_type))}</option>`
+    ).join('');
+  }
+
+  function openAddMealOrder() {
+    if (!mealMenu) return alert('菜單還在載入，請稍候');
+    document.getElementById('mealOrderTitle').textContent = '新增餐盒';
+    document.getElementById('mealOrderId').value    = '';
+    document.getElementById('mealOrderItem').innerHTML = mealItemOptions(null);
+    document.getElementById('mealOrderItem').disabled = false;   // 編輯模式會鎖住，這裡要解開
+    document.getElementById('mealOrderMode').value  = '餐盒';
+    document.getElementById('mealOrderQty').value   = 1;
+    document.getElementById('mealOrderTime').value  = '1330';
+    document.getElementById('mealOrderName').value  = '';
+    document.getElementById('mealOrderNotes').value = '';
+    document.getElementById('mealOrderCase').innerHTML = caseOrderOptions(null);
+    openModal('modalMealOrder');
+  }
+
+  function openEditMealOrder(id) {
+    const o = mealDay.orders.find(x => x.id === id);
+    if (!o) return;
+    document.getElementById('mealOrderTitle').textContent = '編輯餐盒出單';
+    document.getElementById('mealOrderId').value    = o.id;
+    document.getElementById('mealOrderItem').innerHTML = mealItemOptions(o.meal_item_id);
+    document.getElementById('mealOrderItem').disabled = true;
+    document.getElementById('mealOrderMode').value  = o.purchase_mode;
+    document.getElementById('mealOrderQty').value   = o.qty;
+    document.getElementById('mealOrderTime').value  = o.meal_time;
+    document.getElementById('mealOrderName').value  = o.patient_name || '';
+    document.getElementById('mealOrderNotes').value = o.notes || '';
+    document.getElementById('mealOrderCase').innerHTML = caseOrderOptions(o.case_order_id);
+    openModal('modalMealOrder');
+  }
+
+  async function saveMealOrder() {
+    const id   = document.getElementById('mealOrderId').value;
+    const body = {
+      meal_item_id:  Number(document.getElementById('mealOrderItem').value),
+      purchase_mode: document.getElementById('mealOrderMode').value,
+      qty:           Number(document.getElementById('mealOrderQty').value) || 1,
+      meal_time:     document.getElementById('mealOrderTime').value || '1330',
+      patient_name:  document.getElementById('mealOrderName').value.trim(),
+      case_order_id: Number(document.getElementById('mealOrderCase').value) || null,
+      notes:         document.getElementById('mealOrderNotes').value.trim()
+    };
+    try {
+      if (id) await api('/api/meals/orders/' + id, 'PUT', body);
+      else    await api('/api/meals/orders', 'POST', body);
+      document.getElementById('mealOrderItem').disabled = false;
+      closeModal('modalMealOrder');
+      await loadMeals();
+    } catch (e) { alert(e.message); }
+  }
+
+  async function deleteMealOrder(id) {
+    if (!confirm('刪除這筆餐盒出單？')) return;
+    await api('/api/meals/orders/' + id, 'DELETE');
+    await loadMeals();
+  }
+
+  // ── 採購回填 ──────────────────────────────────────────
+  function openMealPurchase(key) {
+    let line = null;
+    mealDay.purchase_lists.forEach(g => { const l = g.lines.find(x => x.key === key); if (l) line = l; });
+    if (!line) return;
+    const [itemId, mode] = key.split('|');
+    document.getElementById('mealPurchItemId').value   = itemId;
+    document.getElementById('mealPurchMode').value     = mode;
+    document.getElementById('mealPurchOrderIds').value = JSON.stringify(line.order_ids);
+    document.getElementById('mealPurchName').value     = line.item + '（' + mode + '）';
+    document.getElementById('mealPurchQty').value      = line.qty;
+    document.getElementById('mealPurchPrice').value    = line.subtotal;
+    document.getElementById('mealPurchNote').value     = '';
+    openModal('modalMealPurchase');
+  }
+
+  async function saveMealPurchase() {
+    try {
+      await api('/api/meals/purchase', 'POST', {
+        meal_item_id:  Number(document.getElementById('mealPurchItemId').value),
+        purchase_mode: document.getElementById('mealPurchMode').value,
+        qty:           Number(document.getElementById('mealPurchQty').value) || 1,
+        total_price:   Number(document.getElementById('mealPurchPrice').value) || 0,
+        order_ids:     JSON.parse(document.getElementById('mealPurchOrderIds').value || '[]'),
+        note:          document.getElementById('mealPurchNote').value.trim()
+      });
+      closeModal('modalMealPurchase');
+      await loadMeals();
+    } catch (e) { alert(e.message); }
+  }
+
+  // ── 菜單維護 ──────────────────────────────────────────
+  function renderMealMenuAdmin() {
+    const el = document.getElementById('mealMenuAdmin');
+    if (!el || !mealMenu) return;
+    el.innerHTML = mealMenu.series.map(s => `
+      <div style="margin-bottom:22px">
+        <div class="section-head" style="margin-bottom:8px">
+          <h2 style="font-size:15px">${esc(s.name)}</h2>
+          <span class="vendor-meta">後台對接：${esc(s.vendor_name || '未指定')}${s.vendor_branch ? '（' + esc(s.vendor_branch) + '）' : ''}</span>
+        </div>
+        <div style="font-size:12px;color:var(--text3);margin-bottom:10px">${esc(s.tagline)}</div>
+        <div class="menu-grid">
+          ${s.items.map(i => `
+            <div class="menu-item">
+              ${ptag(i.protein)}
+              ${i.kcal_source === '內部估算' ? '<span class="est-flag" style="margin-left:6px">熱量估算值</span>' : ''}
+              <h4>${esc(i.display_name)}</h4>
+              <div class="vendor-of">店家品名：${esc(i.vendor_item_name || '—')}</div>
+              <div class="nums">整盒 ${i.kcal} kcal・$${i.price_box}　｜　單點 ${i.kcal_single} kcal・$${i.price_single}</div>
+              <div class="nums" style="color:var(--text3);margin-top:2px">蛋白質 ${i.protein_g || '—'} g・數據 ${esc(i.nutrition_as_of || '—')}</div>
+              <button class="btn btn-ghost btn-sm" style="margin-top:10px" onclick="App.openEditMealItem(${i.id})">編輯</button>
+            </div>`).join('')}
+        </div>
+      </div>`).join('');
+  }
+
+  function findMealItem(id) {
+    for (const s of mealMenu.series) { const it = s.items.find(i => i.id === id); if (it) return it; }
+    return null;
+  }
+
+  function openEditMealItem(id) {
+    const i = findMealItem(id);
+    if (!i) return;
+    document.getElementById('mealItemId').value            = i.id;
+    document.getElementById('mealItemDisplay').value       = i.display_name;
+    document.getElementById('mealItemVendorName').value    = i.vendor_item_name || '';
+    document.getElementById('mealItemKcal').value          = i.kcal;
+    document.getElementById('mealItemProtein').value       = i.protein_g;
+    document.getElementById('mealItemKcalSingle').value    = i.kcal_single;
+    document.getElementById('mealItemProteinSingle').value = i.protein_g_single;
+    document.getElementById('mealItemPriceBox').value      = i.price_box;
+    document.getElementById('mealItemPriceSingle').value   = i.price_single;
+    document.getElementById('mealItemSource').value        = i.kcal_source;
+    document.getElementById('mealItemAsOf').value          = i.nutrition_as_of || '';
+    document.getElementById('mealItemActive').checked      = !!i.active;
+    openModal('modalMealItem');
+  }
+
+  async function saveMealItem() {
+    const id = document.getElementById('mealItemId').value;
+    try {
+      await api('/api/meals/items/' + id, 'PUT', {
+        display_name:     document.getElementById('mealItemDisplay').value.trim(),
+        vendor_item_name: document.getElementById('mealItemVendorName').value.trim(),
+        kcal:             Number(document.getElementById('mealItemKcal').value) || 0,
+        protein_g:        Number(document.getElementById('mealItemProtein').value) || 0,
+        kcal_single:      Number(document.getElementById('mealItemKcalSingle').value) || 0,
+        protein_g_single: Number(document.getElementById('mealItemProteinSingle').value) || 0,
+        price_box:        Number(document.getElementById('mealItemPriceBox').value) || 0,
+        price_single:     Number(document.getElementById('mealItemPriceSingle').value) || 0,
+        kcal_source:      document.getElementById('mealItemSource').value,
+        nutrition_as_of:  document.getElementById('mealItemAsOf').value.trim(),
+        active:           document.getElementById('mealItemActive').checked
+      });
+      closeModal('modalMealItem');
+      await loadMeals();
+    } catch (e) { alert(e.message); }
+  }
+
+  // ── 衛教小卡 ──────────────────────────────────────────
+  async function renderMealCards() {
+    const el = document.getElementById('mealCards');
+    if (!el) return;
+    const d = await api('/api/meals/cards');
+    mealCards = d.cards;
+
+    const pending = mealCards.filter(c => !c.reviewed_at).length;
+    const warn = pending ? `
+      <div class="review-warn">
+        還有 ${pending} 張小卡未覆核，這些小卡不會被列印。<br>
+        小卡是要交到個案手上的衛教文宣，內容請由醫師或法遵確認過再按「標記已覆核」。
+      </div>` : '';
+
+    el.innerHTML = warn + mealCards.map(c => `
+      <div class="nc-card ${c.reviewed_at ? 'reviewed' : 'unreviewed'}">
+        <div class="nc-head">
+          <span class="nc-subject">${esc(c.series_name || '核心標配')}｜${esc(c.subject_name || '')}</span>
+          ${c.reviewed_at
+            ? `<span class="badge badge-green">已覆核 ${esc(c.reviewed_by)} ${esc(c.reviewed_at)}</span>`
+            : '<span class="badge badge-orange">待覆核</span>'}
+        </div>
+        <div class="nc-headline">${esc(c.headline)}</div>
+        <div class="nc-ratio">${esc(c.ratio_line)}</div>
+        <div class="nc-story">${esc(c.story)}</div>
+        <div class="nc-actions">
+          <button class="btn btn-ghost btn-sm" onclick="App.openEditNutritionCard(${c.id})">編輯文案</button>
+          ${c.reviewed_at
+            ? `<button class="btn btn-ghost btn-sm" onclick="App.reviewCard(${c.id},false)">取消覆核</button>`
+            : `<button class="btn btn-primary btn-sm" onclick="App.reviewCard(${c.id},true)">標記已覆核</button>`}
+        </div>
+      </div>`).join('');
+  }
+
+  function openEditNutritionCard(id) {
+    const c = mealCards.find(x => x.id === id);
+    if (!c) return;
+    document.getElementById('ncId').value       = c.id;
+    document.getElementById('ncHeadline').value = c.headline;
+    document.getElementById('ncRatio').value    = c.ratio_line;
+    document.getElementById('ncStory').value    = c.story;
+    openModal('modalNutritionCard');
+  }
+
+  async function saveNutritionCard() {
+    const id = document.getElementById('ncId').value;
+    try {
+      await api('/api/meals/cards/' + id, 'PUT', {
+        headline:   document.getElementById('ncHeadline').value.trim(),
+        ratio_line: document.getElementById('ncRatio').value.trim(),
+        story:      document.getElementById('ncStory').value.trim()
+      });
+      closeModal('modalNutritionCard');
+      await renderMealCards();
+    } catch (e) { alert(e.message); }
+  }
+
+  async function reviewCard(id, on) {
+    if (on && !confirm('確認這張小卡的文案已經過醫師或法遵覆核？覆核後才能列印給個案。')) return;
+    await api('/api/meals/cards/' + id, 'PUT', { review: !!on });
+    await renderMealCards();
+  }
+
+  function openPrintCards() {
+    window.open('cards.html?date=' + (mealDay ? mealDay.date : ''), '_blank');
+  }
+
+  // ── 個案菜單 ──────────────────────────────────────────
+  async function openCaseMenu() {
+    // 處方清單可能還沒被「處方」頁載入過，這裡自己補一次
+    if (!allPrescriptions.length) {
+      try { allPrescriptions = await api('/api/prescriptions'); } catch (e) {}
+    }
+    const sel = document.getElementById('caseMenuRx');
+    sel.innerHTML = allPrescriptions
+      .filter(p => p.active)
+      .map(p => `<option value="${p.id}">${esc(p.name)}（${esc(p.code)}）</option>`).join('');
+    openModal('modalCaseMenu');
+  }
+
+  function showCaseMenu() {
+    const rx = document.getElementById('caseMenuRx').value;
+    const pt = document.getElementById('caseMenuPowder').value;
+    closeModal('modalCaseMenu');
+    window.open(`menu.html?prescription_id=${rx}&powder_type=${encodeURIComponent(pt)}`, '_blank');
+  }
+
   function esc(s) {
     return String(s ?? '').replace(/[&<>"']/g, c =>
       ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
@@ -2322,6 +2714,12 @@ const App = (() => {
     loadTrialRecipes, openAddTrial, openEditTrial, saveTrial, deleteTrial,
     openAddTrialSession, saveTrialSession, deleteTrialSession,
     loadSOP, toggleQC, resetQC,
-    toggleLeaveRestore
+    toggleLeaveRestore,
+    loadMeals, switchMealTab,
+    openAddMealOrder, openEditMealOrder, saveMealOrder, deleteMealOrder,
+    openMealPurchase, saveMealPurchase,
+    openEditMealItem, saveMealItem,
+    openEditNutritionCard, saveNutritionCard, reviewCard, openPrintCards,
+    openCaseMenu, showCaseMenu
   };
 })();

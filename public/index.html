@@ -1694,6 +1694,112 @@
       color: var(--primary);
     }
 
+    /* ── 套餐模組 ── */
+    .meal-subtabs {
+      display: flex; align-items: center; gap: 6px;
+      margin: 12px 0 20px; border-bottom: 1px solid var(--border);
+    }
+    .meal-tab {
+      padding: 10px 18px; font-size: 13px; font-weight: 600;
+      background: none; border: none; color: var(--text2); cursor: pointer;
+      border-bottom: 3px solid transparent; margin-bottom: -1px;
+      transition: all 0.2s ease;
+    }
+    .meal-tab:hover { color: var(--text); }
+    .meal-tab.active { color: var(--primary); border-bottom-color: var(--primary); }
+    .meal-section { display: none; }
+    .meal-section.active { display: block; }
+
+    /* 主菜標籤：顏色 + 圖示雙編碼，不單靠顏色區分 */
+    .ptag {
+      display: inline-flex; align-items: center; gap: 3px;
+      font-size: 12px; font-weight: 700; padding: 2px 9px;
+      border-radius: 999px; white-space: nowrap;
+    }
+    .ptag-豬 { background: rgba(239, 68, 68, 0.12);  color: #DC2626; }
+    .ptag-雞 { background: rgba(245, 158, 11, 0.14); color: #B45309; }
+    .ptag-魚 { background: rgba(37, 99, 235, 0.12);  color: #1D4ED8; }
+
+    /* 採購單：一間店家一張卡，對應「走過去買」這個動作 */
+    .vendor-card {
+      background: var(--card-solid); border: 1px solid var(--border);
+      border-radius: var(--radius-lg); padding: 16px 18px; margin-bottom: 14px;
+      box-shadow: var(--shadow-sm);
+    }
+    .vendor-head {
+      display: flex; align-items: baseline; gap: 10px;
+      flex-wrap: wrap; margin-bottom: 12px;
+      padding-bottom: 10px; border-bottom: 1px solid var(--border);
+    }
+    .vendor-name { font-family: var(--font-title); font-size: 17px; font-weight: 800; color: var(--text); }
+    .vendor-meta { font-size: 12px; color: var(--text3); }
+    .vendor-total { margin-left: auto; font-size: 15px; font-weight: 800; color: var(--primary); }
+    .pline {
+      display: flex; align-items: center; gap: 10px;
+      padding: 9px 0; border-bottom: 1px dashed var(--border); font-size: 14px;
+    }
+    .pline:last-child { border-bottom: none; }
+    .pline-name { font-weight: 700; color: var(--text); }
+    .pline-qty  { font-weight: 800; color: var(--text); min-width: 34px; text-align: right; }
+    .pline-money { margin-left: auto; color: var(--text2); font-variant-numeric: tabular-nums; }
+    .pline.done .pline-name, .pline.done .pline-qty { color: var(--text3); text-decoration: line-through; }
+
+    .meal-order-row {
+      display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+      padding: 11px 14px; border: 1px solid var(--border);
+      border-radius: var(--radius-md); margin-bottom: 8px;
+      background: var(--card-solid); font-size: 14px;
+    }
+    .meal-order-row .who { font-weight: 700; color: var(--text); min-width: 62px; }
+    .meal-order-row .dish { color: var(--text); }
+    .meal-order-row .spacer { margin-left: auto; display: flex; gap: 6px; align-items: center; }
+    .kcal-badge {
+      font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 6px;
+      background: rgba(16, 185, 129, 0.12); color: #047857;
+      font-variant-numeric: tabular-nums;
+    }
+    .mode-tag {
+      font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 6px;
+      background: var(--bg); color: var(--text2); border: 1px solid var(--border);
+    }
+
+    .menu-grid { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
+    .menu-item {
+      border: 1px solid var(--border); border-radius: var(--radius-md);
+      padding: 13px 15px; background: var(--card-solid);
+    }
+    .menu-item h4 {
+      font-family: var(--font-title); font-size: 15px; font-weight: 800;
+      margin: 6px 0 4px; color: var(--text);
+    }
+    .menu-item .vendor-of { font-size: 11px; color: var(--text3); margin-bottom: 8px; }
+    .menu-item .nums { font-size: 12px; color: var(--text2); font-variant-numeric: tabular-nums; }
+    .est-flag {
+      font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 5px;
+      background: rgba(245, 158, 11, 0.14); color: #B45309;
+    }
+
+    /* 小卡：未覆核的不給印，避免未經確認的文案流到個案手上 */
+    .nc-card {
+      border: 1px solid var(--border); border-radius: var(--radius-md);
+      padding: 14px 16px; margin-bottom: 10px; background: var(--card-solid);
+    }
+    .nc-card.unreviewed { border-left: 3px solid var(--orange); }
+    .nc-card.reviewed   { border-left: 3px solid var(--green); }
+    .nc-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
+    .nc-subject { font-size: 12px; color: var(--text3); }
+    .nc-headline { font-family: var(--font-title); font-size: 15px; font-weight: 800; color: var(--text); }
+    .nc-ratio { font-size: 12px; color: var(--primary); font-weight: 600; margin-bottom: 6px; }
+    .nc-story { font-size: 13px; color: var(--text2); line-height: 1.7; }
+    .nc-actions { display: flex; gap: 8px; margin-top: 10px; }
+
+    .review-warn {
+      background: rgba(245, 158, 11, 0.08); border: 1px solid rgba(245, 158, 11, 0.22);
+      border-radius: var(--radius-md); padding: 12px 14px; margin-bottom: 14px;
+      color: #B45309; font-size: 13px; font-weight: 600; line-height: 1.6;
+    }
+    .empty-note { color: var(--text3); font-size: 13px; padding: 18px 4px; }
+
     /* ── Modal ── */
     .modal-backdrop {
       position: fixed;
@@ -2040,6 +2146,7 @@
       <div class="tab active" data-tab="today">📋 今日</div>
       <div class="tab" data-tab="rx">💊 處方</div>
       <div class="tab" data-tab="inv">📦 庫存 <span id="invWarningBadge" class="inv-warn-tab" style="display:none"></span></div>
+      <div class="tab" data-tab="meal">🍱 套餐</div>
       <div class="tab" data-tab="cost">💰 成本</div>
       <div class="tab" data-tab="sop">🗂 SOP</div>
     </div>
@@ -2070,6 +2177,15 @@
     </div>
 
     <div id="productSections"></div>
+
+    <!-- 今日餐盒：外購品，與上方精力湯區塊各自獨立 -->
+    <div id="todayMealBlock" style="display:none">
+      <div class="section-head" style="margin-top:20px;margin-bottom:8px">
+        <h2 style="font-size:15px">🍱 今日餐盒</h2>
+        <button class="btn btn-ghost btn-sm" onclick="App.switchTab('meal')">採購單</button>
+      </div>
+      <div id="todayMeals"></div>
+    </div>
 
     <div class="labor-section">
       <div class="section-head" style="margin-top:20px;margin-bottom:8px">
@@ -2146,6 +2262,41 @@
     </div>
   </div>
 
+  <!-- 套餐（外購餐盒 + 精力湯） -->
+  <div class="page" id="page-meal">
+    <div class="meal-subtabs" style="margin-top:8px">
+      <button class="meal-tab active" data-mtab="today" onclick="App.switchMealTab('today')">今日採購單</button>
+      <button class="meal-tab"        data-mtab="menu"  onclick="App.switchMealTab('menu')">菜單維護</button>
+      <button class="meal-tab"        data-mtab="cards" onclick="App.switchMealTab('cards')">衛教小卡</button>
+    </div>
+
+    <!-- 今日採購單 -->
+    <div id="mealSection-today" class="meal-section active">
+      <div class="section-head" style="margin-bottom:12px">
+        <h2 style="font-size:15px">今日餐盒出單</h2>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-ghost btn-sm" onclick="App.openCaseMenu()">個案菜單</button>
+          <button class="btn btn-primary btn-sm" onclick="App.openAddMealOrder()">＋ 新增餐盒</button>
+        </div>
+      </div>
+      <div id="mealToday"></div>
+    </div>
+
+    <!-- 菜單維護 -->
+    <div id="mealSection-menu" class="meal-section">
+      <div id="mealMenuAdmin"></div>
+    </div>
+
+    <!-- 衛教小卡 -->
+    <div id="mealSection-cards" class="meal-section">
+      <div class="section-head" style="margin-bottom:12px">
+        <h2 style="font-size:15px">隨餐營養衛教小卡</h2>
+        <button class="btn btn-ghost btn-sm" onclick="App.openPrintCards()">列印今日小卡</button>
+      </div>
+      <div id="mealCards"></div>
+    </div>
+  </div>
+
   <!-- SOP / 品質確認 -->
   <div class="page" id="page-sop">
     <div id="sopContent"></div>
@@ -2164,6 +2315,10 @@
     <div class="tb-item" data-tab="inv" onclick="App.switchTab('inv')">
       <span class="tb-icon">📦</span>
       <span>庫存</span>
+    </div>
+    <div class="tb-item" data-tab="meal" onclick="App.switchTab('meal')">
+      <span class="tb-icon">🍱</span>
+      <span>套餐</span>
     </div>
     <div class="tb-item" data-tab="cost" onclick="App.switchTab('cost')">
       <span class="tb-icon">💰</span>
@@ -2593,6 +2748,203 @@
     <div class="modal-actions">
       <button class="btn btn-ghost" onclick="App.closeModal('modalTrialSession')">取消</button>
       <button class="btn btn-primary" onclick="App.saveTrialSession()">儲存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 新增／編輯餐盒出單 -->
+<div class="modal-backdrop" id="modalMealOrder">
+  <div class="modal">
+    <div class="modal-title" id="mealOrderTitle">新增餐盒</div>
+    <input type="hidden" id="mealOrderId">
+    <div class="form-group">
+      <label>餐盒品項</label>
+      <select id="mealOrderItem"></select>
+    </div>
+    <div class="form-group">
+      <label>採購方式</label>
+      <select id="mealOrderMode">
+        <option value="餐盒">整盒買回（含飯與配菜）</option>
+        <option value="單點">只單點主菜（配菜自己配）</option>
+      </select>
+    </div>
+    <div style="display:flex;gap:12px">
+      <div class="form-group" style="flex:1">
+        <label>份數</label>
+        <input type="number" id="mealOrderQty" value="1" min="1">
+      </div>
+      <div class="form-group" style="flex:1">
+        <label>用餐時間</label>
+        <input type="text" id="mealOrderTime" value="1330" placeholder="1330">
+      </div>
+    </div>
+    <div class="form-group">
+      <label>個案姓名</label>
+      <input type="text" id="mealOrderName" placeholder="留空 = 員工餐">
+    </div>
+    <div class="form-group">
+      <label>綁定精力湯出單（決定小卡上的套餐總熱量）</label>
+      <select id="mealOrderCase"><option value="">不綁定</option></select>
+    </div>
+    <div class="form-group">
+      <label>備註</label>
+      <input type="text" id="mealOrderNotes" placeholder="例如：不要辣、飯少一點">
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="App.closeModal('modalMealOrder')">取消</button>
+      <button class="btn btn-primary" onclick="App.saveMealOrder()">儲存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 採購回填 -->
+<div class="modal-backdrop" id="modalMealPurchase">
+  <div class="modal">
+    <div class="modal-title">回填採購金額</div>
+    <input type="hidden" id="mealPurchItemId">
+    <input type="hidden" id="mealPurchOrderIds">
+    <input type="hidden" id="mealPurchMode">
+    <div class="form-group">
+      <label>品項</label>
+      <input type="text" id="mealPurchName" readonly>
+    </div>
+    <div style="display:flex;gap:12px">
+      <div class="form-group" style="flex:1">
+        <label>份數</label>
+        <input type="number" id="mealPurchQty" min="1">
+      </div>
+      <div class="form-group" style="flex:1">
+        <label>實付金額</label>
+        <input type="number" id="mealPurchPrice" placeholder="含稅實付">
+      </div>
+    </div>
+    <div class="form-group">
+      <label>備註</label>
+      <input type="text" id="mealPurchNote" placeholder="例如：今天漲價 / 買不到換品項">
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="App.closeModal('modalMealPurchase')">取消</button>
+      <button class="btn btn-primary" onclick="App.saveMealPurchase()">確認已買</button>
+    </div>
+  </div>
+</div>
+
+<!-- 菜單品項維護 -->
+<div class="modal-backdrop" id="modalMealItem">
+  <div class="modal">
+    <div class="modal-title">編輯餐盒品項</div>
+    <input type="hidden" id="mealItemId">
+    <div class="form-group">
+      <label>客人看到的品名</label>
+      <input type="text" id="mealItemDisplay">
+    </div>
+    <div class="form-group">
+      <label>店家品名（採購用，個案端不會顯示）</label>
+      <input type="text" id="mealItemVendorName">
+    </div>
+    <div style="display:flex;gap:12px">
+      <div class="form-group" style="flex:1">
+        <label>整盒熱量 kcal</label>
+        <input type="number" id="mealItemKcal">
+      </div>
+      <div class="form-group" style="flex:1">
+        <label>整盒蛋白質 g</label>
+        <input type="number" id="mealItemProtein">
+      </div>
+    </div>
+    <div style="display:flex;gap:12px">
+      <div class="form-group" style="flex:1">
+        <label>單點熱量 kcal</label>
+        <input type="number" id="mealItemKcalSingle">
+      </div>
+      <div class="form-group" style="flex:1">
+        <label>單點蛋白質 g</label>
+        <input type="number" id="mealItemProteinSingle">
+      </div>
+    </div>
+    <div style="display:flex;gap:12px">
+      <div class="form-group" style="flex:1">
+        <label>餐盒價</label>
+        <input type="number" id="mealItemPriceBox">
+      </div>
+      <div class="form-group" style="flex:1">
+        <label>單點價</label>
+        <input type="number" id="mealItemPriceSingle">
+      </div>
+    </div>
+    <div style="display:flex;gap:12px">
+      <div class="form-group" style="flex:1">
+        <label>熱量來源</label>
+        <select id="mealItemSource">
+          <option value="店家公告">店家公告</option>
+          <option value="內部估算">內部估算</option>
+        </select>
+      </div>
+      <div class="form-group" style="flex:1">
+        <label>數據取得日</label>
+        <input type="text" id="mealItemAsOf" placeholder="2026-08-22">
+      </div>
+    </div>
+    <div class="form-group">
+      <label>
+        <input type="checkbox" id="mealItemActive" style="width:auto;margin-right:6px">
+        列入菜單
+      </label>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="App.closeModal('modalMealItem')">取消</button>
+      <button class="btn btn-primary" onclick="App.saveMealItem()">儲存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 衛教小卡編輯 -->
+<div class="modal-backdrop" id="modalNutritionCard">
+  <div class="modal">
+    <div class="modal-title">編輯衛教小卡</div>
+    <input type="hidden" id="ncId">
+    <div class="form-group">
+      <label>主標</label>
+      <input type="text" id="ncHeadline">
+    </div>
+    <div class="form-group">
+      <label>營養配比</label>
+      <input type="text" id="ncRatio">
+    </div>
+    <div class="form-group">
+      <label>健康故事</label>
+      <textarea id="ncStory" rows="6"></textarea>
+    </div>
+    <div class="review-warn">
+      改動文案會清掉既有的覆核紀錄，需要重新覆核才能列印。
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="App.closeModal('modalNutritionCard')">取消</button>
+      <button class="btn btn-primary" onclick="App.saveNutritionCard()">儲存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 選個案看菜單 -->
+<div class="modal-backdrop" id="modalCaseMenu">
+  <div class="modal">
+    <div class="modal-title">個案菜單</div>
+    <div class="form-group">
+      <label>選擇個案（決定精力湯熱量怎麼算）</label>
+      <select id="caseMenuRx"></select>
+    </div>
+    <div class="form-group">
+      <label>精力湯包裝</label>
+      <select id="caseMenuPowder">
+        <option value="袋裝">袋裝基底粉</option>
+        <option value="罐裝">罐裝基底粉</option>
+        <option value="全配方">全配方精力湯</option>
+        <option value="內用">內用精力湯</option>
+      </select>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="App.closeModal('modalCaseMenu')">取消</button>
+      <button class="btn btn-primary" onclick="App.showCaseMenu()">開啟菜單</button>
     </div>
   </div>
 </div>

@@ -4,3 +4,4 @@ clinic.db-shm
 clinic.db-wal
 *.db
 .env
+clinic.db.bak-*
