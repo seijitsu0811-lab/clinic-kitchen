@@ -1319,6 +1319,8 @@ const App = (() => {
     document.getElementById('rxType').value = '粉配方';
     document.getElementById('rxTiming').value = '餐前';
     document.getElementById('rxContra').value = '';
+    document.getElementById('rxDailyCups').value  = 0;
+    document.getElementById('rxBufferCups').value = 0;
     const delBtn = document.getElementById('rxDelBtn');
     if (delBtn) delBtn.style.display = 'none';
     openModal('modalRx');
@@ -1336,6 +1338,8 @@ const App = (() => {
     document.getElementById('rxType').value = rx.formula_type;
     document.getElementById('rxTiming').value = rx.timing;
     document.getElementById('rxContra').value = rx.contraindications || '';
+    document.getElementById('rxDailyCups').value  = rx.daily_cups  || 0;
+    document.getElementById('rxBufferCups').value = rx.buffer_cups || 0;
     const delBtn = document.getElementById('rxDelBtn');
     if (delBtn) delBtn.style.display = 'block';
     openModal('modalRx');
@@ -1364,6 +1368,8 @@ const App = (() => {
       formula_type:      document.getElementById('rxType').value,
       timing:            document.getElementById('rxTiming').value,
       contraindications: document.getElementById('rxContra').value.trim(),
+      daily_cups:        parseFloat(document.getElementById('rxDailyCups').value)  || 0,
+      buffer_cups:       parseFloat(document.getElementById('rxBufferCups').value) || 0,
       active: 1
     };
     if (!data.code || !data.name) return alert('請填寫處方代號和名稱');
@@ -2368,22 +2374,47 @@ const App = (() => {
   }
 
   // ── 設定 ────────────────────────────────────────────────
+  let _settBatchSize = 3;
+
+  function _renderLaborPreview() {
+    const el = document.getElementById('settLaborPreview');
+    if (!el) return;
+    const rate = parseFloat(document.getElementById('settLaborRate').value) || 0;
+    const pb   = parseFloat(document.getElementById('settLaborBatch').value) || 0;
+    const ps   = parseFloat(document.getElementById('settLaborServing').value) || 0;
+    const size = _settBatchSize || 3;
+    const perCup = (pb / size + ps) * rate / 60;
+    el.innerHTML =
+      `一批 ${size} 杯：${pb} 分固定 ＋ ${size} × ${ps} 分 = <strong>${pb + size * ps} 分鐘</strong><br>` +
+      `攤到每杯的工資 = <strong>$${Math.round(perCup * 10) / 10}</strong>`;
+  }
+
   async function openSettings() {
     const data = await api('/api/costs');
     const s = data.settings;
-    document.getElementById('settLaborRate').value = s.labor_rate || 250;
-    document.getElementById('settLaborMin').value = s.labor_min_per_cup || 15;
-    document.getElementById('settFullPrice').value = s.full_formula_price || 350;
-    document.getElementById('settPowderPrice').value = s.powder_formula_price || 280;
+    const lm = data.labor_model || {};
+    _settBatchSize = lm.batch_size || 3;
+    document.getElementById('settLaborRate').value    = s.labor_rate ?? 250;
+    document.getElementById('settLaborBatch').value   = s.labor_min_per_batch ?? 15;
+    document.getElementById('settLaborServing').value = s.labor_min_per_serving ?? 3;
+    document.getElementById('settLookback').value     = s.cost_lookback_days ?? 90;
+    document.getElementById('settFullPrice').value    = s.full_formula_price || 350;
+    document.getElementById('settPowderPrice').value  = s.powder_formula_price || 280;
+    ['settLaborRate', 'settLaborBatch', 'settLaborServing'].forEach(id => {
+      document.getElementById(id).oninput = _renderLaborPreview;
+    });
+    _renderLaborPreview();
     openModal('modalSettings');
   }
 
   async function saveSettings() {
     await api('/api/settings', 'PUT', {
-      labor_rate:           parseFloat(document.getElementById('settLaborRate').value),
-      labor_min_per_cup:    parseFloat(document.getElementById('settLaborMin').value),
-      full_formula_price:   parseFloat(document.getElementById('settFullPrice').value),
-      powder_formula_price: parseFloat(document.getElementById('settPowderPrice').value)
+      labor_rate:            parseFloat(document.getElementById('settLaborRate').value),
+      labor_min_per_batch:   parseFloat(document.getElementById('settLaborBatch').value),
+      labor_min_per_serving: parseFloat(document.getElementById('settLaborServing').value),
+      cost_lookback_days:    parseFloat(document.getElementById('settLookback').value),
+      full_formula_price:    parseFloat(document.getElementById('settFullPrice').value),
+      powder_formula_price:  parseFloat(document.getElementById('settPowderPrice').value)
     });
     closeModal('modalSettings');
     loadCost();
@@ -2463,6 +2494,73 @@ const App = (() => {
       throw new Error(err.error || r.statusText);
     }
     return r.json();
+  }
+
+  // ══════════════════════════════════════════════════════
+  // 盤點：把帳面庫存拉回現實
+  // 帳面只在有人按「拿取」時才扣，忘了按就永遠不扣。定期盤點是唯一
+  // 能讓數字回到現實的手段，差異本身就是損耗資訊。
+  // ══════════════════════════════════════════════════════
+  let stocktakeItems = [];
+
+  async function openStocktake() {
+    const d = await api('/api/stocktake/draft');
+    stocktakeItems = d.items;
+    document.getElementById('stocktakeNote').value = '';
+    document.getElementById('stocktakeLast').textContent = d.last_stocktake
+      ? `上次盤點：${d.last_stocktake.date}（${d.last_stocktake.user_name || '—'}）`
+      : '這是第一次盤點';
+
+    let cat = '';
+    document.getElementById('stocktakeList').innerHTML = d.items.map(i => {
+      const head = i.category !== cat
+        ? `<div style="font-size:11px;font-weight:700;color:var(--text3);margin:10px 0 4px">${esc(i.category)}</div>`
+        : '';
+      cat = i.category;
+      const hint = (i.count_unit && i.count_ratio > 1)
+        ? `<span style="font-size:11px;color:var(--text3)">（1${esc(i.count_unit)}=${i.count_ratio}${esc(i.unit)}）</span>` : '';
+      return head + `
+        <div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px dashed var(--border)">
+          <span style="flex:1;font-size:13px">${esc(i.name)} ${hint}</span>
+          <span style="font-size:12px;color:var(--text3);white-space:nowrap">帳面 ${Math.round(i.book_qty * 10) / 10}${esc(i.unit)}</span>
+          <input type="number" step="any" data-st-id="${i.ingredient_id}"
+                 placeholder="實際"
+                 style="width:96px;padding:6px 8px;border:1.5px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-size:13px">
+        </div>`;
+    }).join('');
+    openModal('modalStocktake');
+  }
+
+  async function saveStocktake() {
+    const items = [...document.querySelectorAll('[data-st-id]')]
+      .filter(el => el.value !== '')
+      .map(el => ({ ingredient_id: Number(el.dataset.stId), counted_qty: Number(el.value) }));
+    if (!items.length) return alert('至少要填一項實際數量');
+
+    // 先讓人看到差異再決定要不要送出 —— 覆寫庫存是不可逆的
+    const diffs = items.map(it => {
+      const src = stocktakeItems.find(s => s.ingredient_id === it.ingredient_id);
+      return { name: src.name, unit: src.unit, book: src.book_qty,
+               counted: it.counted_qty, v: Math.round((it.counted_qty - src.book_qty) * 10) / 10 };
+    }).filter(d => Math.abs(d.v) > 0.05);
+
+    const msg = diffs.length
+      ? `共 ${items.length} 項，其中 ${diffs.length} 項與帳面不符：\n\n` +
+        diffs.slice(0, 12).map(d => `${d.name}　帳面 ${Math.round(d.book*10)/10} → 實際 ${d.counted}${d.unit}　(${d.v > 0 ? '+' : ''}${d.v})`).join('\n') +
+        (diffs.length > 12 ? `\n…另有 ${diffs.length - 12} 項` : '') +
+        '\n\n送出後庫存會以實際數量為準，確定嗎？'
+      : `共 ${items.length} 項，與帳面一致。確定送出？`;
+    if (!confirm(msg)) return;
+
+    try {
+      const r = await api('/api/stocktake', 'POST', {
+        note: document.getElementById('stocktakeNote').value.trim(), items
+      });
+      closeModal('modalStocktake');
+      alert(`盤點完成：${r.counted} 項已更新，其中 ${r.shortage} 項短少。`);
+      loadInventory();
+      checkInvWarning();
+    } catch (e) { alert(e.message); }
   }
 
   // ══════════════════════════════════════════════════════
@@ -3012,6 +3110,7 @@ const App = (() => {
     loadTrialRecipes, openAddTrial, openEditTrial, saveTrial, deleteTrial,
     openAddTrialSession, saveTrialSession, deleteTrialSession,
     loadSOP, toggleQC, resetQC, saveBatchNotes,
+    openStocktake, saveStocktake,
     toggleLeaveRestore,
     loadMeals, switchMealTab, switchMealView, advanceMealStatus, goBuyMeals,
     openAddMealOrder, openEditMealOrder, saveMealOrder, deleteMealOrder,

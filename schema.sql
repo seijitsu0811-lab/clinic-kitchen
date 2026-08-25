@@ -172,21 +172,11 @@ SELECT id, CASE name
   WHEN '苦茶油'   THEN 150  ELSE 0
 END FROM ingredients;
 
-INSERT OR IGNORE INTO purchase_log (ingredient_id, qty, total_price, purchased_at) VALUES
-  ((SELECT id FROM ingredients WHERE name='莓果'),    1500, 329,  '2026-06-01'),
-  ((SELECT id FROM ingredients WHERE name='莓果'),    3815, 1131, '2026-06-01'),
-  ((SELECT id FROM ingredients WHERE name='羽衣甘藍'),1500, 831,  '2026-06-01'),
-  ((SELECT id FROM ingredients WHERE name='蘋果(帶皮)'),18140, 3058, '2026-06-01'),
-  ((SELECT id FROM ingredients WHERE name='芽菜'),     200, 155,  '2026-06-01'),
-  ((SELECT id FROM ingredients WHERE name='貝比生菜'),1000, 1111, '2026-06-01'),
-  ((SELECT id FROM ingredients WHERE name='胡蘿蔔'),   250, 59,   '2026-06-01'),
-  ((SELECT id FROM ingredients WHERE name='檸檬'),1800, 148,  '2026-06-01'),
-  ((SELECT id FROM ingredients WHERE name='薑黃粉'),   340, 129,  '2026-06-01'),
-  ((SELECT id FROM ingredients WHERE name='橄欖油'),  3000, 1167, '2026-06-01'),
-  ((SELECT id FROM ingredients WHERE name='核桃'),    1360, 489,  '2026-06-01'),
-  ((SELECT id FROM ingredients WHERE name='燕麥'),    5470, 804,  '2026-06-01'),
-  ((SELECT id FROM ingredients WHERE name='苦茶油'),   300, 660,  '2026-06-01'),
-  ((SELECT id FROM ingredients WHERE name='蛋白粉'),  4500, 2970, '2026-06-01');
+-- 開帳用的初始採購資料已移到 server.js 的 seedPurchaseLog()。
+-- 原因：purchase_log 沒有唯一鍵，INSERT OR IGNORE 擋不住重複，
+-- 放在這裡會每次啟動都再塞一次 14 筆（日期 2026-06-01），
+-- 而那個日期又正好是採購歷史重置遷移的觸發條件，等於每次部署都在洗掉採購歷史。
+-- 現在只有在 purchase_log 完全是空的時候才寫入一次。
 
 INSERT OR IGNORE INTO prescriptions (code, name, formula_type, contraindications, timing) VALUES
   ('EMP-00', '員工標準', '全配方', '',              '餐前'),

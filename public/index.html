@@ -2298,6 +2298,7 @@
       <h2>庫存現況</h2>
       <div style="display:flex;gap:8px">
         <button class="btn btn-ghost btn-sm" onclick="App.openAddIngredient()">＋ 食材</button>
+        <button class="btn btn-ghost btn-sm" onclick="App.openStocktake()">📋 盤點</button>
         <button class="btn btn-primary btn-sm" onclick="App.openPurchase()">進貨</button>
       </div>
     </div>
@@ -2530,6 +2531,19 @@
       <label>個案姓名 / 處方名稱</label>
       <input id="rxName" type="text" placeholder="姓名或名稱">
     </div>
+    <div style="display:flex;gap:12px">
+      <div class="form-group" style="flex:1">
+        <label>每日固定供應（杯）</label>
+        <input id="rxDailyCups" type="number" step="any" value="0" placeholder="0">
+      </div>
+      <div class="form-group" style="flex:1">
+        <label>安全緩衝（杯）</label>
+        <input id="rxBufferCups" type="number" step="any" value="0" placeholder="0">
+      </div>
+    </div>
+    <div style="font-size:11px;color:var(--text3);margin:-8px 0 16px;line-height:1.7">
+      填 0 = 不是每日供應。填了之後，庫存試算會自動幫這張處方預留本週剩餘天數的份量。
+    </div>
     <div class="form-group">
       <label>配方類型</label>
       <select id="rxType">
@@ -2723,9 +2737,21 @@
       <input id="settLaborRate" type="number" value="250">
     </div>
     <div class="form-group">
-      <label>製作時間（分鐘/杯）</label>
-      <input id="settLaborMin" type="number" value="15">
+      <label>每批固定工時（分鐘）</label>
+      <input id="settLaborBatch" type="number" value="15">
+      <div style="font-size:11px;color:var(--text3);margin-top:4px">洗、打、清洗 —— 一鍋不管做幾杯都只做一次</div>
     </div>
+    <div class="form-group">
+      <label>每杯額外工時（分鐘）</label>
+      <input id="settLaborServing" type="number" value="3">
+      <div style="font-size:11px;color:var(--text3);margin-top:4px">分裝、貼標 —— 這部分才跟杯數成正比</div>
+    </div>
+    <div class="form-group">
+      <label>成本回溯期間（天）</label>
+      <input id="settLookback" type="number" value="90">
+      <div style="font-size:11px;color:var(--text3);margin-top:4px">食材單價只看這段期間內的採購。填 0 = 用全部歷史</div>
+    </div>
+    <div id="settLaborPreview" style="font-size:12px;background:var(--bg);border-radius:var(--radius-md);padding:10px 12px;margin-bottom:16px;color:var(--text2);line-height:1.8"></div>
     <div class="form-group">
       <label>全配方定價（NT$）</label>
       <input id="settFullPrice" type="number" value="350">
@@ -2834,6 +2860,27 @@
     <div class="modal-actions">
       <button class="btn btn-ghost" onclick="App.closeModal('modalTrialSession')">取消</button>
       <button class="btn btn-primary" onclick="App.saveTrialSession()">儲存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 盤點 -->
+<div class="modal-backdrop" id="modalStocktake">
+  <div class="modal" style="max-width:640px">
+    <div class="modal-title">庫存盤點</div>
+    <div style="font-size:13px;color:var(--text2);background:var(--bg);border-radius:var(--radius-md);padding:12px 14px;margin-bottom:14px;line-height:1.8">
+      填入<strong>實際數到的數量</strong>，系統會以它覆寫帳面庫存，並記下差異。<br>
+      沒填的品項不會被更動。差異就是這段期間的損耗，可以拿來看哪裡在漏。
+    </div>
+    <div id="stocktakeLast" style="font-size:12px;color:var(--text3);margin-bottom:10px"></div>
+    <div class="form-group">
+      <label>備註</label>
+      <input type="text" id="stocktakeNote" placeholder="例如：週五例行盤點">
+    </div>
+    <div id="stocktakeList" style="max-height:46vh;overflow-y:auto;border:1px solid var(--border);border-radius:var(--radius-md);padding:6px 10px"></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="App.closeModal('modalStocktake')">取消</button>
+      <button class="btn btn-primary" onclick="App.saveStocktake()">送出盤點</button>
     </div>
   </div>
 </div>

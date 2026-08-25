@@ -18,9 +18,21 @@ if (KITCHEN_PASSWORD) {
     db.prepare("UPDATE users SET password=? WHERE name='John'").run(KITCHEN_PASSWORD);
   } catch(e) {}
 }
-// 採購歷史合併與重置為 2026-06-20 (一次性遷移)
+// 採購歷史合併與重置為 2026-06-20（一次性遷移）
+//
+// 這段原本只用「有沒有 2026-06-01 的採購紀錄」當判斷，做完卻沒有留下任何標記。
+// 意思是它永遠是武裝狀態：只要日後有人（或手誤）建立一筆日期為 2026-06-01 的進貨，
+// 下次伺服器重啟就會 DELETE FROM purchase_log 把整份採購歷史刪光，換成下面這串寫死的資料。
+// 而每次部署都會重啟。改成用 settings 記一個永久標記，執行過就不再進來。
 try {
-  const hasOldLogs = db.prepare("SELECT 1 FROM purchase_log WHERE purchased_at='2026-06-01' LIMIT 1").get();
+  db.exec("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)");
+  const done = db.prepare("SELECT value FROM settings WHERE key='migrated_purchase_20260620'").get();
+  const hasOldLogs = !done &&
+    db.prepare("SELECT 1 FROM purchase_log WHERE purchased_at='2026-06-01' LIMIT 1").get();
+  if (!done) {
+    // 不管這次有沒有真的搬資料，都把標記寫下去，讓它只有一次機會
+    db.prepare("INSERT OR REPLACE INTO settings (key,value) VALUES ('migrated_purchase_20260620', datetime('now','localtime'))").run();
+  }
   if (hasOldLogs) {
     db.exec("BEGIN TRANSACTION");
     db.exec("DELETE FROM purchase_log");
@@ -62,6 +74,43 @@ if (KITCHEN_PASSWORD) {
   } catch(e) {}
 }
 
+// ── 開帳採購資料：只有 purchase_log 完全是空的時候才寫入一次 ──
+// 原本這段在 schema.sql，每次啟動都會再塞 14 筆（沒有唯一鍵，OR IGNORE 無效）
+function seedPurchaseLog() {
+  try {
+    const n = db.prepare('SELECT COUNT(*) c FROM purchase_log').get().c;
+    if (n > 0) return;
+    const seed = [
+      ['莓果', 1500, 329], ['莓果', 3815, 1131], ['羽衣甘藍', 1500, 831],
+      ['蘋果(帶皮)', 18140, 3058], ['芽菜', 200, 155], ['貝比生菜', 1000, 1111],
+      ['胡蘿蔔', 250, 59], ['檸檬', 1800, 148], ['薑黃粉', 340, 129],
+      ['橄欖油', 3000, 1167], ['核桃', 1360, 489], ['燕麥', 5470, 804],
+      ['苦茶油', 300, 660], ['蛋白粉', 4500, 2970]
+    ];
+    const ins = db.prepare(
+      `INSERT INTO purchase_log (ingredient_id, qty, total_price, purchased_at)
+       SELECT id, ?, ?, '2026-06-01' FROM ingredients WHERE name=?`
+    );
+    seed.forEach(([name, qty, price]) => ins.run(qty, price, name));
+    console.log('purchase_log 為空，已寫入開帳採購資料');
+  } catch (e) { console.error('seedPurchaseLog 失敗:', e.message); }
+}
+seedPurchaseLog();
+
+// 清掉先前重複塞入造成的完全相同列（同食材、同日期、同數量、同金額只留一筆）
+try {
+  const dedupDone = db.prepare("SELECT 1 FROM settings WHERE key='dedup_purchase_log'").get();
+  if (!dedupDone) {
+    const r = db.prepare(
+      `DELETE FROM purchase_log WHERE id NOT IN (
+         SELECT MIN(id) FROM purchase_log
+         GROUP BY ingredient_id, purchased_at, qty, total_price)`
+    ).run();
+    db.prepare("INSERT OR REPLACE INTO settings (key,value) VALUES ('dedup_purchase_log', datetime('now','localtime'))").run();
+    if (r.changes) console.log('清除重複採購紀錄 ' + r.changes + ' 筆');
+  }
+} catch (e) { console.error('採購紀錄去重失敗:', e.message); }
+
 // ── Migrations（向後相容，欄位不存在才加）────────────────
 [
   "CREATE TABLE IF NOT EXISTS products (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, unit TEXT NOT NULL DEFAULT '份', batch_size INTEGER NOT NULL DEFAULT 3, description TEXT DEFAULT '', sort_order INTEGER DEFAULT 0, active INTEGER DEFAULT 1)",
@@ -86,6 +135,34 @@ if (KITCHEN_PASSWORD) {
   "CREATE TABLE IF NOT EXISTS trial_sessions (id INTEGER PRIMARY KEY AUTOINCREMENT, trial_recipe_id INTEGER, session_no INTEGER DEFAULT 1, date TEXT, notes TEXT DEFAULT '', labor_minutes INTEGER DEFAULT 0, participants TEXT DEFAULT '', created_at TEXT DEFAULT (datetime('now','localtime')))",
   // auto = 系統依休假與員工餐日推導；manual = 廚房人員手動改過，同步時不再覆蓋
   "ALTER TABLE staff_attendance ADD COLUMN source TEXT DEFAULT 'auto'",
+
+  // 每日固定供應的處方（原本 AW 的杯數與緩衝是寫死在程式裡的）
+  "ALTER TABLE prescriptions ADD COLUMN daily_cups REAL DEFAULT 0",
+  "ALTER TABLE prescriptions ADD COLUMN buffer_cups REAL DEFAULT 0",
+
+  // 盤點：帳面庫存會因為忘記勾「拿取」而虛高，靠定期盤點把它拉回現實
+  `CREATE TABLE IF NOT EXISTS stocktakes (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     date TEXT NOT NULL, user_id INTEGER, note TEXT DEFAULT '',
+     created_at TEXT DEFAULT (datetime('now','localtime')))`,
+  `CREATE TABLE IF NOT EXISTS stocktake_items (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     stocktake_id INTEGER NOT NULL, ingredient_id INTEGER NOT NULL,
+     book_qty REAL DEFAULT 0,      -- 盤點當下的帳面數量
+     counted_qty REAL DEFAULT 0,   -- 實際數到的數量
+     variance REAL DEFAULT 0,      -- 實際 − 帳面（負數＝損耗）
+     FOREIGN KEY (stocktake_id) REFERENCES stocktakes(id))`,
+  "CREATE INDEX IF NOT EXISTS idx_stocktake_date ON stocktakes(date)",
+
+  // 工時改成「每批固定 + 每杯額外」：3 杯是同一鍋打的，不該算 3 倍備料工。
+  // 舊的 labor_min_per_cup 保留不刪，但已不再參與計算。
+  "INSERT OR IGNORE INTO settings (key,value) VALUES ('labor_min_per_batch','15')",
+  "INSERT OR IGNORE INTO settings (key,value) VALUES ('labor_min_per_serving','3')",
+  // 加權平均成本只看最近這段期間的採購，避免被幾個月前的舊價一直稀釋
+  "INSERT OR IGNORE INTO settings (key,value) VALUES ('cost_lookback_days','90')",
+  // AW 原本是寫死在庫存試算裡的（每日 1 杯 + 7 杯緩衝），改成處方上的設定，
+  // 換人或停用只要改資料，不用改程式。這行只在欄位還是預設值時填一次。
+  "UPDATE prescriptions SET daily_cups=1, buffer_cups=7 WHERE name='AW' AND COALESCE(daily_cups,0)=0 AND COALESCE(buffer_cups,0)=0",
   // 當日工作狀態的單一來源（批次分組、拿取勾選、庫存已扣紀錄）
   `CREATE TABLE IF NOT EXISTS day_state (
      date TEXT PRIMARY KEY, state TEXT NOT NULL DEFAULT '{}',
@@ -556,28 +633,80 @@ function calcBatches(cups, batchSize) {
 }
 
 // 加權平均單價 (NT$/unit)
-function unitCost(ingredientId) {
-  const r = db.prepare(
-    `SELECT SUM(qty) as tq, SUM(total_price) as tp
-     FROM purchase_log WHERE ingredient_id=?`
-  ).get(ingredientId);
-  if (!r || !r.tq || r.tq === 0) return 0;
-  return r.tp / r.tq;
+// ── 食材單價 ──────────────────────────────────────────────
+// 加權平均只看最近一段期間的採購。把全部歷史平均進去，漲價會被幾個月前的
+// 舊價一直稀釋，成本報表就跟不上現實。期間內沒有任何採購的食材，
+// 退回用全部歷史計算，免得單價變成 0。
+function getSettings() {
+  const s = {};
+  db.prepare('SELECT key,value FROM settings').all().forEach(r => { s[r.key] = parseFloat(r.value); });
+  return s;
 }
 
-// 所有食材加權均價一次撈完（避免 N+1）
-function buildUnitCostCache() {
-  const rows = db.prepare(
-    `SELECT ingredient_id, SUM(total_price) as tp, SUM(qty) as tq
+function costLookbackFrom(settings) {
+  const days = (settings && settings.cost_lookback_days) || 0;
+  if (!days || days <= 0) return null;              // 0 = 不限期間
+  return new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
+}
+
+function buildUnitCostCache(settings) {
+  const from = costLookbackFrom(settings || getSettings());
+  const all = {};
+  db.prepare(
+    `SELECT ingredient_id, SUM(total_price) tp, SUM(qty) tq
      FROM purchase_log GROUP BY ingredient_id`
-  ).all();
-  const cache = {};
-  rows.forEach(r => { cache[r.ingredient_id] = r.tq > 0 ? r.tp / r.tq : 0; });
-  return cache;
+  ).all().forEach(r => { all[r.ingredient_id] = r.tq > 0 ? r.tp / r.tq : 0; });
+
+  if (!from) return all;
+
+  const recent = {};
+  db.prepare(
+    `SELECT ingredient_id, SUM(total_price) tp, SUM(qty) tq
+     FROM purchase_log WHERE purchased_at >= ? GROUP BY ingredient_id`
+  ).all(from).forEach(r => { if (r.tq > 0) recent[r.ingredient_id] = r.tp / r.tq; });
+
+  // 期間內有採購就用近期價，沒有才退回全部歷史
+  return { ...all, ...recent };
+}
+
+function unitCost(ingredientId) {
+  return buildUnitCostCache()[ingredientId] || 0;
+}
+
+// ── 工時 ──────────────────────────────────────────────────
+// 一鍋 3 杯的備料只做一次，所以拆成「每批固定 + 每杯額外」，
+// 而不是每杯都算一份完整備料工。
+function laborParams(settings) {
+  return {
+    rate:       settings.labor_rate != null ? settings.labor_rate : 250,
+    perBatch:   settings.labor_min_per_batch   != null ? settings.labor_min_per_batch   : 15,
+    perServing: settings.labor_min_per_serving != null ? settings.labor_min_per_serving : 3
+  };
+}
+
+// 每杯的標準工時成本（給處方成本參考表用，把每批工時攤到每杯）
+function laborPerCup(lp, batchSize) {
+  const size = batchSize || 3;
+  return (lp.perBatch / size + lp.perServing) * lp.rate / 60;
+}
+
+// 某日實際工時成本：當天有登記工時就用實際的，沒有才用批次估算
+function dayLaborCost(date, lp, batchCount, cups) {
+  const rec = db.prepare(
+    `SELECT COALESCE(SUM(minutes * COALESCE(NULLIF(hourly_rate,0), ?) / 60.0), 0) cost,
+            COALESCE(SUM(minutes),0) mins, COUNT(*) n
+     FROM labor_records WHERE date=? AND purpose='精力湯'`
+  ).get(lp.rate, date);
+
+  if (rec.n > 0) {
+    return { cost: rec.cost, minutes: rec.mins, basis: 'actual' };
+  }
+  const minutes = batchCount * lp.perBatch + cups * lp.perServing;
+  return { cost: minutes * lp.rate / 60, minutes, basis: 'estimated' };
 }
 
 // 計算某日各產品實際成本（員工批次 + 個案）
-function calcDailyCost(date, ucCache, laborCostPerCup) {
+function calcDailyCost(date, ucCache, lp) {
   const products = db.prepare(
     'SELECT * FROM products WHERE active=1 ORDER BY sort_order, id'
   ).all();
@@ -587,6 +716,7 @@ function calcDailyCost(date, ucCache, laborCostPerCup) {
 
   const productCosts = [];
   let grandTotal = 0;
+  let dayBatches = 0, dayCups = 0;   // 全日批次數與杯數，用來估算工時
 
   for (const prod of products) {
     let ingCost = 0, staffCups = 0, caseCups = 0;
@@ -604,13 +734,15 @@ function calcDailyCost(date, ucCache, laborCostPerCup) {
       });
     }
 
-    // 個案出單
+    // 個案出單。用員工標準配方的併入員工批次，其餘各自一鍋
+    let staffRxCaseCups = 0, soloBatches = 0;
     db.prepare(
-      `SELECT co.cups, co.prescription_id FROM case_orders co
+      `SELECT co.cups, co.prescription_id, p.is_staff_rx FROM case_orders co
        JOIN prescriptions p ON p.id=co.prescription_id
        WHERE co.date=? AND p.product_id=?`
     ).all(date, prod.id).forEach(o => {
       caseCups += o.cups;
+      if (o.is_staff_rx) staffRxCaseCups += o.cups; else soloBatches += 1;
       db.prepare(
         'SELECT ingredient_id, qty_per_cup FROM prescription_ingredients WHERE prescription_id=?'
       ).all(o.prescription_id).forEach(ri => {
@@ -620,9 +752,13 @@ function calcDailyCost(date, ucCache, laborCostPerCup) {
 
     const totalCups = staffCups + caseCups;
     if (totalCups > 0) {
-      const laborCost = totalCups * laborCostPerCup;
-      const total = ingCost + laborCost;
-      grandTotal += total;
+      // 批次數：員工批次（含用員工配方的個案）＋ 各自現打的個案
+      const staffPool   = staffCups + staffRxCaseCups;
+      const staffBatches = staffPool > 0
+        ? calcBatches(staffPool, prod.batch_size).reduce((s, b) => s + b.count, 0) : 0;
+      dayBatches += staffBatches + soloBatches;
+      dayCups    += totalCups;
+
       productCosts.push({
         product_id:      prod.id,
         product_name:    prod.name,
@@ -630,13 +766,25 @@ function calcDailyCost(date, ucCache, laborCostPerCup) {
         staff_cups:      staffCups,
         case_cups:       caseCups,
         total_cups:      totalCups,
+        batches:         staffBatches + soloBatches,
         ingredient_cost: Math.round(ingCost * 10) / 10,
-        labor_cost:      Math.round(laborCost * 10) / 10,
-        total_cost:      Math.round(total * 10) / 10,
-        cost_per_cup:    Math.round(total / totalCups * 10) / 10
+        labor_cost:      0,        // 工時是全日一起算，下面再按杯數分攤回各產品
+        total_cost:      Math.round(ingCost * 10) / 10,
+        cost_per_cup:    Math.round(ingCost / totalCups * 10) / 10
       });
     }
   }
+
+  // 工時：當天有登記就用實際的，沒有才用「批次數 × 每批 + 杯數 × 每杯」估算。
+  // 算出來的總工時再按杯數分攤回各產品，這樣每杯成本才含工資。
+  const labor = dayLaborCost(date, lp, dayBatches, dayCups);
+  productCosts.forEach(p => {
+    const share = dayCups > 0 ? labor.cost * (p.total_cups / dayCups) : 0;
+    p.labor_cost   = Math.round(share * 10) / 10;
+    p.total_cost   = Math.round((p.ingredient_cost + share) * 10) / 10;
+    p.cost_per_cup = Math.round(p.total_cost / p.total_cups * 10) / 10;
+    grandTotal    += p.total_cost;
+  });
 
   // 餐盒是外購品，成本不走食材加權平均，直接看實付金額。
   // 還沒回填採購的日子先用出單快照價當預估，並標明來源。
@@ -662,6 +810,12 @@ function calcDailyCost(date, ucCache, laborCostPerCup) {
 
   return {
     date, products: productCosts, meals: mealCost,
+    labor: {
+      basis:   labor.basis,          // actual = 有登記工時；estimated = 依批次估算
+      minutes: Math.round(labor.minutes || 0),
+      cost:    Math.round(labor.cost * 10) / 10,
+      batches: dayBatches, cups: dayCups
+    },
     grand_total: Math.round(grandTotal * 10) / 10
   };
 }
@@ -1022,10 +1176,17 @@ app.post('/api/prescriptions', (req, res) => {
 });
 
 app.put('/api/prescriptions/:id', (req, res) => {
-  const { product_id, name, formula_type, contraindications, timing, is_staff_rx, active } = req.body;
+  const { product_id, name, formula_type, contraindications, timing, is_staff_rx, active,
+          daily_cups, buffer_cups } = req.body;
+  const cur = db.prepare('SELECT daily_cups, buffer_cups FROM prescriptions WHERE id=?').get(req.params.id) || {};
   db.prepare(
-    `UPDATE prescriptions SET product_id=?,name=?,formula_type=?,contraindications=?,timing=?,is_staff_rx=?,active=? WHERE id=?`
-  ).run(product_id||1, name, formula_type, contraindications||'', timing, is_staff_rx?1:0, active===undefined?1:active, req.params.id);
+    `UPDATE prescriptions SET product_id=?,name=?,formula_type=?,contraindications=?,timing=?,
+            is_staff_rx=?,active=?,daily_cups=?,buffer_cups=? WHERE id=?`
+  ).run(product_id||1, name, formula_type, contraindications||'', timing, is_staff_rx?1:0,
+        active===undefined?1:active,
+        daily_cups  === undefined ? (cur.daily_cups  || 0) : (Number(daily_cups)  || 0),
+        buffer_cups === undefined ? (cur.buffer_cups || 0) : (Number(buffer_cups) || 0),
+        req.params.id);
   res.json({ ok: true });
 });
 
@@ -1204,14 +1365,22 @@ app.get('/api/inventory/check', (req, res) => {
 
   // 1. AW 本週剩餘杯數（週五備週六日外帶，週六日已備妥算 0）
   //    週一=7, 週二=6, 週三=5, 週四=4, 週五=3(含週六日), 週六=0, 週日=0
-  const awCups = (dow >= 1 && dow <= 4) ? (8 - dow) : (dow === 5 ? 3 : 0);
-  // 停用的處方不該再佔採購量
-  const awRx = db.prepare("SELECT id FROM prescriptions WHERE name='AW' AND active=1 LIMIT 1").get();
-  if (awRx) {
-    addRxNeeds(awRx.id, awCups);
-    // 安全緩衝：多備 7 杯 AW 以應對臨時個案需求
-    addRxNeeds(awRx.id, 7);
-  }
+  //    原本這段是為「AW」這位個案寫死的（每日 1 杯＋7 杯緩衝）。
+  //    改成讀處方上的 daily_cups / buffer_cups，換人或停用不用改程式。
+  const remainingDays = (dow >= 1 && dow <= 4) ? (8 - dow) : (dow === 5 ? 3 : 0);
+  const dailyRxList = db.prepare(
+    `SELECT id, name, COALESCE(daily_cups,0) daily_cups, COALESCE(buffer_cups,0) buffer_cups
+     FROM prescriptions
+     WHERE active=1 AND (COALESCE(daily_cups,0) > 0 OR COALESCE(buffer_cups,0) > 0)`
+  ).all();
+  const dailySupply = dailyRxList.map(rx => {
+    const cups = rx.daily_cups * remainingDays;
+    addRxNeeds(rx.id, cups);
+    addRxNeeds(rx.id, rx.buffer_cups);
+    return { name: rx.name, daily_cups: rx.daily_cups, cups,
+             buffer_cups: rx.buffer_cups, total: cups + rx.buffer_cups };
+  });
+  const awCups = dailySupply.reduce((s, r) => s + r.cups, 0);
 
   // 2. 員工本週剩餘餐次 × 在編人數
   //    人數改為讀實際名冊，不再寫死 9 人（離職或新進都會反映）；
@@ -1275,7 +1444,9 @@ app.get('/api/inventory/check', (req, res) => {
     below_safety: belowSafety,
     below_safety_count: belowSafety.length,
     week_info: {
-      dow, weekLabel, awCups, empCups, bufferCups: 7, endStr,
+      dow, weekLabel, awCups, empCups, endStr,
+      bufferCups: dailySupply.reduce((s, r) => s + r.buffer_cups, 0),
+      daily_supply: dailySupply,          // 每日固定供應的處方（設定驅動）
       emp_days: empDays, roster, today_attending: todayAtt,
       meal_dows: STAFF_MEAL_DOWS, meal_label: staffMealDaysLabel()
     }
@@ -1287,13 +1458,15 @@ app.get('/api/inventory/check', (req, res) => {
 // ════════════════════════════════════════════════════════
 
 app.get('/api/costs', (req, res) => {
-  const settings = {};
-  db.prepare('SELECT key,value FROM settings').all().forEach(r => { settings[r.key] = parseFloat(r.value); });
-  const laborCostPerCup = (settings.labor_rate || 250) * (settings.labor_min_per_cup || 15) / 60;
-  const ucCache = buildUnitCostCache();
+  const settings = getSettings();
+  const lp = laborParams(settings);
+  const staffProd = db.prepare('SELECT batch_size FROM products WHERE id=1').get();
+  // 處方成本參考表用「攤到每杯」的工時；當日實際成本則走 calcDailyCost
+  const laborCostPerCup = laborPerCup(lp, staffProd ? staffProd.batch_size : 3);
+  const ucCache = buildUnitCostCache(settings);
 
   // 今日實際成本（按產品）
-  const todayCost = calcDailyCost(today(), ucCache, laborCostPerCup);
+  const todayCost = calcDailyCost(today(), ucCache, lp);
 
   // 處方成本參考表（每份標準成本）
   const rxs = db.prepare(
@@ -1327,8 +1500,16 @@ app.get('/api/costs', (req, res) => {
     };
   });
 
-  res.json({ settings, labor_cost_per_cup: Math.round(laborCostPerCup * 10) / 10,
-             today: todayCost, prescriptions });
+  res.json({
+    settings,
+    labor_cost_per_cup: Math.round(laborCostPerCup * 10) / 10,
+    labor_model: {
+      rate: lp.rate, min_per_batch: lp.perBatch, min_per_serving: lp.perServing,
+      batch_size: staffProd ? staffProd.batch_size : 3
+    },
+    cost_lookback_days: settings.cost_lookback_days || 0,
+    today: todayCost, prescriptions
+  });
 });
 
 // 月報：某月每日成本 + 月合計
@@ -1336,8 +1517,8 @@ app.get('/api/costs/monthly', (req, res) => {
   const month = (req.query.month || today().slice(0, 7)).slice(0, 7);
   const settings = {};
   db.prepare('SELECT key,value FROM settings').all().forEach(r => { settings[r.key] = parseFloat(r.value); });
-  const laborCostPerCup = (settings.labor_rate || 250) * (settings.labor_min_per_cup || 15) / 60;
-  const ucCache = buildUnitCostCache();
+  const lp = laborParams(settings);
+  const ucCache = buildUnitCostCache(settings);
 
   // 找出該月有出單或出席的所有日期
   const activeDates = new Set();
@@ -1354,7 +1535,7 @@ app.get('/api/costs/monthly', (req, res) => {
   } catch(e) {}
 
   const days = Array.from(activeDates).sort()
-    .map(d => calcDailyCost(d, ucCache, laborCostPerCup));
+    .map(d => calcDailyCost(d, ucCache, lp));
 
   // 月合計（按產品）
   const byProduct = {};
@@ -1410,7 +1591,7 @@ app.put('/api/settings', (req, res) => {
 });
 
 // ════════════════════════════════════════════════════════
-// API: 人力記錄（196元/hr）
+// API: 人力記錄（時薪讀設定 labor_rate）
 // ════════════════════════════════════════════════════════
 
 app.get('/api/labor', (req, res) => {
@@ -1420,17 +1601,22 @@ app.get('/api/labor', (req, res) => {
      FROM labor_records lr LEFT JOIN users u ON u.id=lr.user_id
      WHERE lr.date=? ORDER BY lr.id`
   ).all(date);
+  // 時薪讀設定，不再寫死。每筆若自己存了時薪就用自己的
+  const rate = laborParams(getSettings()).rate;
   const total_minutes = rows.reduce((s, r) => s + (r.minutes || 0), 0);
-  const total_cost = Math.round(total_minutes / 60 * 196 * 10) / 10;
-  res.json({ date, records: rows, total_minutes, total_cost });
+  const total_cost = Math.round(
+    rows.reduce((s, r) => s + (r.minutes || 0) / 60 * (r.hourly_rate || rate), 0) * 10
+  ) / 10;
+  res.json({ date, records: rows, total_minutes, total_cost, hourly_rate: rate });
 });
 
 app.post('/api/labor', (req, res) => {
   const { date, user_id, role, task_type, purpose, minutes } = req.body;
   if (!minutes || minutes <= 0) return res.status(400).json({ error: 'invalid' });
   const r = db.prepare(
-    `INSERT INTO labor_records (date,user_id,role,task_type,purpose,minutes,hourly_rate) VALUES (?,?,?,?,?,?,196)`
-  ).run(date || today(), user_id||null, role||'', task_type||'製作', purpose||'精力湯', minutes);
+    `INSERT INTO labor_records (date,user_id,role,task_type,purpose,minutes,hourly_rate) VALUES (?,?,?,?,?,?,?)`
+  ).run(date || today(), user_id||null, role||'', task_type||'製作', purpose||'精力湯', minutes,
+        laborParams(getSettings()).rate);
   res.json({ id: r.lastInsertRowid });
 });
 
@@ -1495,6 +1681,89 @@ app.delete('/api/trial_recipes/:id', (req, res) => {
     db.prepare('DELETE FROM trial_recipes WHERE id=?').run(req.params.id);
   });
   res.json({ ok: true });
+});
+
+// ════════════════════════════════════════════════════════
+// API: 盤點
+// 帳面庫存只會在有人按「拿取」時才扣，忘了按就永遠不扣，數字只會越來越虛高。
+// 盤點是把帳面拉回現實的唯一可靠手段：輸入實際數到的量，系統覆寫庫存並記下差異。
+// 差異本身就是管理資訊 —— 那是這段期間的損耗（灑出、壞掉、多打）。
+// ════════════════════════════════════════════════════════
+app.get('/api/stocktake/draft', (req, res) => {
+  const rows = db.prepare(
+    `SELECT i.id ingredient_id, i.name, i.unit, i.category,
+            i.count_unit, i.count_ratio, COALESCE(inv.qty,0) book_qty
+     FROM ingredients i LEFT JOIN inventory inv ON inv.ingredient_id=i.id
+     WHERE i.active=1 ORDER BY i.sort_order, i.id`
+  ).all();
+  const last = db.prepare(
+    `SELECT s.id, s.date, s.created_at, u.name user_name
+     FROM stocktakes s LEFT JOIN users u ON u.id=s.user_id
+     ORDER BY s.id DESC LIMIT 1`
+  ).get();
+  res.json({ date: today(), items: rows, last_stocktake: last || null });
+});
+
+app.post('/api/stocktake', (req, res) => {
+  const { date, note, items } = req.body;
+  if (!Array.isArray(items) || !items.length) {
+    return res.status(400).json({ error: '沒有盤點資料' });
+  }
+  const d = date || today();
+  const result = tx(() => {
+    const st = db.prepare(
+      'INSERT INTO stocktakes (date,user_id,note) VALUES (?,?,?)'
+    ).run(d, req.kitchenUser.id, note || '');
+    const insItem = db.prepare(
+      `INSERT INTO stocktake_items (stocktake_id,ingredient_id,book_qty,counted_qty,variance)
+       VALUES (?,?,?,?,?)`
+    );
+    const setQty = db.prepare(
+      `INSERT INTO inventory (ingredient_id,qty,updated_at)
+       VALUES (?,?,datetime('now','localtime'))
+       ON CONFLICT(ingredient_id) DO UPDATE SET qty=excluded.qty, updated_at=excluded.updated_at`
+    );
+    let counted = 0, shortage = 0;
+    items.forEach(it => {
+      const id = Number(it.ingredient_id);
+      if (!id || it.counted_qty === '' || it.counted_qty == null) return;   // 沒填的品項跳過，不動它
+      const book = db.prepare('SELECT COALESCE(qty,0) q FROM inventory WHERE ingredient_id=?').get(id)?.q || 0;
+      const cnt  = Number(it.counted_qty) || 0;
+      const varc = Math.round((cnt - book) * 100) / 100;
+      insItem.run(st.lastInsertRowid, id, book, cnt, varc);
+      setQty.run(id, cnt);
+      counted++;
+      if (varc < 0) shortage += 1;
+    });
+    return { id: st.lastInsertRowid, counted, shortage };
+  });
+  res.json({ ok: true, ...result });
+});
+
+app.get('/api/stocktake/:id', (req, res) => {
+  const st = db.prepare(
+    `SELECT s.*, u.name user_name FROM stocktakes s
+     LEFT JOIN users u ON u.id=s.user_id WHERE s.id=?`
+  ).get(req.params.id);
+  if (!st) return res.status(404).json({ error: '找不到這次盤點' });
+  const items = db.prepare(
+    `SELECT si.*, i.name, i.unit FROM stocktake_items si
+     JOIN ingredients i ON i.id=si.ingredient_id
+     WHERE si.stocktake_id=? ORDER BY si.variance`
+  ).all(req.params.id);
+  res.json({ ...st, items });
+});
+
+app.get('/api/stocktakes', (req, res) => {
+  res.json(db.prepare(
+    `SELECT s.id, s.date, s.note, s.created_at, u.name user_name,
+            COUNT(si.id) item_count,
+            SUM(CASE WHEN si.variance < 0 THEN 1 ELSE 0 END) shortage_count
+     FROM stocktakes s
+     LEFT JOIN users u ON u.id=s.user_id
+     LEFT JOIN stocktake_items si ON si.stocktake_id=s.id
+     GROUP BY s.id ORDER BY s.id DESC LIMIT 30`
+  ).all());
 });
 
 // ════════════════════════════════════════════════════════
