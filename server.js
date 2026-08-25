@@ -84,6 +84,12 @@ if (KITCHEN_PASSWORD) {
   "CREATE TABLE IF NOT EXISTS labor_records (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT NOT NULL, user_id INTEGER, role TEXT DEFAULT '', task_type TEXT DEFAULT '製作', purpose TEXT DEFAULT '精力湯', minutes INTEGER DEFAULT 0, hourly_rate REAL DEFAULT 196, created_at TEXT DEFAULT (datetime('now','localtime')))",
   "CREATE TABLE IF NOT EXISTS trial_recipes (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, status TEXT DEFAULT '試驗中', notes TEXT DEFAULT '', created_at TEXT DEFAULT (datetime('now','localtime')))",
   "CREATE TABLE IF NOT EXISTS trial_sessions (id INTEGER PRIMARY KEY AUTOINCREMENT, trial_recipe_id INTEGER, session_no INTEGER DEFAULT 1, date TEXT, notes TEXT DEFAULT '', labor_minutes INTEGER DEFAULT 0, participants TEXT DEFAULT '', created_at TEXT DEFAULT (datetime('now','localtime')))",
+  // auto = 系統依休假與員工餐日推導；manual = 廚房人員手動改過，同步時不再覆蓋
+  "ALTER TABLE staff_attendance ADD COLUMN source TEXT DEFAULT 'auto'",
+  // 當日工作狀態的單一來源（批次分組、拿取勾選、庫存已扣紀錄）
+  `CREATE TABLE IF NOT EXISTS day_state (
+     date TEXT PRIMARY KEY, state TEXT NOT NULL DEFAULT '{}',
+     updated_at TEXT DEFAULT (datetime('now','localtime')), updated_by TEXT DEFAULT '')`,
 ].forEach(sql => { try { db.exec(sql); } catch(e) {} });
 db.exec("UPDATE prescriptions SET is_staff_rx=1 WHERE code='EMP-00'");
 db.exec("UPDATE prescriptions SET product_id=1 WHERE product_id IS NULL");
@@ -419,6 +425,11 @@ function today() {
   return new Date().toISOString().slice(0,10);
 }
 
+// 姓名比對用：跨系統的名字大小寫與空白並不一致
+function normName(s) {
+  return String(s || '').toLowerCase().trim();
+}
+
 // ══════════════════════════════════════════════════════════
 // 預約系統帶入：把喜悅預約系統裡的四種精力湯／基底粉項目，
 // 自動建立成廚房的個案出單。只新增、不修改也不刪除既有出單。
@@ -748,6 +759,8 @@ app.get('/api/today', async (req, res) => {
   try { await syncApptMealOrders(); } catch (err) { console.error('餐盒預約帶入失敗:', err.message); }
 
   // 1. Fetch leaves from Firebase clinic system
+  // 名字比對一律正規化：預約系統寫的是 'louise'，這裡的使用者叫 'Louise'，
+  // 大小寫不一致會讓休假的人被算成出席，杯數就多一杯
   const leavesSet = new Set();
   const leavesToday = [];
   try {
@@ -756,7 +769,7 @@ app.get('/api/today', async (req, res) => {
     if (Array.isArray(leavesList)) {
       leavesList.forEach(l => {
         if (l && l.date === date && l.name) {
-          leavesSet.add(l.name);
+          leavesSet.add(normName(l.name));
           leavesToday.push(l.name);
         }
       });
@@ -770,15 +783,23 @@ app.get('/api/today', async (req, res) => {
   const isMealDay = [2, 4, 5].includes(dow);
 
   // 3. Initialize attendance table
+  // source='auto' 的列是系統推導出來的，休假資料變動時要跟著更新；
+  // 一旦廚房人員手動改過（source='manual'）就不再覆蓋
   const users = db.prepare('SELECT * FROM users').all();
   users.forEach(u => {
-    const exists = db.prepare('SELECT 1 FROM staff_attendance WHERE date=? AND user_id=?').get(date, u.id);
-    if (!exists) {
-      const isOnLeave = leavesSet.has(u.name);
-      const defaultAttending = (isMealDay && !isOnLeave) ? 1 : 0;
+    const onLeave  = leavesSet.has(normName(u.name));
+    const expected = (isMealDay && !onLeave) ? 1 : 0;
+    const row = db.prepare(
+      "SELECT attending, COALESCE(source,'auto') source FROM staff_attendance WHERE date=? AND user_id=?"
+    ).get(date, u.id);
+
+    if (!row) {
       db.prepare(
-        `INSERT INTO staff_attendance (date,user_id,attending,meal_time) VALUES (?,?,?, '1330')`
-      ).run(date, u.id, defaultAttending);
+        `INSERT INTO staff_attendance (date,user_id,attending,meal_time,source) VALUES (?,?,?,'1330','auto')`
+      ).run(date, u.id, expected);
+    } else if (row.source === 'auto' && row.attending !== expected) {
+      db.prepare('UPDATE staff_attendance SET attending=? WHERE date=? AND user_id=?')
+        .run(expected, date, u.id);
     }
   });
 
@@ -867,18 +888,58 @@ app.get('/api/today', async (req, res) => {
     };
   });
 
-  res.json({ date, staff, attending_count: attendingCount, products: productData, leaves: leavesToday, is_meal_day: isMealDay, meals: buildMealDay(date) });
+  // 當日工作狀態隨 /api/today 一起送，前端不必再多打一次
+  const stateRow = db.prepare('SELECT state, updated_at, updated_by FROM day_state WHERE date=?').get(date);
+
+  res.json({
+    date, staff, attending_count: attendingCount, products: productData,
+    leaves: leavesToday, is_meal_day: isMealDay, meals: buildMealDay(date),
+    day_state: stateRow ? {
+      state:      JSON.parse(stateRow.state || '{}'),
+      updated_at: stateRow.updated_at,
+      updated_by: stateRow.updated_by
+    } : null
+  });
 });
 
-// 更新員工出席
+// 更新員工出席。手動改過就標成 manual，之後休假同步不再覆蓋這一列
 app.put('/api/today/attendance/:userId', (req, res) => {
   const { attending, meal_time } = req.body;
   const date = today();
   db.prepare(
-    `INSERT INTO staff_attendance (date,user_id,attending,meal_time) VALUES (?,?,?,?)
-     ON CONFLICT(date,user_id) DO UPDATE SET attending=excluded.attending, meal_time=excluded.meal_time`
+    `INSERT INTO staff_attendance (date,user_id,attending,meal_time,source) VALUES (?,?,?,?, 'manual')
+     ON CONFLICT(date,user_id) DO UPDATE SET attending=excluded.attending,
+            meal_time=excluded.meal_time, source='manual'`
   ).run(date, req.params.userId, attending ? 1 : 0, meal_time || '1330');
   res.json({ ok: true });
+});
+
+// ── 當日工作狀態（批次分組、拿取勾選、庫存已扣紀錄）────────
+// 這些原本存在瀏覽器的 localStorage，導致兩台裝置看到不同的批次，
+// 而且「已扣庫存」的紀錄各存各的，同一批有機會被扣兩次。
+// 改為伺服器單一來源，全廚房看到同一份。
+app.get('/api/today/state', (req, res) => {
+  const date = req.query.date || today();
+  const row = db.prepare('SELECT state, updated_at, updated_by FROM day_state WHERE date=?').get(date);
+  res.json({
+    date,
+    state:      row ? JSON.parse(row.state || '{}') : null,
+    updated_at: row ? row.updated_at : null,
+    updated_by: row ? row.updated_by : null
+  });
+});
+
+app.put('/api/today/state', (req, res) => {
+  const date  = req.body.date || today();
+  const state = req.body.state || {};
+  db.prepare(
+    `INSERT INTO day_state (date,state,updated_at,updated_by)
+     VALUES (?,?,datetime('now','localtime'),?)
+     ON CONFLICT(date) DO UPDATE SET state=excluded.state,
+            updated_at=excluded.updated_at, updated_by=excluded.updated_by`
+  ).run(date, JSON.stringify(state), req.kitchenUser.name);
+  const row = db.prepare('SELECT updated_at FROM day_state WHERE date=?').get(date);
+  res.json({ ok: true, updated_at: row.updated_at, updated_by: req.kitchenUser.name });
 });
 
 // 新增個案出單（日期可自訂，預設今日）

@@ -16,11 +16,11 @@ const App = (() => {
   let schCustomOrder   = null; // [key,...] null=auto time-sort
   let schDragKey       = null;
   let batchDragSrc     = null;
-  let _allMembersMap   = {}; // id → member, populated by _initBatchGroups
+  let _allMembersMap   = {}; // id → member, populated by _syncBatchGroups
   let empRxId          = null; // employee formula prescription id
   let deductedBatches  = new Set(); // batch indices already inventory-deducted today
   let deductedCases    = new Set(); // case ids already inventory-deducted today
-  let restoredLeaves   = new Set(); // leave members manually restored by user
+  let restoredLeaves   = new Set(); // 休假卻仍出席者，由伺服器狀態推導
 
   const PTYPE_LABEL = { '袋裝': '袋裝基底粉', '罐裝': '罐裝基底粉', '全配方': '全配方精力湯', '內用': '內用精力湯' };
   function ptLabel(v) { return PTYPE_LABEL[v] || v || '袋裝基底粉'; }
@@ -94,8 +94,13 @@ const App = (() => {
   document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => switchTab(t.dataset.tab)));
 
   // ── 今日工作單 ─────────────────────────────────────────
-  function _saveDayState(date) {
-    localStorage.setItem(`clinic_day_${date}`, JSON.stringify({
+  // 批次分組、拿取勾選、庫存已扣紀錄都是「整個廚房共用」的當日狀態，
+  // 不是個人偏好。存在瀏覽器 localStorage 會讓兩台裝置看到不同的批次，
+  // 而且「已扣庫存」各存各的，同一批有機會被扣兩次。一律以伺服器為準。
+  let _saveTimer = null;
+
+  function _dayStatePayload() {
+    return {
       staff: [...staffPickedUp],
       cases: [...casePickedUp],
       batchGroups: staffBatchGroups ? staffBatchGroups.map(b => ({
@@ -104,38 +109,35 @@ const App = (() => {
       })) : null,
       schOrder: schCustomOrder || null,
       deductedBatches: [...deductedBatches],
-      deductedCases: [...deductedCases],
-      restoredLeaves: [...restoredLeaves]
-    }));
+      deductedCases: [...deductedCases]
+    };
   }
-  function _loadDayState(date) {
-    try {
-      const raw = localStorage.getItem(`clinic_day_${date}`);
-      if (!raw) return;
-      const { staff = [], cases = [], batchGroups, schOrder, deductedBatches: db2 = [], deductedCases: dc2 = [], restoredLeaves: rl2 = [] } = JSON.parse(raw);
-      staffPickedUp   = new Set(staff);
-      casePickedUp    = new Set(cases);
-      deductedBatches = new Set(db2);
-      deductedCases   = new Set(dc2);
-      restoredLeaves  = new Set(rl2);
-      // 若有手動復原的休假人員，補回 _allMembersMap（否則 batchGroups 恢復時會被 filter 掉）
-      if (restoredLeaves.size > 0 && lastTodayData) {
-        (lastTodayData.staff || []).forEach(s => {
-          if (restoredLeaves.has(s.name.toLowerCase().trim())) {
-            const member = { id: `s_${s.user_id}`, name: s.name, type: 'staff', userId: s.user_id };
-            _allMembersMap[member.id] = member;
-          }
-        });
-      }
-      if (batchGroups) {
-        const groups = batchGroups.map(b => ({
-          manualTime: b.manualTime || null,
-          members: (b.memberIds || []).map(id => _allMembersMap[id]).filter(Boolean)
-        })).filter(g => g.members.length > 0);
-        if (groups.length > 0) staffBatchGroups = groups;
-      }
-      if (schOrder) schCustomOrder = schOrder;
-    } catch (e) { /* ignore */ }
+
+  function _saveDayState(date) {
+    const payload = _dayStatePayload();
+    // 連線斷掉時還能撐住，但它只是備援，不是真實來源
+    try { localStorage.setItem(`clinic_day_${date}`, JSON.stringify(payload)); } catch (e) {}
+    clearTimeout(_saveTimer);
+    _saveTimer = setTimeout(() => {
+      api('/api/today/state', 'PUT', { date, state: payload }).catch(e => {
+        console.error('工作狀態存回伺服器失敗，其他裝置看不到這次變更：', e.message);
+      });
+    }, 400);
+  }
+
+  function _loadDayState(d) {
+    // 伺服器優先；沒有才回頭看本機備援
+    let s = d && d.day_state && d.day_state.state;
+    if (!s) {
+      try { s = JSON.parse(localStorage.getItem(`clinic_day_${d.date}`) || 'null'); } catch (e) { s = null; }
+    }
+    if (!s) return null;
+    staffPickedUp   = new Set(s.staff || []);
+    casePickedUp    = new Set(s.cases || []);
+    deductedBatches = new Set(s.deductedBatches || []);
+    deductedCases   = new Set(s.deductedCases || []);
+    if (s.schOrder) schCustomOrder = s.schOrder;
+    return s.batchGroups || null;
   }
 
   function updateLeaveAlert(d) {
@@ -151,35 +153,18 @@ const App = (() => {
     leavesAlert.style.display = 'block';
   }
 
-  function toggleLeaveRestore(name) {
+  // 復原／重新排除休假人員：直接改伺服器的出席狀態，
+  // 讓杯數、批次、粉量、成本全部跟著一起變，而不是只有這台裝置的畫面變
+  async function toggleLeaveRestore(name) {
     const lower = name.toLowerCase().trim();
-    if (restoredLeaves.has(lower)) {
-      restoredLeaves.delete(lower);
-      if (staffBatchGroups) {
-        staffBatchGroups.forEach(b => {
-          b.members = b.members.filter(m => m.name.toLowerCase().trim() !== lower);
-        });
-        staffBatchGroups = staffBatchGroups.filter(b => b.members.length > 0);
-      }
-      Object.keys(_allMembersMap).forEach(id => {
-        if (_allMembersMap[id].name.toLowerCase().trim() === lower) delete _allMembersMap[id];
-      });
-    } else {
-      restoredLeaves.add(lower);
-      const staffMember = (lastTodayData?.staff || []).find(s => s.name.toLowerCase().trim() === lower);
-      if (staffMember) {
-        const member = { id: `s_${staffMember.user_id}`, name: staffMember.name, type: 'staff', userId: staffMember.user_id };
-        _allMembersMap[member.id] = member;
-        if (staffBatchGroups && staffBatchGroups.length > 0) {
-          staffBatchGroups[staffBatchGroups.length - 1].members.push(member);
-        } else if (staffBatchGroups) {
-          staffBatchGroups.push({ members: [member] });
-        }
-      }
-    }
-    _saveDayState(lastTodayData.date);
-    renderTodaySection1(lastTodayData);
-    updateLeaveAlert(lastTodayData);
+    const s = (lastTodayData?.staff || []).find(x => x.name.toLowerCase().trim() === lower);
+    if (!s) return;
+    const restore = !restoredLeaves.has(lower);
+    try {
+      await api('/api/today/attendance/' + s.user_id, 'PUT',
+        { attending: restore, meal_time: s.meal_time || '1330' });
+      await loadToday();
+    } catch (e) { alert(e.message); }
   }
 
   async function loadToday() {
@@ -187,6 +172,19 @@ const App = (() => {
     lastTodayData = d;
     empRxId = d.products?.[0]?.staff_rx?.id || null;
     checkInvWarning();
+
+    // 每次拿到伺服器資料就對帳一次，新出單才不會被舊分組擋在外面
+    if (batchInitDate !== d.date) { batchInitDate = d.date; schCustomOrder = null; }
+    const savedGroups = _loadDayState(d);
+    _syncBatchGroups(d, savedGroups);
+
+    // 休假卻仍列出席的人 = 有人手動復原過，由伺服器狀態推導，不再另存一份
+    const leaveSet = new Set((d.leaves || []).map(n => n.toLowerCase().trim()));
+    restoredLeaves = new Set(
+      (d.staff || [])
+        .filter(s => s.attending && leaveSet.has(s.name.toLowerCase().trim()))
+        .map(s => s.name.toLowerCase().trim())
+    );
 
     // 顯示日期與星期
     const dowNames = ['週日', '週一', '週二', '週三', '週四', '週五', '週六'];
@@ -214,32 +212,86 @@ const App = (() => {
     loadLaborSection(d.date);
   }
 
-  // ── 批次初始化（每日首次或資料重載時執行）────────────────────────
-  function _initBatchGroups(d) {
+  // ── 批次分組：以伺服器名單為準，並與既有分組對帳 ────────────────
+  // 出席與否完全由伺服器的 staff_attendance 決定（休假的人那邊已經排除），
+  // 前端不再自己過濾一次休假名單 —— 兩邊各算各的正是杯數對不上的來源。
+  function _todayMembers(d) {
     const prod = d.products && d.products[0];
-    if (!prod || d.attending_count === 0) { staffBatchGroups = []; return; }
-    // 排除今日休假人員（不加入 _allMembersMap，_loadDayState 恢復時也會自動過濾）
-    const leaveSet = new Set((d.leaves || []).map(n => n.toLowerCase().trim()));
     const members = [];
-    (d.staff || []).filter(s => s.attending && (!leaveSet.has(s.name.toLowerCase().trim()) || restoredLeaves.has(s.name.toLowerCase().trim()))).forEach(s =>
+    if (!prod) return members;
+    (d.staff || []).filter(s => s.attending).forEach(s =>
       members.push({ id: `s_${s.user_id}`, name: s.name, type: 'staff', userId: s.user_id })
     );
     (prod.staff_rx_cases || []).forEach(c =>
       members.push({ id: `c_${c.id}`, name: c.patient_name || '個案', type: 'case', caseId: c.id, mealTime: c.meal_time || null, cups: c.cups || 1, prescriptionId: c.prescription_id || null })
     );
-    _allMembersMap = {};
-    members.forEach(m => { _allMembersMap[m.id] = m; });
-    const batches = prod.batches || [];
+    return members;
+  }
+
+  // 全新排一次：照伺服器算好的批次大小依序填入
+  function _layoutFresh(members, prod) {
     staffBatchGroups = [];
     let mi = 0;
-    batches.forEach(b => {
+    (prod.batches || []).forEach(b => {
       for (let i = 0; i < b.count; i++) {
         const bm = [];
         for (let j = 0; j < b.size && mi < members.length; j++, mi++) bm.push(members[mi]);
-        staffBatchGroups.push({ size: b.size, members: bm });
+        if (bm.length) staffBatchGroups.push({ size: bm.length, members: bm });
       }
     });
-    if (mi < members.length) staffBatchGroups.push({ size: members.length - mi, members: members.slice(mi) });
+    // 伺服器算的杯數比實際人數少時，剩下的另開一批，不能把人丟掉
+    if (mi < members.length) {
+      staffBatchGroups.push({ size: members.length - mi, members: members.slice(mi) });
+    }
+  }
+
+  // 還沒進任何批次的人補進去：先填未滿的批次，再開新批次
+  function _appendMembers(missing, batchSize) {
+    missing.forEach(m => {
+      const slot = staffBatchGroups.find(b => b.members.length < batchSize);
+      if (slot) slot.members.push(m);
+      else staffBatchGroups.push({ size: 1, members: [m] });
+    });
+  }
+
+  function _syncBatchGroups(d, savedGroups) {
+    const prod = d.products && d.products[0];
+    if (!prod) { staffBatchGroups = []; _allMembersMap = {}; return; }
+
+    const members = _todayMembers(d);
+    _allMembersMap = {};
+    members.forEach(m => { _allMembersMap[m.id] = m; });
+
+    if (!members.length) { staffBatchGroups = []; return; }
+
+    if (savedGroups && savedGroups.length) {
+      // 沿用大家已經拖好的分組，但一定要跟今天的名單對帳：
+      // 不在名單上的移除、重複出現的只留一次、還沒入批的補進去。
+      // 少了對帳這一步，新建立的出單就會整杯消失。
+      const seen = new Set();
+      staffBatchGroups = savedGroups.map(b => ({
+        manualTime: b.manualTime || null,
+        members: (b.memberIds || []).map(id => {
+          if (seen.has(id)) return null;
+          seen.add(id);
+          return _allMembersMap[id];
+        }).filter(Boolean)
+      })).filter(b => b.members.length > 0);
+
+      const missing = members.filter(m => !seen.has(m.id));
+      if (missing.length) _appendMembers(missing, prod.batch_size || 3);
+
+      if (!staffBatchGroups.length) _layoutFresh(members, prod);
+    } else {
+      _layoutFresh(members, prod);
+    }
+
+    // 對帳後的總杯數必須等於名單人數，不等就是有人被漏掉
+    const placed = staffBatchGroups.reduce((s, b) => s + b.members.length, 0);
+    if (placed !== members.length) {
+      console.error(`批次對帳異常：名單 ${members.length} 人，已入批 ${placed} 人，重新排列`);
+      _layoutFresh(members, prod);
+    }
   }
 
   // ── 批次實際杯數（員工1杯，個案用自己的cups）────────────────────
@@ -248,16 +300,30 @@ const App = (() => {
   }
 
   // ── 批次時間計算（可被手動覆蓋）────────────────────────────────
+  // 每位成員都有自己該取餐的時間：員工預設 11:30，個案用自己出單的時間。
+  // 舊版只要批次裡有員工就一律顯示 11:30，會把個案的時間蓋掉 ——
+  // 同一位個案因為被分到哪一批而顯示不同時間，正是這次對不上的原因之一。
+  // 現在取最早的時間，並在成員時間不一致時標出來讓人處理。
+  const STAFF_DEFAULT_TIME = '1130';
+
+  function _memberTime(m) {
+    return m.type === 'case' ? (m.mealTime || STAFF_DEFAULT_TIME) : STAFF_DEFAULT_TIME;
+  }
+
   function _getBatchTime(batch) {
     if (batch.manualTime) {
       const t = batch.manualTime;
-      return { sk: `${t}_0`, label: `${t.slice(0,2)}:${t.slice(2)}` };
+      return { sk: `${t}_0`, label: `${t.slice(0,2)}:${t.slice(2)}`, conflict: false };
     }
-    const staffInBatch = batch.members.filter(m => m.type === 'staff');
-    const caseTimes = batch.members.filter(m => m.type === 'case' && m.mealTime).map(m => m.mealTime).sort();
-    if (staffInBatch.length > 0 || caseTimes.length === 0) return { sk: '1130_0', label: '11:30' };
-    const t = caseTimes[0];
-    return { sk: `${t}_0`, label: t.length === 4 ? `${t.slice(0,2)}:${t.slice(2)}` : t };
+    const times = [...new Set(batch.members.map(_memberTime))].sort();
+    if (!times.length) return { sk: `${STAFF_DEFAULT_TIME}_0`, label: '11:30', conflict: false };
+    const t = times[0];
+    return {
+      sk: `${t}_0`,
+      label: t.length === 4 ? `${t.slice(0,2)}:${t.slice(2)}` : t,
+      conflict: times.length > 1,
+      times
+    };
   }
 
   // ── 渲染左側批次分組 ──────────────────────────────────────────
@@ -268,13 +334,18 @@ const App = (() => {
       const allDone = batch.members.length > 0 && batch.members.every(m =>
         m.type === 'staff' ? staffPickedUp.has(m.userId) : casePickedUp.has(m.caseId)
       );
-      const { label: timeLabel } = _getBatchTime(batch);
+      const { label: timeLabel, conflict, times } = _getBatchTime(batch);
+      // 同一批裡有人要 11:30、有人要 12:30，就把衝突標出來讓人自己決定要不要拆批
+      const conflictTag = conflict
+        ? `<span class="batch-grp-conflict" title="這批的成員取餐時間不一致：${times.map(t => t.slice(0,2)+':'+t.slice(2)).join('、')}。可以拖出來另開一批，或點時間手動指定。">⚠ 時間不一致</span>`
+        : '';
       html += `<div class="batch-grp${allDone ? ' batch-grp-done' : ''}"
                     ondragover="event.preventDefault()" ondrop="App.batchDrop(event,${bi})">
         <div class="batch-grp-head">
           <span class="batch-grp-label">批次 ${bi + 1}</span>
           <span class="batch-grp-sz">${_batchCups(batch)}杯</span>
           <span class="batch-grp-time" title="點擊修改時間" onclick="App.editBatchTime(${bi},this)">⏰ ${timeLabel}</span>
+          ${conflictTag}
           ${allDone ? '<span class="batch-grp-done-tag">✓ 完成</span>' : ''}
           <button class="batch-grp-del" onclick="App.removeBatch(${bi})">×</button>
         </div>
@@ -377,13 +448,7 @@ const App = (() => {
   function renderTodaySection1(d) {
     const prod = d.products && d.products[0];
 
-    // 初始化批次（日期改變才重設）
-    if (staffBatchGroups === null || batchInitDate !== d.date) {
-      batchInitDate = d.date;
-      schCustomOrder = null;
-      _initBatchGroups(d);
-      _loadDayState(d.date);
-    }
+    // 批次分組已在 loadToday 取得資料時對帳完成，這裡只負責畫
 
     // 左側：批次分組（覆蓋 grid 排版為 block，避免 auto-fill 把批次擠進 80px 欄位）
     const sg = document.getElementById('staffGrid');

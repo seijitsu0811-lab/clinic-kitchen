@@ -741,6 +741,12 @@
       padding: 2px 8px;
       font-weight: 600;
     }
+    /* 同一批的成員取餐時間不一致：標出來，不要默默取最早的那個 */
+    .batch-grp-conflict {
+      font-size: 11px; font-weight: 700; cursor: help;
+      color: #B45309; background: rgba(245, 158, 11, 0.16);
+      border-radius: 6px; padding: 2px 8px;
+    }
     .batch-grp-time:hover {
       filter: brightness(0.95);
     }
