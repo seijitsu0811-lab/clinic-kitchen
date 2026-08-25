@@ -430,6 +430,22 @@ function normName(s) {
   return String(s || '').toLowerCase().trim();
 }
 
+// ── 員工供應日 ────────────────────────────────────────────
+// 0=日 1=一 2=二 3=三 4=四 5=五 6=六
+// 只在這裡定義一次：出席預設、庫存試算、SOP 說明全部讀這個常數。
+// 之前出席邏輯和庫存試算各寫一份 [2,4,5]，改一邊就會不一致。
+const STAFF_MEAL_DOWS = [2, 5];   // 週二、週五
+const DOW_LABEL = ['日', '一', '二', '三', '四', '五', '六'];
+
+function isStaffMealDay(dow) { return STAFF_MEAL_DOWS.includes(dow); }
+function staffMealDaysLabel() {
+  return STAFF_MEAL_DOWS.map(d => '週' + DOW_LABEL[d]).join('、');
+}
+// 在編人數（庫存試算用）。之前寫死 9 人，離職或新進都不會反映
+function rosterCount() {
+  return db.prepare('SELECT COUNT(*) c FROM users').get().c;
+}
+
 // ══════════════════════════════════════════════════════════
 // 預約系統帶入：把喜悅預約系統裡的四種精力湯／基底粉項目，
 // 自動建立成廚房的個案出單。只新增、不修改也不刪除既有出單。
@@ -778,9 +794,9 @@ app.get('/api/today', async (req, res) => {
     console.error('Failed to fetch leaves from clinic system:', err.message);
   }
 
-  // 2. Check if it's Tuesday, Thursday, or Friday (2, 4, 5)
-  const dow = new Date(date).getDay(); // Sunday=0, Monday=1, Tuesday=2, Wednesday=3, Thursday=4, Friday=5, Saturday=6
-  const isMealDay = [2, 4, 5].includes(dow);
+  // 2. 今天是不是員工供應日
+  const dow = new Date(date).getDay();
+  const isMealDay = isStaffMealDay(dow);
 
   // 3. Initialize attendance table
   // source='auto' 的列是系統推導出來的，休假資料變動時要跟著更新；
@@ -894,6 +910,10 @@ app.get('/api/today', async (req, res) => {
   res.json({
     date, staff, attending_count: attendingCount, products: productData,
     leaves: leavesToday, is_meal_day: isMealDay, meals: buildMealDay(date),
+    // 供應日只在伺服器定義一次，SOP 說明文字也讀這個，不再各寫一份
+    staff_meal_dows:  STAFF_MEAL_DOWS,
+    staff_meal_label: staffMealDaysLabel(),
+    roster_count:     rosterCount(),
     day_state: stateRow ? {
       state:      JSON.parse(stateRow.state || '{}'),
       updated_at: stateRow.updated_at,
@@ -1185,19 +1205,28 @@ app.get('/api/inventory/check', (req, res) => {
   // 1. AW 本週剩餘杯數（週五備週六日外帶，週六日已備妥算 0）
   //    週一=7, 週二=6, 週三=5, 週四=4, 週五=3(含週六日), 週六=0, 週日=0
   const awCups = (dow >= 1 && dow <= 4) ? (8 - dow) : (dow === 5 ? 3 : 0);
-  const awRx = db.prepare("SELECT id FROM prescriptions WHERE name='AW' LIMIT 1").get();
+  // 停用的處方不該再佔採購量
+  const awRx = db.prepare("SELECT id FROM prescriptions WHERE name='AW' AND active=1 LIMIT 1").get();
   if (awRx) {
     addRxNeeds(awRx.id, awCups);
     // 安全緩衝：多備 7 杯 AW 以應對臨時個案需求
     addRxNeeds(awRx.id, 7);
   }
 
-  // 2. 員工本週剩餘餐次（週二=2,週四=4,週五=5）× 9 人
-  //    週六日 dow=6/0 → 0；其餘計算今天（含）到週五還有幾個員工餐日
-  const empMealDays = [2, 4, 5]; // 週二四五
-  const empDays = (dow === 0 || dow === 6) ? 0 : empMealDays.filter(d => d >= dow).length;
-  const empCups = empDays * 9;
-  const empRx = db.prepare("SELECT id FROM prescriptions WHERE is_staff_rx=1 LIMIT 1").get();
+  // 2. 員工本週剩餘餐次 × 在編人數
+  //    人數改為讀實際名冊，不再寫死 9 人（離職或新進都會反映）；
+  //    今天如果就是供應日，用今天實際的出席人數，休假的不算進採購量
+  const empDays  = (dow === 0 || dow === 6) ? 0 : STAFF_MEAL_DOWS.filter(d => d >= dow).length;
+  const roster   = rosterCount();
+  const todayAtt = db.prepare(
+    'SELECT COUNT(*) c FROM staff_attendance WHERE date=? AND attending=1'
+  ).get(t).c;
+  // 今天是供應日就用今天的實到人數，其餘未來供應日用名冊人數
+  const todayIsMeal = isStaffMealDay(dow);
+  const empCups = todayIsMeal
+    ? todayAtt + Math.max(empDays - 1, 0) * roster
+    : empDays * roster;
+  const empRx = db.prepare("SELECT id FROM prescriptions WHERE is_staff_rx=1 AND active=1 LIMIT 1").get();
   if (empRx) addRxNeeds(empRx.id, empCups);
 
   // 3. 本週已排個案出單（排除 AW 和員工配方，避免重複計算）
@@ -1230,10 +1259,26 @@ app.get('/api/inventory/check', (req, res) => {
     })
     .sort((a, b) => a.remaining - b.remaining);
 
+  // 低於安全庫存：這個欄位原本只顯示數字，沒有任何地方會示警。
+  // 「本週夠不夠」和「有沒有低於安全存量」是兩件事，兩個都要講。
+  const belowSafety = db.prepare(
+    `SELECT i.id, i.name, i.unit, i.safety_stock, COALESCE(inv.qty,0) qty
+     FROM ingredients i LEFT JOIN inventory inv ON inv.ingredient_id=i.id
+     WHERE i.active=1 AND COALESCE(i.safety_stock,0) > 0
+       AND COALESCE(inv.qty,0) < i.safety_stock
+     ORDER BY (COALESCE(inv.qty,0) / i.safety_stock)`
+  ).all();
+
   res.json({
     check,
     insufficient_count: check.filter(r => !r.sufficient).length,
-    week_info: { dow, weekLabel, awCups, empCups, bufferCups: 7, endStr }
+    below_safety: belowSafety,
+    below_safety_count: belowSafety.length,
+    week_info: {
+      dow, weekLabel, awCups, empCups, bufferCups: 7, endStr,
+      emp_days: empDays, roster, today_attending: todayAtt,
+      meal_dows: STAFF_MEAL_DOWS, meal_label: staffMealDaysLabel()
+    }
   });
 });
 

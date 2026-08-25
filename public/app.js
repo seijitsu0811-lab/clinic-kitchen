@@ -1541,7 +1541,11 @@ const App = (() => {
           <div class="inv-row${chk && !chk.sufficient ? ' inv-row-shortage' : ''}">
             <div style="flex:1">
               <div class="inv-name">${esc(i.name)} ${statusBadge}</div>
-              ${i.safety_stock > 0 ? `<div class="inv-unit">安全量 ${i.safety_stock}${i.unit}</div>` : ''}
+              ${i.safety_stock > 0
+                ? (i.qty < i.safety_stock
+                    ? `<div class="inv-unit inv-below-safety">⚠ 低於安全量（${i.qty}／${i.safety_stock}${i.unit}）</div>`
+                    : `<div class="inv-unit">安全量 ${i.safety_stock}${i.unit}</div>`)
+                : ''}
               ${hasCount ? `<div class="inv-unit">1${i.count_unit} = ${i.count_ratio}${i.unit}</div>` : ''}
               ${shelfBadge}
               ${needInfo}
@@ -1557,11 +1561,17 @@ const App = (() => {
     document.getElementById('invList').innerHTML = html || '<div class="empty">尚無食材資料</div>';
   }
 
-  function updateInvWarningBadge(count) {
+  // 兩種警訊要分開講：
+  //   缺貨   = 本週排定的量做不完
+  //   低安全量 = 存量掉到安全水位以下（就算這週夠用，也該補了）
+  function updateInvWarningBadge(count, belowSafety) {
     let badge = document.getElementById('invWarningBadge');
     if (!badge) return;
-    if (count > 0) {
-      badge.textContent = `🔴 ${count} 項缺貨`;
+    const parts = [];
+    if (count > 0)       parts.push(`🔴 ${count} 項缺貨`);
+    if (belowSafety > 0) parts.push(`🟠 ${belowSafety} 項低於安全量`);
+    if (parts.length) {
+      badge.textContent = parts.join('　');
       badge.style.display = 'inline-block';
     } else {
       badge.style.display = 'none';
@@ -1571,7 +1581,7 @@ const App = (() => {
   async function checkInvWarning() {
     try {
       const r = await api('/api/inventory/check');
-      updateInvWarningBadge(r.insufficient_count || 0);
+      updateInvWarningBadge(r.insufficient_count || 0, r.below_safety_count || 0);
     } catch(e) {}
   }
 
@@ -2060,6 +2070,13 @@ const App = (() => {
   // ── SOP / 品質確認 ───────────────────────────────────────
   function loadSOP() {
     const today = (lastTodayData && lastTodayData.date) || new Date().toISOString().slice(0,10);
+    // 供應日與人數一律讀伺服器，SOP 文字才不會和系統實際行為講不一樣
+    const dowTw     = ['日','一','二','三','四','五','六'];
+    const mealDows  = (lastTodayData && lastTodayData.staff_meal_dows) || [2, 5];
+    const roster    = (lastTodayData && lastTodayData.roster_count) || 0;
+    const mealSlash = mealDows.map(d => '週' + dowTw[d]).join(' / ');
+    const mealPlus  = mealDows.map(d => '週' + dowTw[d]).join('＋');
+    const mealRun   = mealDows.map(d => '週' + dowTw[d]).join('、');
 
     function qcItem(id, text) {
       const checked = dayQc[id] || false;
@@ -2108,7 +2125,7 @@ const App = (() => {
             <div class="sop-day-tasks"><strong>執行單位負責：</strong><br>① 燕麥打粉<br>② 粉包分裝 27 份<br>③ 葉菜三道清洗→冷藏<br>④ 蘋果切塊冷凍</div>
           </div>
           <div class="sop-day-card">
-            <div class="sop-day-name">週二 / 四 / 五　供應日</div>
+            <div class="sop-day-name">${mealSlash}　供應日</div>
             <div class="sop-day-tasks">員工統一一批製作<br>個案依取餐時間個別製作<br>（見三、個案出單情境）</div>
           </div>
           <div class="sop-day-card">
@@ -2166,7 +2183,7 @@ const App = (() => {
         <div class="sop-rule">裝入乾燥玻璃罐，密封，標示「燕麥粉｜打粉日期：＿＿＿｜效期 60 天（截止日：＿＿＿）」</div>
         <div class="sop-rule">室溫乾燥陰涼處保存，開罐後保持密封，避免受潮</div>
         <div style="font-size:13px;font-weight:700;color:var(--text2);margin:12px 0 8px">② 週一粉包分裝（每週執行）</div>
-        <div class="sop-rule">備齊量：員工 9 人 × 3 天（週二＋週四＋週五）＝ <strong>27 份</strong></div>
+        <div class="sop-rule">備齊量：員工 ${roster} 人 × ${mealDows.length} 天（${mealPlus}）＝ <strong>${roster * mealDows.length} 份</strong></div>
         <div style="background:var(--bg);border-radius:8px;padding:10px;font-size:12px;margin:8px 0">
           <div style="font-weight:700;margin-bottom:6px">每份內容（員工標準配方）</div>
           <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:4px">
@@ -2190,7 +2207,7 @@ const App = (() => {
           <span class="sop-step-no" style="min-width:72px">A　預約跨日</span>
           <div>
             <div style="font-weight:700">今天出單，改天取餐</div>
-            <div style="font-size:12px;color:var(--text3);margin-top:3px">例：週四看診出單 → 下週一取；週二看診 → 週四才取</div>
+            <div style="font-size:12px;color:var(--text3);margin-top:3px">例：供應日前一天看診出單 → 下一個供應日才取</div>
             <div style="font-size:13px;margin-top:4px">個管師填出單表（含取餐日期＋配方＋禁忌）；個管助理取餐日前一天確認庫存，預約時間前 30 分鐘製作</div>
           </div>
         </div>
@@ -2212,7 +2229,7 @@ const App = (() => {
       <div class="sop-card">
         <div class="sop-step">
           <span class="sop-step-no" style="min-width:72px">員工標準<br>配方</span>
-          <span>完整蔬果＋粉類，週一統一備料，週二四五各取一份製作</span>
+          <span>完整蔬果＋粉類，週一統一備料，${mealRun} 各取一份製作</span>
         </div>
         <div class="sop-step">
           <span class="sop-step-no" style="min-width:72px">個案粉<br>配方</span>
