@@ -741,6 +741,18 @@
       padding: 2px 8px;
       font-weight: 600;
     }
+    /* 對帳列：批次杯數 + 個別現打杯數 = 今日總杯數 */
+    .batch-tally {
+      display: flex; align-items: center; gap: 7px; flex-wrap: wrap;
+      font-size: 12px; color: var(--text2);
+      background: var(--bg); border: 1px solid var(--border);
+      border-radius: var(--radius-md); padding: 8px 12px; margin-bottom: 10px;
+    }
+    .batch-tally strong { color: var(--text); font-size: 14px; }
+    .batch-tally .bt-sep { color: var(--text3); }
+    .batch-tally-bad { border-color: rgba(239, 68, 68, 0.35); background: rgba(239, 68, 68, 0.05); }
+    .batch-tally .bt-warn { color: var(--red); font-weight: 700; }
+
     /* 同一批的成員取餐時間不一致：標出來，不要默默取最早的那個 */
     .batch-grp-conflict {
       font-size: 11px; font-weight: 700; cursor: help;

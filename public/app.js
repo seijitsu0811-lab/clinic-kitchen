@@ -18,9 +18,11 @@ const App = (() => {
   let batchDragSrc     = null;
   let _allMembersMap   = {}; // id → member, populated by _syncBatchGroups
   let empRxId          = null; // employee formula prescription id
-  let deductedBatches  = new Set(); // batch indices already inventory-deducted today
+  let deductedBatches  = new Set(); // 今日已扣庫存的批次（以成員組成為 key，不用位置編號）
   let deductedCases    = new Set(); // case ids already inventory-deducted today
   let restoredLeaves   = new Set(); // 休假卻仍出席者，由伺服器狀態推導
+  let dayNotes         = {};        // 每個產品的今日備料備註（跟著日期走，全廚房共用）
+  let dayQc            = {};        // 今日品質確認清單（全廚房共用）
 
   const PTYPE_LABEL = { '袋裝': '袋裝基底粉', '罐裝': '罐裝基底粉', '全配方': '全配方精力湯', '內用': '內用精力湯' };
   function ptLabel(v) { return PTYPE_LABEL[v] || v || '袋裝基底粉'; }
@@ -109,7 +111,9 @@ const App = (() => {
       })) : null,
       schOrder: schCustomOrder || null,
       deductedBatches: [...deductedBatches],
-      deductedCases: [...deductedCases]
+      deductedCases: [...deductedCases],
+      notes: dayNotes,
+      qc: dayQc
     };
   }
 
@@ -136,6 +140,8 @@ const App = (() => {
     casePickedUp    = new Set(s.cases || []);
     deductedBatches = new Set(s.deductedBatches || []);
     deductedCases   = new Set(s.deductedCases || []);
+    dayNotes        = s.notes || {};
+    dayQc           = s.qc || {};
     if (s.schOrder) schCustomOrder = s.schOrder;
     return s.batchGroups || null;
   }
@@ -232,21 +238,45 @@ const App = (() => {
     return members;
   }
 
-  // 全新排一次：照伺服器算好的批次大小依序填入
+  // 切批次的規則與伺服器 calcBatches 一致：3 杯一批，餘 1 杯時改成 3+2+2，
+  // 避免出現只有 1 杯的批次
+  function _batchSizes(n, size) {
+    size = size || 3;
+    if (size === 3) {
+      const mod = n % 3;
+      const three = mod === 1 ? Math.floor(n / 3) - 1 : Math.floor(n / 3);
+      const two   = mod === 0 ? 0 : mod === 1 ? 2 : 1;
+      return [...Array(Math.max(three, 0)).fill(3), ...Array(two).fill(2)];
+    }
+    const full = Math.floor(n / size), rem = n % size;
+    return [...Array(full).fill(size), ...(rem ? [rem] : [])];
+  }
+
+  // 全新排一次：先依「該取餐的時間」分群，再各自切批次。
+  // 不同時間的人本來就不該同一鍋做 —— 混在一起才會發生某一邊的時間被蓋掉。
   function _layoutFresh(members, prod) {
+    const size = prod.batch_size || 3;
     staffBatchGroups = [];
-    let mi = 0;
-    (prod.batches || []).forEach(b => {
-      for (let i = 0; i < b.count; i++) {
-        const bm = [];
-        for (let j = 0; j < b.size && mi < members.length; j++, mi++) bm.push(members[mi]);
+
+    const byTime = new Map();
+    members.forEach(m => {
+      const t = _memberTime(m);
+      if (!byTime.has(t)) byTime.set(t, []);
+      byTime.get(t).push(m);
+    });
+
+    [...byTime.keys()].sort().forEach(t => {
+      const group = byTime.get(t);
+      let mi = 0;
+      _batchSizes(group.length, size).forEach(sz => {
+        const bm = group.slice(mi, mi + sz);
+        mi += sz;
         if (bm.length) staffBatchGroups.push({ size: bm.length, members: bm });
+      });
+      if (mi < group.length) {
+        staffBatchGroups.push({ size: group.length - mi, members: group.slice(mi) });
       }
     });
-    // 伺服器算的杯數比實際人數少時，剩下的另開一批，不能把人丟掉
-    if (mi < members.length) {
-      staffBatchGroups.push({ size: members.length - mi, members: members.slice(mi) });
-    }
   }
 
   // 還沒進任何批次的人補進去：先填未滿的批次，再開新批次
@@ -296,6 +326,19 @@ const App = (() => {
       console.error(`批次對帳異常：名單 ${members.length} 人，已入批 ${placed} 人，重新排列`);
       _layoutFresh(members, prod);
     }
+
+    // 舊資料的「已扣庫存」記的是批次位置編號，換算成成員組成，
+    // 免得換算前後對不上而重複扣或漏扣
+    if ([...deductedBatches].some(k => /^\d+$/.test(String(k)))) {
+      const converted = new Set();
+      deductedBatches.forEach(k => {
+        if (/^\d+$/.test(String(k))) {
+          const b = staffBatchGroups[Number(k)];
+          if (b) converted.add(_batchKey(b));
+        } else converted.add(k);
+      });
+      deductedBatches = converted;
+    }
   }
 
   // ── 批次實際杯數（員工1杯，個案用自己的cups）────────────────────
@@ -331,9 +374,35 @@ const App = (() => {
   }
 
   // ── 渲染左側批次分組 ──────────────────────────────────────────
+  // 對帳列：批次只裝「員工標準配方」的人，自己有處方的個案是個別現打。
+  // 把兩邊加起來對總數，才不會有人以為某位個案「不見了」。
+  function _renderBatchTally() {
+    const d = lastTodayData;
+    if (!d) return '';
+    const prod = d.products && d.products[0];
+    if (!prod) return '';
+
+    const inBatch = (staffBatchGroups || []).reduce((s, b) => s + _batchCups(b), 0);
+    const solo    = d.products.flatMap(p => p.cases)
+                     .filter(c => !c.is_staff_rx)
+                     .reduce((s, c) => s + (c.cups || 1), 0);
+    const expected = prod.total_staff_cups || 0;
+    const ok = inBatch === expected;
+
+    return `
+      <div class="batch-tally${ok ? '' : ' batch-tally-bad'}">
+        <span>今日共 <strong>${inBatch + solo}</strong> 杯</span>
+        <span class="bt-sep">＝</span>
+        <span>批次（員工標準配方） <strong>${inBatch}</strong> 杯</span>
+        <span class="bt-sep">＋</span>
+        <span>個別現打（自己的處方） <strong>${solo}</strong> 杯</span>
+        ${ok ? '' : `<span class="bt-warn">⚠ 批次應為 ${expected} 杯，少了 ${expected - inBatch} 杯</span>`}
+      </div>`;
+  }
+
   function _renderBatchGroups() {
     if (!staffBatchGroups || staffBatchGroups.length === 0) return '';
-    let html = '<div class="batch-groups-wrap">';
+    let html = _renderBatchTally() + '<div class="batch-groups-wrap">';
     staffBatchGroups.forEach((batch, bi) => {
       const allDone = batch.members.length > 0 && batch.members.every(m =>
         m.type === 'staff' ? staffPickedUp.has(m.userId) : casePickedUp.has(m.caseId)
@@ -496,15 +565,23 @@ const App = (() => {
     document.getElementById('todaySchedule').innerHTML = _renderSchedule(d);
   }
 
+  // 用成員組成當識別，不用批次位置。
+  // 位置會因為新增／刪除／拖動而平移，原本扣過的批次會被當成沒扣過（重複扣庫存），
+  // 或沒扣過的被當成扣過（永遠不扣）。
+  function _batchKey(batch) {
+    return batch.members.map(m => m.id).sort().join('|');
+  }
+
   function _checkBatchDeductions() {
     if (!staffBatchGroups) return;
-    staffBatchGroups.forEach((batch, bi) => {
-      if (deductedBatches.has(bi)) return;
+    staffBatchGroups.forEach(batch => {
+      const key = _batchKey(batch);
+      if (!key || deductedBatches.has(key)) return;
       const allDone = batch.members.length > 0 && batch.members.every(m =>
         m.type === 'staff' ? staffPickedUp.has(m.userId) : casePickedUp.has(m.caseId)
       );
       if (!allDone) return;
-      deductedBatches.add(bi);
+      deductedBatches.add(key);
       // 員工人數 → 員工配方
       const staffCount = batch.members.filter(m => m.type === 'staff').length;
       if (staffCount > 0 && empRxId) {
@@ -887,15 +964,14 @@ const App = (() => {
         <div class="card" style="margin-top:8px;padding:4px 16px">${rows}</div>`;
     }
 
-    // 備註欄
-    const notesKey = `batchNotes_${prod.id}`;
-    const savedNotes = localStorage.getItem(notesKey) || '';
+    // 備註欄：跟著日期走、全廚房共用。
+    // 舊版存在 localStorage 且沒帶日期，昨天寫的備註今天還會留在畫面上
     const notesSection = `
       <div class="batch-notes-wrap">
         <div class="batch-notes-label">備註</div>
         <textarea class="batch-notes-area" rows="2"
-          onchange="localStorage.setItem('${notesKey}',this.value)"
-          placeholder="今日備料備註...">${esc(savedNotes)}</textarea>
+          onchange="App.saveBatchNotes(${prod.id}, this.value)"
+          placeholder="今日備料備註...">${esc(dayNotes[prod.id] || '')}</textarea>
       </div>`;
 
     // 個案出單 — 外帶 / 內用 分組
@@ -1983,14 +2059,12 @@ const App = (() => {
 
   // ── SOP / 品質確認 ───────────────────────────────────────
   function loadSOP() {
-    const today = new Date().toISOString().slice(0,10);
-    const qcKey = `sop_qc_${today}`;
-    const savedQc = JSON.parse(localStorage.getItem(qcKey) || '{}');
+    const today = (lastTodayData && lastTodayData.date) || new Date().toISOString().slice(0,10);
 
     function qcItem(id, text) {
-      const checked = savedQc[id] || false;
+      const checked = dayQc[id] || false;
       return `<div class="sop-qc-item${checked?' checked':''}" id="qci_${id}">
-        <input type="checkbox" id="qcb_${id}" ${checked?'checked':''} onchange="App.toggleQC('${qcKey}','${id}',this.checked)">
+        <input type="checkbox" id="qcb_${id}" ${checked?'checked':''} onchange="App.toggleQC('${id}',this.checked)">
         <label for="qcb_${id}">${text}</label>
       </div>`;
     }
@@ -2186,7 +2260,7 @@ const App = (() => {
       </div>
 
       <div class="sop-section-title">七、每日作業優先順序（依分工與 GHP 規範）
-        <button class="sop-reset-btn" onclick="App.resetQC('${qcKey}')">重設今日</button>
+        <button class="sop-reset-btn" onclick="App.resetQC()">重設今日</button>
       </div>
       <div class="sop-card">
         <div style="font-size:12px;font-weight:700;color:var(--blue);margin-bottom:8px">08:00　執行單位</div>
@@ -2257,17 +2331,22 @@ const App = (() => {
     document.getElementById('sopContent').innerHTML = html;
   }
 
-  function toggleQC(qcKey, itemId, checked) {
-    const saved = JSON.parse(localStorage.getItem(qcKey) || '{}');
-    saved[itemId] = checked;
-    localStorage.setItem(qcKey, JSON.stringify(saved));
+  function saveBatchNotes(productId, text) {
+    dayNotes[productId] = text;
+    if (lastTodayData) _saveDayState(lastTodayData.date);
+  }
+
+  function toggleQC(itemId, checked) {
+    dayQc[itemId] = checked;
+    if (lastTodayData) _saveDayState(lastTodayData.date);
     const row = document.getElementById(`qci_${itemId}`);
     if (row) row.classList.toggle('checked', checked);
   }
 
-  function resetQC(qcKey) {
-    if (!confirm('重設今日品質確認清單？')) return;
-    localStorage.removeItem(qcKey);
+  function resetQC() {
+    if (!confirm('重設今日品質確認清單？（全廚房共用，其他人的畫面也會一起清空）')) return;
+    dayQc = {};
+    if (lastTodayData) _saveDayState(lastTodayData.date);
     loadSOP();
   }
 
@@ -2915,7 +2994,7 @@ const App = (() => {
     openAddLabor, saveLabor, deleteLabor,
     loadTrialRecipes, openAddTrial, openEditTrial, saveTrial, deleteTrial,
     openAddTrialSession, saveTrialSession, deleteTrialSession,
-    loadSOP, toggleQC, resetQC,
+    loadSOP, toggleQC, resetQC, saveBatchNotes,
     toggleLeaveRestore,
     loadMeals, switchMealTab, switchMealView, advanceMealStatus, goBuyMeals,
     openAddMealOrder, openEditMealOrder, saveMealOrder, deleteMealOrder,
