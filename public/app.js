@@ -178,6 +178,10 @@ const App = (() => {
     const savedGroups = _loadDayState(d);
     _syncBatchGroups(d, savedGroups);
 
+    // 伺服器上還沒有這天的狀態時，把手上這份推上去。
+    // 否則每台裝置各自沿用自己的 localStorage 舊資料，畫面又會分岔。
+    if (!d.day_state) _saveDayState(d.date);
+
     // 休假卻仍列出席的人 = 有人手動復原過，由伺服器狀態推導，不再另存一份
     const leaveSet = new Set((d.leaves || []).map(n => n.toLowerCase().trim()));
     restoredLeaves = new Set(
