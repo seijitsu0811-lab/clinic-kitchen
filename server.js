@@ -154,6 +154,18 @@ try {
      FOREIGN KEY (stocktake_id) REFERENCES stocktakes(id))`,
   "CREATE INDEX IF NOT EXISTS idx_stocktake_date ON stocktakes(date)",
 
+  // 每一次扣庫存都留一筆。原本扣完就沒了，沒有任何地方看得出「那天到底扣了什麼」，
+  // 也就無從判斷有沒有漏扣。有了這張表，隔日補扣才能只補差額而不是重扣一次。
+  `CREATE TABLE IF NOT EXISTS consumption_log (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     date TEXT NOT NULL, prescription_id INTEGER NOT NULL,
+     cups REAL NOT NULL, powder_type TEXT DEFAULT '',
+     source TEXT DEFAULT 'manual',   -- manual = 有人確認出餐；auto = 系統隔日補扣
+     note TEXT DEFAULT '', user_id INTEGER,
+     reversed_at TEXT DEFAULT '',
+     created_at TEXT DEFAULT (datetime('now','localtime')))`,
+  "CREATE INDEX IF NOT EXISTS idx_consumption_date ON consumption_log(date)",
+
   // 工時改成「每批固定 + 每杯額外」：3 杯是同一鍋打的，不該算 3 倍備料工。
   // 舊的 labor_min_per_cup 保留不刪，但已不再參與計算。
   "INSERT OR IGNORE INTO settings (key,value) VALUES ('labor_min_per_batch','15')",
@@ -928,6 +940,11 @@ app.get('/api/today', async (req, res) => {
   try { await syncApptOrders(); } catch (err) { console.error('預約帶入失敗:', err.message); }
   try { await syncApptMealOrders(); } catch (err) { console.error('餐盒預約帶入失敗:', err.message); }
 
+  // 過去幾天沒人確認出餐的，在這裡補扣。只補差額，而且可以還原
+  let autoSettled = [];
+  try { autoSettled = settleRecentDays(req.kitchenUser.id); }
+  catch (err) { console.error('自動補扣失敗:', err.message); }
+
   // 1. Fetch leaves from Firebase clinic system
   // 名字比對一律正規化：預約系統寫的是 'louise'，這裡的使用者叫 'Louise'，
   // 大小寫不一致會讓休假的人被算成出席，杯數就多一杯
@@ -1068,6 +1085,7 @@ app.get('/api/today', async (req, res) => {
     staff_meal_dows:  STAFF_MEAL_DOWS,
     staff_meal_label: staffMealDaysLabel(),
     roster_count:     rosterCount(),
+    auto_settled:     autoSettled,   // 這次載入補扣了哪幾天
     day_state: stateRow ? {
       state:      JSON.parse(stateRow.state || '{}'),
       updated_at: stateRow.updated_at,
@@ -1152,11 +1170,15 @@ app.delete('/api/today/cases/:id', (req, res) => {
 // ════════════════════════════════════════════════════════
 
 app.get('/api/prescriptions', (req, res) => {
+  // 停用的處方預設不列。帶 include_inactive=1 可以連停用的一起看
+  // （停用是軟刪除，處方代號還在，不查出來就不知道為什麼代號會重複）
+  const all = req.query.include_inactive === '1';
   const rxs = db.prepare(
     `SELECT p.*, pr.name as product_name, pr.unit as product_unit
      FROM prescriptions p
      LEFT JOIN products pr ON pr.id=p.product_id
-     WHERE p.active=1 ORDER BY pr.sort_order, p.product_id, p.is_staff_rx DESC, p.code`
+     ${all ? '' : 'WHERE p.active=1'}
+     ORDER BY pr.sort_order, p.product_id, p.is_staff_rx DESC, p.code`
   ).all();
   res.json(rxs);
 });
@@ -1309,24 +1331,133 @@ app.get('/api/inventory/:id/purchases', (req, res) => {
 });
 
 // 出餐扣庫存
-app.post('/api/inventory/consume', (req, res) => {
-  const { prescription_id, cups, powder_type } = req.body;
-  if (!prescription_id || !cups || cups <= 0) return res.status(400).json({ error: 'invalid' });
-  const pm = (powder_type === '罐裝' || powder_type === '全配方') ? 1.1 : 1.0;
-  const freshCats = new Set(['蔬菜','水果','油水','油','水','其他']);
-  const ingRows = db.prepare(
+// 依處方扣庫存，並留下一筆消耗紀錄。sign = -1 扣、+1 還原
+function applyConsumption(rxId, cups, powderType, sign) {
+  const pm = (powderType === '罐裝' || powderType === '全配方') ? 1.1 : 1.0;
+  const freshCats = new Set(['蔬菜', '水果', '油水', '油', '水', '其他']);
+  db.prepare(
     `SELECT pi.ingredient_id, pi.qty_per_cup, i.category
      FROM prescription_ingredients pi JOIN ingredients i ON i.id=pi.ingredient_id
      WHERE pi.prescription_id=? AND pi.qty_per_cup>0`
-  ).all(prescription_id);
+  ).all(rxId).forEach(r => {
+    const mult   = freshCats.has(r.category) ? 1.0 : pm;
+    const amount = Math.round(r.qty_per_cup * cups * mult * 100) / 100 * sign;
+    db.prepare(
+      `UPDATE inventory SET qty=MAX(0, ROUND(qty+?,1)), updated_at=datetime('now','localtime')
+       WHERE ingredient_id=?`
+    ).run(amount, r.ingredient_id);
+  });
+}
+
+function recordConsumption({ date, rxId, cups, powderType, source, note, userId }) {
+  applyConsumption(rxId, cups, powderType, -1);
+  db.prepare(
+    `INSERT INTO consumption_log (date,prescription_id,cups,powder_type,source,note,user_id)
+     VALUES (?,?,?,?,?,?,?)`
+  ).run(date, rxId, cups, powderType || '', source || 'manual', note || '', userId || null);
+}
+
+app.post('/api/inventory/consume', (req, res) => {
+  const { prescription_id, cups, powder_type, date } = req.body;
+  if (!prescription_id || !cups || cups <= 0) return res.status(400).json({ error: 'invalid' });
   tx(() => {
-    ingRows.forEach(r => {
-      const mult = freshCats.has(r.category) ? 1.0 : pm;
-      const amount = Math.round(r.qty_per_cup * cups * mult * 100) / 100;
-      db.prepare(
-        `UPDATE inventory SET qty=MAX(0, ROUND(qty-?,1)), updated_at=datetime('now','localtime') WHERE ingredient_id=?`
-      ).run(amount, r.ingredient_id);
+    recordConsumption({
+      date: date || today(), rxId: prescription_id, cups,
+      powderType: powder_type, source: 'manual', userId: req.kitchenUser.id
     });
+  });
+  res.json({ ok: true });
+});
+
+// ── 隔日自動補扣 ──────────────────────────────────────────
+// 庫存只在有人按「拿取」時才扣，忘了按就永遠不扣，帳面只會越來越虛高。
+// 這裡在過了那一天之後，比對「那天應該扣的」與「實際扣掉的」，只補差額。
+// 補扣一律標 source='auto' 並且可以整筆還原 —— 自動但看得見、改得回來。
+function expectedForDate(date) {
+  const out = [];   // { rxId, cups, powderType }
+  const attending = db.prepare(
+    'SELECT COUNT(*) c FROM staff_attendance WHERE date=? AND attending=1'
+  ).get(date)?.c || 0;
+  const staffRx = db.prepare(
+    'SELECT id FROM prescriptions WHERE is_staff_rx=1 AND active=1 LIMIT 1'
+  ).get();
+  if (staffRx && attending > 0) out.push({ rxId: staffRx.id, cups: attending, powderType: '' });
+
+  db.prepare(
+    'SELECT prescription_id, cups, powder_type FROM case_orders WHERE date=?'
+  ).all(date).forEach(o => {
+    out.push({ rxId: o.prescription_id, cups: o.cups, powderType: o.powder_type || '' });
+  });
+  return out;
+}
+
+function settleDay(date, userId) {
+  const key = r => r.rxId + '|' + ((r.powderType === '罐裝' || r.powderType === '全配方') ? 'x11' : 'x1');
+
+  const want = {};
+  expectedForDate(date).forEach(r => {
+    const k = key(r);
+    if (!want[k]) want[k] = { rxId: r.rxId, powderType: r.powderType, cups: 0 };
+    want[k].cups += r.cups;
+  });
+  if (!Object.keys(want).length) return null;
+
+  const got = {};
+  db.prepare(
+    "SELECT prescription_id, powder_type, SUM(cups) c FROM consumption_log " +
+    "WHERE date=? AND COALESCE(reversed_at,'')='' GROUP BY prescription_id, powder_type"
+  ).all(date).forEach(r => {
+    const k = key({ rxId: r.prescription_id, powderType: r.powder_type });
+    got[k] = (got[k] || 0) + r.c;
+  });
+
+  const added = [];
+  Object.entries(want).forEach(([k, w]) => {
+    const missing = Math.round((w.cups - (got[k] || 0)) * 100) / 100;
+    if (missing <= 0) return;
+    recordConsumption({
+      date, rxId: w.rxId, cups: missing, powderType: w.powderType,
+      source: 'auto', note: '隔日自動補扣（當天沒有人確認出餐）', userId
+    });
+    added.push({ prescription_id: w.rxId, cups: missing, powder_type: w.powderType });
+  });
+  return added.length ? added : null;
+}
+
+const SETTLE_LOOKBACK_DAYS = 7;
+
+function settleRecentDays(userId) {
+  const results = [];
+  for (let i = 1; i <= SETTLE_LOOKBACK_DAYS; i++) {
+    const d = new Date(Date.now() - i * 86400000).toISOString().slice(0, 10);
+    try {
+      const added = settleDay(d, userId);
+      if (added) results.push({ date: d, items: added,
+                                cups: Math.round(added.reduce((s, a) => s + a.cups, 0) * 10) / 10 });
+    } catch (e) { console.error('自動補扣失敗', d, e.message); }
+  }
+  return results;
+}
+
+// 最近的自動補扣紀錄（讓人看得到、能還原）
+app.get('/api/consumption/auto', (req, res) => {
+  const days = Number(req.query.days || 14);
+  const from = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
+  res.json(db.prepare(
+    `SELECT cl.*, p.name rx_name, p.code rx_code
+     FROM consumption_log cl LEFT JOIN prescriptions p ON p.id=cl.prescription_id
+     WHERE cl.source='auto' AND cl.date >= ? AND COALESCE(cl.reversed_at,'')=''
+     ORDER BY cl.date DESC, cl.id DESC`
+  ).all(from));
+});
+
+// 還原一筆自動補扣：把食材加回去，並標記已還原
+app.post('/api/consumption/:id/reverse', (req, res) => {
+  const row = db.prepare("SELECT * FROM consumption_log WHERE id=? AND COALESCE(reversed_at,'')=''").get(req.params.id);
+  if (!row) return res.status(404).json({ error: '找不到這筆，或已經還原過' });
+  tx(() => {
+    applyConsumption(row.prescription_id, row.cups, row.powder_type, +1);
+    db.prepare("UPDATE consumption_log SET reversed_at=datetime('now','localtime') WHERE id=?").run(row.id);
   });
   res.json({ ok: true });
 });
@@ -1681,6 +1812,73 @@ app.delete('/api/trial_recipes/:id', (req, res) => {
     db.prepare('DELETE FROM trial_recipes WHERE id=?').run(req.params.id);
   });
   res.json({ ok: true });
+});
+
+// ════════════════════════════════════════════════════════
+// 備份
+// 整個系統就是 volume 上的一個 SQLite 檔，沒有任何備份機制 ——
+// 檔案損壞或誤刪就是全部歸零。每天留一份，保留最近 14 天，
+// 並提供下載端點讓人可以把副本抓到 Railway 之外。
+// VACUUM INTO 對執行中的資料庫是安全的，不需要停機。
+// ════════════════════════════════════════════════════════
+const BACKUP_DIR    = path.join(path.dirname(DB_PATH), 'backups');
+const BACKUP_KEEP   = 14;
+
+function runBackup(force) {
+  try {
+    fs.mkdirSync(BACKUP_DIR, { recursive: true });
+    const file = path.join(BACKUP_DIR, `clinic-${today()}.db`);
+    if (!force && fs.existsSync(file)) return null;      // 一天一份就夠
+    if (fs.existsSync(file)) fs.unlinkSync(file);        // force 時覆蓋
+    db.exec(`VACUUM INTO '${file.replace(/'/g, "''")}'`);
+
+    // 只留最近 N 份
+    const files = fs.readdirSync(BACKUP_DIR)
+      .filter(f => /^clinic-\d{4}-\d{2}-\d{2}\.db$/.test(f)).sort();
+    while (files.length > BACKUP_KEEP) {
+      const old = files.shift();
+      try { fs.unlinkSync(path.join(BACKUP_DIR, old)); } catch (e) {}
+    }
+    const size = fs.statSync(file).size;
+    console.log(`備份完成 ${path.basename(file)}（${Math.round(size / 1024)} KB，保留 ${files.length} 份）`);
+    return { file: path.basename(file), size };
+  } catch (e) {
+    console.error('備份失敗:', e.message);
+    return null;
+  }
+}
+
+runBackup();
+setInterval(() => runBackup(), 12 * 3600 * 1000);   // 每 12 小時檢查一次，一天實際產生一份
+
+app.get('/api/backups', (req, res) => {
+  try {
+    fs.mkdirSync(BACKUP_DIR, { recursive: true });
+    const list = fs.readdirSync(BACKUP_DIR)
+      .filter(f => /^clinic-\d{4}-\d{2}-\d{2}\.db$/.test(f))
+      .sort().reverse()
+      .map(f => {
+        const st = fs.statSync(path.join(BACKUP_DIR, f));
+        return { name: f, size: st.size, created_at: st.mtime.toISOString().slice(0, 19).replace('T', ' ') };
+      });
+    res.json({ dir: BACKUP_DIR, keep: BACKUP_KEEP, backups: list });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/backups/run', (req, res) => {
+  const r = runBackup(true);
+  if (!r) return res.status(500).json({ error: '備份失敗，請看伺服器記錄' });
+  res.json({ ok: true, ...r });
+});
+
+app.get('/api/backups/:name', (req, res) => {
+  // 只接受自己產生的檔名格式，避免被拿去讀其他路徑
+  if (!/^clinic-\d{4}-\d{2}-\d{2}\.db$/.test(req.params.name)) {
+    return res.status(400).json({ error: '檔名不正確' });
+  }
+  const file = path.join(BACKUP_DIR, req.params.name);
+  if (!fs.existsSync(file)) return res.status(404).json({ error: '找不到這份備份' });
+  res.download(file, req.params.name);
 });
 
 // ════════════════════════════════════════════════════════

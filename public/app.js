@@ -217,6 +217,7 @@ const App = (() => {
     document.getElementById('productSections').innerHTML = d.products.map(prod => renderProductSection(prod, d.attending_count)).join('');
 
     renderTodayMeals(d.meals);
+    renderAutoSettle();
 
     laborDate = d.date;
     loadLaborSection(d.date);
@@ -2404,7 +2405,48 @@ const App = (() => {
       document.getElementById(id).oninput = _renderLaborPreview;
     });
     _renderLaborPreview();
+    _renderBackups();
     openModal('modalSettings');
+  }
+
+  async function _renderBackups() {
+    const el = document.getElementById('backupList');
+    if (!el) return;
+    try {
+      const d = await api('/api/backups');
+      el.innerHTML = d.backups.length
+        ? d.backups.map(b => `
+            <div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px dashed var(--border)">
+              <a href="#" onclick="App.downloadBackup('${esc(b.name)}');return false"
+                 style="color:var(--primary);font-weight:600">${esc(b.name)}</a>
+              <span style="margin-left:auto;color:var(--text3)">${Math.round(b.size / 1024)} KB</span>
+            </div>`).join('')
+        : '<div style="color:var(--text3)">尚無備份</div>';
+    } catch (e) { el.innerHTML = '<div style="color:var(--red)">讀取備份清單失敗</div>'; }
+  }
+
+  // 下載要帶認證標頭，所以不能直接用連結，得先取回再存成檔案
+  async function downloadBackup(name) {
+    try {
+      const headers = { 'X-Kitchen-User-Id': String(currentUser.id) };
+      if (kitchenPassword) headers['X-Kitchen-Password'] = kitchenPassword;
+      const r = await fetch('/api/backups/' + encodeURIComponent(name), { headers });
+      if (!r.ok) throw new Error('下載失敗（' + r.status + '）');
+      const blob = await r.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = name;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+    } catch (e) { alert(e.message); }
+  }
+
+  async function runBackupNow() {
+    try {
+      const r = await api('/api/backups/run', 'POST');
+      await _renderBackups();
+      alert(`備份完成：${r.file}（${Math.round(r.size / 1024)} KB）`);
+    } catch (e) { alert(e.message); }
   }
 
   async function saveSettings() {
@@ -2720,6 +2762,51 @@ const App = (() => {
       if (it) return it.protein;
     }
     return '';
+  }
+
+  // ── 自動補扣通知 ──────────────────────────────────────
+  // 系統在沒人確認的情況下動了庫存，就一定要講出來，而且要能改回去
+  async function renderAutoSettle() {
+    const el = document.getElementById('autoSettleAlert');
+    if (!el) return;
+    let rows = [];
+    try { rows = await api('/api/consumption/auto?days=14'); } catch (e) { return; }
+    if (!rows.length) { el.innerHTML = ''; return; }
+
+    const byDate = {};
+    rows.forEach(r => {
+      if (!byDate[r.date]) byDate[r.date] = [];
+      byDate[r.date].push(r);
+    });
+
+    el.innerHTML = `
+      <div class="auto-settle">
+        <div class="as-title">🧾 系統自動補扣了庫存</div>
+        <div style="color:var(--text2);margin-bottom:6px">
+          這幾天沒有人確認出餐，系統依當天的出席與出單補扣了食材。做錯了可以還原。
+        </div>
+        ${Object.keys(byDate).sort().reverse().map(d => {
+          const list = byDate[d];
+          const cups = Math.round(list.reduce((s, r) => s + r.cups, 0) * 10) / 10;
+          return `<div class="as-row">
+            <span class="as-date">${esc(d)}</span>
+            <span>${cups} 杯（${list.map(r => esc(r.rx_name || r.rx_code || '')).join('、')}）</span>
+            <button onclick="App.reverseAutoSettle('${esc(d)}')">還原這天</button>
+          </div>`;
+        }).join('')}
+      </div>`;
+  }
+
+  async function reverseAutoSettle(date) {
+    if (!confirm(`還原 ${date} 的自動補扣？食材會加回庫存。`)) return;
+    try {
+      const rows = await api('/api/consumption/auto?days=30');
+      for (const r of rows.filter(x => x.date === date)) {
+        await api('/api/consumption/' + r.id + '/reverse', 'POST');
+      }
+      await renderAutoSettle();
+      checkInvWarning();
+    } catch (e) { alert(e.message); }
   }
 
   // ── 今日頁頂部行動列 ──────────────────────────────────
@@ -3110,7 +3197,8 @@ const App = (() => {
     loadTrialRecipes, openAddTrial, openEditTrial, saveTrial, deleteTrial,
     openAddTrialSession, saveTrialSession, deleteTrialSession,
     loadSOP, toggleQC, resetQC, saveBatchNotes,
-    openStocktake, saveStocktake,
+    openStocktake, saveStocktake, reverseAutoSettle,
+    downloadBackup, runBackupNow,
     toggleLeaveRestore,
     loadMeals, switchMealTab, switchMealView, advanceMealStatus, goBuyMeals,
     openAddMealOrder, openEditMealOrder, saveMealOrder, deleteMealOrder,

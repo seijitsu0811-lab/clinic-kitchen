@@ -741,6 +741,26 @@
       padding: 2px 8px;
       font-weight: 600;
     }
+    /* 自動補扣：系統動了庫存，一定要讓人看到，而且改得回來 */
+    .auto-settle {
+      background: rgba(99, 102, 241, 0.07);
+      border: 1px solid rgba(99, 102, 241, 0.28);
+      border-radius: var(--radius-md);
+      padding: 12px 14px; margin: 12px 0 4px; font-size: 13px; line-height: 1.8;
+    }
+    .auto-settle .as-title { font-weight: 700; color: var(--purple); margin-bottom: 6px; }
+    .auto-settle .as-row {
+      display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+      padding: 4px 0; border-top: 1px dashed rgba(99, 102, 241, 0.2);
+    }
+    .auto-settle .as-row:first-of-type { border-top: none; }
+    .auto-settle .as-date { font-weight: 700; color: var(--text); min-width: 82px; }
+    .auto-settle button {
+      margin-left: auto; min-height: 34px; padding: 5px 12px; font-size: 12px; font-weight: 700;
+      background: none; color: var(--purple); cursor: pointer;
+      border: 1px solid rgba(99, 102, 241, 0.4); border-radius: 8px;
+    }
+
     /* 存量掉到安全水位以下：這週夠不夠是一回事，該不該補是另一回事 */
     .inv-below-safety { color: #B45309; font-weight: 700; }
 
@@ -2235,6 +2255,7 @@
 
   <!-- 今日工作單 -->
   <div class="page active" id="page-today">
+    <div id="autoSettleAlert"></div>
     <div id="todayMealAlert"></div>
     <div class="section-head">
       <h2 style="display:flex;align-items:center;gap:10px;">
@@ -2759,6 +2780,16 @@
     <div class="form-group">
       <label>粉配方定價（NT$）</label>
       <input id="settPowderPrice" type="number" value="280">
+    </div>
+    <div style="border-top:1px solid var(--border);margin-top:6px;padding-top:14px">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+        <strong style="font-size:14px">資料備份</strong>
+        <button class="btn btn-ghost btn-sm" style="margin-left:auto" onclick="App.runBackupNow()">立即備份</button>
+      </div>
+      <div style="font-size:11px;color:var(--text3);margin-bottom:8px;line-height:1.7">
+        系統每天自動留一份，保留最近 14 天。點檔名可以下載到本機保存一份離線副本。
+      </div>
+      <div id="backupList" style="font-size:12px;max-height:150px;overflow-y:auto"></div>
     </div>
     <div class="modal-actions">
       <button class="btn btn-ghost" onclick="App.closeModal('modalSettings')">取消</button>
