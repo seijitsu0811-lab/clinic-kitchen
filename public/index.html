@@ -764,6 +764,17 @@
     /* 存量掉到安全水位以下：這週夠不夠是一回事，該不該補是另一回事 */
     .inv-below-safety { color: #B45309; font-weight: 700; }
 
+    /* 處理方式：同一種食材的不同做法（帶皮／去皮／打泥），備料時要看得到 */
+    .prep-note {
+      display: inline-block; margin-left: 6px; font-size: 11px; font-weight: 700;
+      color: var(--purple); background: rgba(99, 102, 241, 0.12);
+      border-radius: 5px; padding: 1px 7px;
+    }
+    .ie-prep {
+      padding: 5px 8px; border: 1.5px solid var(--border); border-radius: 8px;
+      background: var(--bg); color: var(--text); font-size: 12px; min-width: 0;
+    }
+
     /* 對帳列：批次杯數 + 個別現打杯數 = 今日總杯數 */
     .batch-tally {
       display: flex; align-items: center; gap: 7px; flex-wrap: wrap;
@@ -1408,7 +1419,7 @@
     }
     .ie-row {
       display: grid;
-      grid-template-columns: 1fr auto 90px;
+      grid-template-columns: 1fr auto 90px 104px;
       gap: 10px;
       align-items: center;
       padding: 8px 0;
@@ -2205,7 +2216,8 @@
       .inv-name { font-size: 14px; }
       .inv-qty { font-size: 16px; }
 
-      .ie-row { grid-template-columns: 1fr 60px; }
+      .ie-row { grid-template-columns: 1fr 56px 72px; }
+      .ie-row > span:nth-child(2) { display: none; }
       .cost-subtabs { overflow-x: auto; flex-wrap: nowrap; -webkit-overflow-scrolling: touch; }
       .cost-tab { padding: 8px 12px; }
 

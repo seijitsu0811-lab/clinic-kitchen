@@ -861,7 +861,7 @@ const App = (() => {
                 : '';
               return `
               <div class="row">
-                <span class="row-label">${esc(p.name)}</span>
+                <span class="row-label">${esc(p.name)}${p.prep_note ? `<span class="prep-note">${esc(p.prep_note)}</span>` : ''}</span>
                 <span class="row-value" style="font-weight:700">${p.total}${p.unit}
                   <span style="font-size:12px;color:var(--text3)">（${p.per_serving}${p.unit}/${unit}）</span>
                   ${batchRow}
@@ -1457,6 +1457,9 @@ const App = (() => {
             <span style="font-size:12px;color:var(--text2)">${i.unit}/份</span>
             <input type="number" min="0" step="0.1" value="${i.qty_per_cup}"
               data-ing-id="${i.id}" id="ing_${i.id}">
+            <input type="text" class="ie-prep" value="${esc(i.prep || '')}"
+              data-prep-for="${i.id}" placeholder="處理方式"
+              title="同一種食材的不同處理方式（帶皮／去皮／打泥…）寫在這裡，不要另外建一個食材">
           </div>`;
       });
       html += `
@@ -1475,7 +1478,8 @@ const App = (() => {
     const inputs = document.querySelectorAll('#ingredientEditor input[data-ing-id]');
     const items = Array.from(inputs).map(inp => ({
       ingredient_id: parseInt(inp.dataset.ingId),
-      qty_per_cup: parseFloat(inp.value) || 0
+      qty_per_cup: parseFloat(inp.value) || 0,
+      prep: (document.querySelector(`[data-prep-for="${inp.dataset.ingId}"]`) || {}).value || ''
     }));
     // 處理自填行：查找 allIngredients 中是否有同名食材
     const customRows = document.querySelectorAll('#ingredientEditor .ie-custom-row');

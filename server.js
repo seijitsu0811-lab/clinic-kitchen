@@ -66,6 +66,13 @@ try {
   try { db.exec("ROLLBACK"); } catch(r) {}
   console.error("Failed to migrate production purchase log:", e.message);
 }
+// 食材改名必須在 schema.sql 之前跑。
+// schema.sql 的種子資料是用「名稱」去找食材的，如果這時候還叫舊名字，
+// 種子會以為這個食材不存在而新建一筆（id 也跟著變），
+// 接著 prescription_ingredients 的種子又會用預設份量插入，把真實配方蓋掉。
+// 先改名，既有那筆就會被 INSERT OR IGNORE 認出來，id 與份量都保住。
+try { db.exec("UPDATE ingredients SET name='蘋果' WHERE name='蘋果(帶皮)'"); } catch(e) {}
+
 db.exec(fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8'));
 try { db.exec("ALTER TABLE users ADD COLUMN password TEXT DEFAULT ''"); } catch(e) {}
 if (KITCHEN_PASSWORD) {
@@ -82,7 +89,7 @@ function seedPurchaseLog() {
     if (n > 0) return;
     const seed = [
       ['莓果', 1500, 329], ['莓果', 3815, 1131], ['羽衣甘藍', 1500, 831],
-      ['蘋果(帶皮)', 18140, 3058], ['芽菜', 200, 155], ['貝比生菜', 1000, 1111],
+      ['蘋果', 18140, 3058], ['芽菜', 200, 155], ['貝比生菜', 1000, 1111],
       ['胡蘿蔔', 250, 59], ['檸檬', 1800, 148], ['薑黃粉', 340, 129],
       ['橄欖油', 3000, 1167], ['核桃', 1360, 489], ['燕麥', 5470, 804],
       ['苦茶油', 300, 660], ['蛋白粉', 4500, 2970]
@@ -136,6 +143,10 @@ try {
   // auto = 系統依休假與員工餐日推導；manual = 廚房人員手動改過，同步時不再覆蓋
   "ALTER TABLE staff_attendance ADD COLUMN source TEXT DEFAULT 'auto'",
 
+  // 處理方式（帶皮／去皮／只要皮…）。同一種食材的不同處理方式不該拆成兩個品項 ——
+  // 拆開之後庫存、單價、缺貨判斷都會各算各的（見 mergeApples）
+  "ALTER TABLE prescription_ingredients ADD COLUMN prep TEXT DEFAULT ''",
+
   // 每日固定供應的處方（原本 AW 的杯數與緩衝是寫死在程式裡的）
   "ALTER TABLE prescriptions ADD COLUMN daily_cups REAL DEFAULT 0",
   "ALTER TABLE prescriptions ADD COLUMN buffer_cups REAL DEFAULT 0",
@@ -186,8 +197,9 @@ db.exec("UPDATE prescriptions SET product_id=1 WHERE product_id IS NULL");
 // ── 食材資料整理（idempotent）───────────────────────────
 [
   // 重新命名
-  "UPDATE ingredients SET name='蘋果(帶皮)' WHERE name='蘋果'",
-  "UPDATE ingredients SET name='蘋果(純皮)' WHERE name='蘋果(去皮)'",
+  // 蘋果只有一種，帶皮或去皮是「處理方式」，記在處方的用料行（prescription_ingredients.prep），
+  // 不是兩種食材。拆成兩項會讓庫存、單價、缺貨判斷全部失真（見下方 mergeApples）
+  "UPDATE ingredients SET name='蘋果' WHERE name='蘋果(帶皮)'",
   "UPDATE ingredients SET name='檸檬'       WHERE name='檸檬帶皮'",
   "UPDATE ingredients SET name='檸檬'       WHERE name='帶皮檸檬'",
   "UPDATE ingredients SET name='奇異果'     WHERE name='帶皮奇異果'",
@@ -199,15 +211,80 @@ db.exec("UPDATE prescriptions SET product_id=1 WHERE product_id IS NULL");
   // 甜菜根歸蔬菜
   "UPDATE ingredients SET category='蔬菜' WHERE name='甜菜根'",
   // 設定顆換算
-  "UPDATE ingredients SET count_unit='顆', count_ratio=220 WHERE name='蘋果(帶皮)'",
+  "UPDATE ingredients SET count_unit='顆', count_ratio=220 WHERE name='蘋果'",
   "UPDATE ingredients SET count_unit='顆', count_ratio=80  WHERE name='檸檬'",
 ].forEach(sql => { try { db.exec(sql); } catch(e) {} });
+
+// ── 蘋果合併成單一品項 ──────────────────────────────────
+// 「蘋果(帶皮)」與「蘋果(純皮)」是同一種東西的兩種處理方式，卻被建成兩個食材。
+// 後果是實際發生過的：純皮從來沒被採購過 → 單價 $0、庫存永遠 0 →
+// 用到它的處方成本算不出來、永遠顯示缺貨，而真正的蘋果消耗又沒被算進需求，
+// 系統於是說「蘋果夠」，實際上快見底。
+// 合併後只留「蘋果」一項，處理方式改記在處方用料行的 prep 欄位。
+function mergeApples() {
+  try {
+    if (db.prepare("SELECT 1 FROM settings WHERE key='merged_apple_items'").get()) return;
+
+    const target = db.prepare("SELECT id FROM ingredients WHERE name='蘋果'").get();
+    const peel   = db.prepare("SELECT id, name FROM ingredients WHERE name='蘋果(純皮)'").get();
+
+    if (target && peel && target.id !== peel.id) {
+      db.exec('PRAGMA foreign_keys = OFF');
+      const delPeel = db.prepare(
+        'DELETE FROM prescription_ingredients WHERE prescription_id=? AND ingredient_id=?'
+      );
+      db.prepare(
+        `SELECT prescription_id, qty_per_cup FROM prescription_ingredients WHERE ingredient_id=?`
+      ).all(peel.id).forEach(row => {
+        // 0g 的列只是編輯畫面留下的空殼，沒有帶任何資訊，直接丟掉
+        if (!row.qty_per_cup || row.qty_per_cup <= 0) {
+          delPeel.run(row.prescription_id, peel.id);
+          return;
+        }
+        const existing = db.prepare(
+          'SELECT id, qty_per_cup FROM prescription_ingredients WHERE prescription_id=? AND ingredient_id=?'
+        ).get(row.prescription_id, target.id);
+
+        if (!existing) {
+          // 沿用原本的標示，不擅自改寫某位個案的配方
+          db.prepare("UPDATE prescription_ingredients SET ingredient_id=?, prep='純皮' WHERE prescription_id=? AND ingredient_id=?")
+            .run(target.id, row.prescription_id, peel.id);
+        } else if (!existing.qty_per_cup || existing.qty_per_cup <= 0) {
+          // 帶皮那列是 0g 空殼，把純皮的用量與標示接過來
+          db.prepare("UPDATE prescription_ingredients SET qty_per_cup=?, prep='純皮' WHERE id=?")
+            .run(row.qty_per_cup, existing.id);
+          delPeel.run(row.prescription_id, peel.id);
+        } else {
+          // 兩種都真的有用量：份量相加、標示併記，等人確認，不能丟掉任何一邊
+          db.prepare("UPDATE prescription_ingredients SET qty_per_cup=?, prep='帶皮＋純皮（請確認）' WHERE id=?")
+            .run(existing.qty_per_cup + row.qty_per_cup, existing.id);
+          delPeel.run(row.prescription_id, peel.id);
+        }
+      });
+      db.prepare('UPDATE purchase_log SET ingredient_id=? WHERE ingredient_id=?').run(target.id, peel.id);
+      db.prepare('DELETE FROM inventory WHERE ingredient_id=?').run(peel.id);
+      db.prepare('DELETE FROM ingredients WHERE id=?').run(peel.id);
+      db.exec('PRAGMA foreign_keys = ON');
+      console.log('蘋果合併完成：蘋果(純皮) → 蘋果，處理方式改記在處方用料行');
+    }
+
+    // 其餘用到蘋果的處方，處理方式預設「帶皮」（原本的品名就是這個意思）
+    if (target) {
+      db.prepare(
+        "UPDATE prescription_ingredients SET prep='帶皮' WHERE ingredient_id=? AND COALESCE(prep,'')=''"
+      ).run(target.id);
+    }
+    db.prepare("INSERT OR REPLACE INTO settings (key,value) VALUES ('merged_apple_items', datetime('now','localtime'))").run();
+  } catch (e) {
+    try { db.exec('PRAGMA foreign_keys = ON'); } catch (x) {}
+    console.error('蘋果合併失敗:', e.message);
+  }
+}
 
 // 清除重複食材：暫停 FK 檢查，安全地搬移再刪除
 db.exec('PRAGMA foreign_keys = OFF');
 [
-  ['蘋果',       '蘋果(帶皮)'],
-  ['蘋果(去皮)', '蘋果(純皮)'],
+  ['蘋果(帶皮)', '蘋果'],
   ['帶皮奇異果', '奇異果'],
   ['帶皮檸檬',   '檸檬'],
   ['檸檬帶皮',   '檸檬'],
@@ -228,9 +305,10 @@ db.exec('PRAGMA foreign_keys = OFF');
 });
 db.exec('PRAGMA foreign_keys = ON');
 
+mergeApples();   // 必須在上面的改名與去重之後，此時「蘋果」這個品項才存在
+
 // 新增食材（不存在才加）
 [
-  ['蘋果(純皮)', 'g',  '水果', 21],
   ['MCT',        'ml', '油',   53],
   ['亞麻仁油',   'ml', '油',   54],
   ['水',         'ml', '水',   60],
@@ -244,7 +322,7 @@ db.exec('PRAGMA foreign_keys = ON');
 // 設定食材顯示排序
 [
   ['芽菜',10],['羽衣甘藍',11],['貝比生菜',12],['小麥草',13],['胡蘿蔔',14],['甜菜根',15],
-  ['蘋果(帶皮)',20],['蘋果(純皮)',21],['檸檬',22],['莓果',23],['奇異果',24],['香蕉',25],['木瓜',26],['鳳梨',27],
+  ['蘋果',20],['檸檬',22],['莓果',23],['奇異果',24],['香蕉',25],['木瓜',26],['鳳梨',27],
   ['燕麥',30],['核桃',31],['薑黃粉',32],['肉桂粉',33],['薑粉',34],['藜麥粉',35],['蛋白粉',36],['黑胡椒',37],
   ['AstragIN',40],['Senactiv',41],['益生菌',42],
   ['橄欖油',50],['苦茶油',51],['酪梨油',52],['MCT',53],['亞麻仁油',54],['水',60],
@@ -336,8 +414,7 @@ db.exec('PRAGMA foreign_keys = ON');
   ['小麥草',     0.21,  0.021, 'USDA'],
   ['胡蘿蔔',     0.41,  0.009, 'USDA'],
   ['甜菜根',     0.43,  0.016, 'USDA'],
-  ['蘋果(帶皮)', 0.52,  0.003, 'USDA'],
-  ['蘋果(純皮)', 0.57,  0.004, 'USDA'],
+  ['蘋果',       0.52,  0.003, 'USDA'],
   ['檸檬',       0.29,  0.011, 'USDA'],
   ['莓果',       0.50,  0.008, 'USDA'],
   ['奇異果',     0.61,  0.011, 'USDA'],
@@ -903,14 +980,16 @@ app.put('/api/products/:id', (req, res) => {
 function buildPrepAndPowder(rxId, multiplier, unit, powderMultiplier) {
   powderMultiplier = powderMultiplier || 1.0;
   const allItems = db.prepare(
-    `SELECT pi.qty_per_cup, i.name, i.unit, i.category FROM prescription_ingredients pi
+    `SELECT pi.qty_per_cup, COALESCE(pi.prep,'') prep_note, i.name, i.unit, i.category
+     FROM prescription_ingredients pi
      JOIN ingredients i ON i.id=pi.ingredient_id
      WHERE pi.prescription_id=? AND pi.qty_per_cup>0 ORDER BY i.sort_order, i.category, i.name`
   ).all(rxId);
-  // prep = 鮮食（蔬菜/水果/油/水/其他）
+  // prep = 鮮食（蔬菜/水果/油/水/其他）。prep_note 是處理方式，備料時要看得到
   const freshCats = new Set(['蔬菜', '水果', '油水', '油', '水', '其他']);
   const prep = allItems.filter(r => freshCats.has(r.category)).map(r => ({
     name: r.name, unit: r.unit, category: r.category,
+    prep_note: r.prep_note,
     per_serving: r.qty_per_cup,
     total: Math.round(r.qty_per_cup * multiplier * 10) / 10
   }));
@@ -1221,23 +1300,30 @@ app.delete('/api/prescriptions/:id', (req, res) => {
 app.get('/api/prescriptions/:id/ingredients', (req, res) => {
   const all = db.prepare('SELECT id, name, unit, category, sort_order FROM ingredients WHERE active=1 ORDER BY sort_order, category, name').all();
   const used = db.prepare(
-    `SELECT pi.ingredient_id, pi.qty_per_cup FROM prescription_ingredients pi WHERE pi.prescription_id=?`
+    `SELECT pi.ingredient_id, pi.qty_per_cup, COALESCE(pi.prep,'') prep
+     FROM prescription_ingredients pi WHERE pi.prescription_id=?`
   ).all(req.params.id);
   const usedMap = {};
-  used.forEach(u => { usedMap[u.ingredient_id] = u.qty_per_cup; });
-  res.json(all.map(i => ({ ...i, qty_per_cup: usedMap[i.id] || 0 })));
+  used.forEach(u => { usedMap[u.ingredient_id] = u; });
+  res.json(all.map(i => ({
+    ...i,
+    qty_per_cup: usedMap[i.id] ? usedMap[i.id].qty_per_cup : 0,
+    prep:        usedMap[i.id] ? usedMap[i.id].prep : ''
+  })));
 });
 
 // 更新處方食材（完整覆蓋）
 app.put('/api/prescriptions/:id/ingredients', (req, res) => {
-  const items = req.body; // [{ingredient_id, qty_per_cup}]
+  const items = req.body; // [{ingredient_id, qty_per_cup, prep}]
   tx(() => {
     db.prepare('DELETE FROM prescription_ingredients WHERE prescription_id=?').run(req.params.id);
     const ins = db.prepare(
-      'INSERT INTO prescription_ingredients (prescription_id,ingredient_id,qty_per_cup) VALUES (?,?,?)'
+      'INSERT INTO prescription_ingredients (prescription_id,ingredient_id,qty_per_cup,prep) VALUES (?,?,?,?)'
     );
     items.forEach(item => {
-      if (item.qty_per_cup > 0) ins.run(req.params.id, item.ingredient_id, item.qty_per_cup);
+      if (item.qty_per_cup > 0) {
+        ins.run(req.params.id, item.ingredient_id, item.qty_per_cup, (item.prep || '').trim());
+      }
     });
   });
   res.json({ ok: true });
