@@ -1884,6 +1884,17 @@
     .nc-story { font-size: 13px; color: var(--text2); line-height: 1.7; }
     .nc-actions { display: flex; gap: 8px; margin-top: 10px; }
 
+    /* 只看精力湯／只看餐盒。筆數一起顯示，才知道藏了多少 */
+    .sch-filter { display: flex; gap: 6px; margin: 8px 0 10px; flex-wrap: wrap; }
+    .sch-filter button {
+      flex: 1; min-width: 84px; min-height: 38px; padding: 6px 10px;
+      font-size: 12px; font-weight: 700; cursor: pointer;
+      background: var(--bg); color: var(--text2);
+      border: 1.5px solid var(--border); border-radius: var(--radius-md);
+    }
+    .sch-filter button.on { background: var(--primary); color: #fff; border-color: var(--primary); }
+    .sch-filter button:disabled { opacity: .4; cursor: default; }
+
     /* 出餐時間軸：每一列自帶操作，不必再捲到下面找卡片 */
     .schedule-title { display: flex; align-items: center; gap: 10px; }
     .sch-actions { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }

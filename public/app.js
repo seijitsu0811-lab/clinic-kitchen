@@ -23,6 +23,7 @@ const App = (() => {
   let restoredLeaves   = new Set(); // 休假卻仍出席者，由伺服器狀態推導
   let showPrepBatches  = false;     // 鮮食表的分批量預設收起（秤料看總量就夠）
   let showFutureCases  = false;     // 預約出單預設收起（那不是今天要做的事）
+  let schFilter        = 'all';     // 出餐時間軸的篩選：all / tonic / meal
   let dayNotes         = {};        // 每個產品的今日備料備註（跟著日期走，全廚房共用）
   let dayQc            = {};        // 今日品質確認清單（全廚房共用）
 
@@ -522,6 +523,25 @@ const App = (() => {
     }
 
     if (ordered.length === 0) return '<div class="sch-empty">今日無出單</div>';
+
+    // 中午出餐時精力湯和餐盒混在一起，需要時可以只看其中一種。
+    // 筆數一起顯示，才知道被藏起來的有多少。這是看的人的偏好，不進共用狀態
+    const isMeal = it => it.type === 'meal';
+    const counts = {
+      all:   ordered.length,
+      tonic: ordered.filter(it => !isMeal(it)).length,
+      meal:  ordered.filter(isMeal).length
+    };
+    if (schFilter === 'tonic') ordered = ordered.filter(it => !isMeal(it));
+    if (schFilter === 'meal')  ordered = ordered.filter(isMeal);
+
+    const filterBar = counts.meal > 0 ? `
+      <div class="sch-filter">
+        ${[['all', '全部'], ['tonic', '🥤 精力湯'], ['meal', '🍱 餐盒']].map(([k, label]) =>
+          `<button class="${schFilter === k ? 'on' : ''}"${counts[k] ? '' : ' disabled'}
+                   onclick="App.setSchFilter('${k}')">${label} ${counts[k]}</button>`).join('')}
+      </div>` : '';
+
     const rows = ordered.map(it => `
       <div class="sch-item sch-draggable${it.type==='staff'?' sch-staff':''}${it.done?' sch-done':''}"
            draggable="true" data-key="${it.key}"
@@ -547,7 +567,8 @@ const App = (() => {
         <button class="btn btn-primary btn-sm" style="margin-left:auto"
                 onclick="App.openAddCase(${prod ? prod.id : 1})">＋ 出單</button>
       </div>
-      <div id="schList">${rows}</div>`;
+      ${filterBar}
+      <div id="schList">${rows.length ? rows : '<div class="sch-empty">這個篩選下沒有項目</div>'}</div>`;
   }
 
   // 每一列自己帶操作 —— 以前要捲到下面的個案卡片才能編輯或刪除
@@ -1241,6 +1262,13 @@ const App = (() => {
     else openCaseRecipes.add(id);
     _rerenderProducts();
     // 配方現在也可以從出餐時間軸展開，那一區要一起重畫
+    if (lastTodayData) {
+      const el = document.getElementById('todaySchedule');
+      if (el) el.innerHTML = _renderSchedule(lastTodayData);
+    }
+  }
+  function setSchFilter(v) {
+    schFilter = v;
     if (lastTodayData) {
       const el = document.getElementById('todaySchedule');
       if (el) el.innerHTML = _renderSchedule(lastTodayData);
@@ -3348,7 +3376,7 @@ const App = (() => {
     loadTrialRecipes, openAddTrial, openEditTrial, saveTrial, deleteTrial,
     openAddTrialSession, saveTrialSession, deleteTrialSession,
     loadSOP, toggleQC, resetQC, saveBatchNotes,
-    toggleCaseRecipe, togglePrepBatches, toggleFutureCases,
+    toggleCaseRecipe, togglePrepBatches, toggleFutureCases, setSchFilter,
     openStocktake, saveStocktake, reverseAutoSettle, toggleAutoSettle, ackAutoSettle,
     renderMealOrderVendor,
     downloadBackup, runBackupNow,
