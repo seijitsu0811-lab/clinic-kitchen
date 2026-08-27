@@ -1884,6 +1884,16 @@
     .nc-story { font-size: 13px; color: var(--text2); line-height: 1.7; }
     .nc-actions { display: flex; gap: 8px; margin-top: 10px; }
 
+    /* 建單時就看得到要去哪家、走多久 —— 不用再翻採購單 */
+    .mo-vendor {
+      margin-top: 8px; padding: 10px 12px;
+      background: var(--bg); border: 1px solid var(--border);
+      border-radius: var(--radius-md); font-size: 13px; line-height: 1.75;
+    }
+    .mo-shop { font-weight: 700; color: var(--text); }
+    .mo-meta { display: flex; flex-wrap: wrap; gap: 4px 14px; color: var(--text2); font-size: 12px; margin-top: 2px; }
+    .mo-meta strong { color: var(--text); }
+
     /* 廚房是站著操作、手上可能濕的環境，套餐頁的觸控目標比全站慣例大一號 */
     #page-meal .btn-sm { min-height: 44px; padding: 9px 16px; font-size: 14px; }
     #page-meal .vendor-card .btn { min-height: 48px; padding: 12px 20px; font-size: 15px; }
@@ -2977,7 +2987,8 @@
     <input type="hidden" id="mealOrderId">
     <div class="form-group">
       <label>餐盒品項</label>
-      <select id="mealOrderItem"></select>
+      <select id="mealOrderItem" onchange="App.renderMealOrderVendor()"></select>
+      <div id="mealOrderVendor"></div>
     </div>
     <div class="form-group">
       <label>採購方式</label>

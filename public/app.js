@@ -2924,12 +2924,44 @@ const App = (() => {
   }
 
   // ── 出單 CRUD ─────────────────────────────────────────
+  // 這是後台建單用的，顯示店家沒問題 —— 個案端走 /api/meals/menu/case，那條路徑沒有店家欄位。
+  // 分組標題帶出「要去哪家、走多久」，光看選單就知道這一趟要花多少時間
   function mealItemOptions(selectedId) {
     if (!mealMenu) return '';
-    return mealMenu.series.map(s => `
-      <optgroup label="${esc(s.name)}">
+    return mealMenu.series.map(s => {
+      const shop = s.vendor_name
+        ? s.vendor_name + (s.walk_minutes ? `・步行 ${s.walk_minutes} 分` : '')
+        : '未指定店家';
+      return `
+      <optgroup label="${esc(s.name)}　→　${esc(shop)}">
         ${s.items.map(i => `<option value="${i.id}" ${i.id === selectedId ? 'selected' : ''}>${PTAG_ICON[i.protein] || ''} ${esc(i.display_name)}（${i.kcal} kcal / $${i.price_box}）</option>`).join('')}
-      </optgroup>`).join('');
+      </optgroup>`;
+    }).join('');
+  }
+
+  function _mealSeriesOf(itemId) {
+    if (!mealMenu) return null;
+    return mealMenu.series.find(s => s.items.some(i => i.id === Number(itemId))) || null;
+  }
+
+  // 選定品項後，把該去哪家、走多久、電話、店家品名直接放在選單下面，
+  // 要出門買的時候不必再翻採購單
+  function renderMealOrderVendor() {
+    const el  = document.getElementById('mealOrderVendor');
+    const sel = document.getElementById('mealOrderItem');
+    if (!el || !sel) return;
+    const s = _mealSeriesOf(sel.value);
+    if (!s || !s.vendor_name) { el.innerHTML = ''; return; }
+    const item = s.items.find(i => i.id === Number(sel.value));
+    el.innerHTML = `
+      <div class="mo-vendor">
+        <div class="mo-shop">🏪 ${esc(s.vendor_name)}${s.vendor_branch ? '　' + esc(s.vendor_branch) : ''}</div>
+        <div class="mo-meta">
+          ${s.walk_minutes ? `<span>🚶 步行 ${s.walk_minutes} 分（來回含取餐約 ${s.walk_minutes * 2 + 5} 分）</span>` : ''}
+          ${s.vendor_phone ? `<span>📞 ${esc(s.vendor_phone)}</span>` : ''}
+          ${item ? `<span>採購名：<strong>${esc(item.vendor_item_name || item.display_name)}</strong></span>` : ''}
+        </div>
+      </div>`;
   }
 
   function caseOrderOptions(selectedId) {
@@ -2945,6 +2977,7 @@ const App = (() => {
     document.getElementById('mealOrderTitle').textContent = '新增餐盒';
     document.getElementById('mealOrderId').value    = '';
     document.getElementById('mealOrderItem').innerHTML = mealItemOptions(null);
+    renderMealOrderVendor();
     document.getElementById('mealOrderItem').disabled = false;   // 編輯模式會鎖住，這裡要解開
     document.getElementById('mealOrderMode').value  = '餐盒';
     document.getElementById('mealOrderQty').value   = 1;
@@ -2962,6 +2995,7 @@ const App = (() => {
     document.getElementById('mealOrderTitle').textContent = '編輯餐盒出單';
     document.getElementById('mealOrderId').value    = o.id;
     document.getElementById('mealOrderItem').innerHTML = mealItemOptions(o.meal_item_id);
+    renderMealOrderVendor();
     document.getElementById('mealOrderItem').disabled = true;
     document.getElementById('mealOrderMode').value  = o.purchase_mode;
     document.getElementById('mealOrderQty').value   = o.qty;
@@ -3058,7 +3092,7 @@ const App = (() => {
       <div style="margin-bottom:22px">
         <div class="section-head" style="margin-bottom:8px">
           <h2 style="font-size:15px">${esc(s.name)}</h2>
-          <span class="vendor-meta">後台對接：${esc(s.vendor_name || '未指定')}${s.vendor_branch ? '（' + esc(s.vendor_branch) + '）' : ''}</span>
+          <span class="vendor-meta">後台對接：${esc(s.vendor_name || '未指定')}${s.vendor_branch ? '（' + esc(s.vendor_branch) + '）' : ''}${s.walk_minutes ? '・步行 ' + s.walk_minutes + ' 分' : ''}${s.vendor_phone ? '・' + esc(s.vendor_phone) : ''}</span>
         </div>
         <div style="font-size:12px;color:var(--text3);margin-bottom:10px">${esc(s.tagline)}</div>
         <div class="menu-grid">
@@ -3243,6 +3277,7 @@ const App = (() => {
     openAddTrialSession, saveTrialSession, deleteTrialSession,
     loadSOP, toggleQC, resetQC, saveBatchNotes,
     openStocktake, saveStocktake, reverseAutoSettle, toggleAutoSettle, ackAutoSettle,
+    renderMealOrderVendor,
     downloadBackup, runBackupNow,
     toggleLeaveRestore,
     loadMeals, switchMealTab, switchMealView, advanceMealStatus, goBuyMeals,

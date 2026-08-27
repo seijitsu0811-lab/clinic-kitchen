@@ -42,8 +42,15 @@ if (rx) {
   rx = { id: r.id, code: 'ZZ-TEST' };
 }
 await api(`/api/prescriptions/${rx.id}/ingredients`, 'PUT', [{ ingredient_id: oat.id, qty_per_cup: 10 }]);
+
+// 先用盤點把庫存設到已知數量。測試不能依賴環境裡剩多少 ——
+// 扣庫存有 MAX(0,…) 保護，起始量太低時扣了也不會變，斷言就會假失敗
+const origQty = await qtyOf('燕麥');
+await api('/api/stocktake', 'POST',
+  { note: 'ZZ 測試前置：把燕麥設到已知量', items: [{ ingredient_id: oat.id, counted_qty: 500 }] });
 const startQty = await qtyOf('燕麥');
-check('測試處方就緒（燕麥 10g/杯）', startQty != null, `燕麥起始 ${startQty}g`);
+check('測試處方與起始庫存就緒（燕麥 10g/杯）', startQty === 500,
+      `燕麥 ${origQty}g → 起始 ${startQty}g`);
 
 line('\n━━ 1. 扣庫存會留下紀錄 ━━');
 await api('/api/inventory/consume', 'POST', { prescription_id: rx.id, cups: 2, date: yday });
@@ -118,10 +125,10 @@ for (const c of await api('/api/consumption/auto?days=3')) {
   await api(`/api/consumption/${c.id}/reverse`, 'POST').catch(() => {});
 }
 await api(`/api/prescriptions/${rx.id}`, 'DELETE');
-// 最後才用盤點把庫存壓回起始值
+// 最後用盤點把庫存還原成測試開始前的樣子
 await api('/api/stocktake', 'POST',
-  { note: 'ZZ 還原', items: [{ ingredient_id: oat.id, counted_qty: startQty }] });
-check('燕麥回到起始值', (await qtyOf('燕麥')) === startQty, `${await qtyOf('燕麥')} / ${startQty}`);
+  { note: 'ZZ 還原', items: [{ ingredient_id: oat.id, counted_qty: origQty }] });
+check('燕麥還原成測試前的數量', (await qtyOf('燕麥')) === origQty, `${await qtyOf('燕麥')} / ${origQty}`);
 
 line(`\n${'─'.repeat(46)}`);
 line(`通過 ${pass} 項，失敗 ${fail} 項`);
