@@ -600,7 +600,7 @@ function normName(s) {
 // 0=日 1=一 2=二 3=三 4=四 5=五 6=六
 // 只在這裡定義一次：出席預設、庫存試算、SOP 說明全部讀這個常數。
 // 之前出席邏輯和庫存試算各寫一份 [2,4,5]，改一邊就會不一致。
-const STAFF_MEAL_DOWS = [2, 5];   // 週二、週五
+const STAFF_MEAL_DOWS = [2, 4];   // 週二、週四
 const DOW_LABEL = ['日', '一', '二', '三', '四', '五', '六'];
 
 function isStaffMealDay(dow) { return STAFF_MEAL_DOWS.includes(dow); }
@@ -1225,11 +1225,20 @@ app.post('/api/today/cases', (req, res) => {
 
 // 更新個案出單（含日期）
 app.put('/api/today/cases/:id', (req, res) => {
-  const { cups, meal_time, powder_type, patient_name, notes, date } = req.body;
-  const orderDate = date || today();
+  // prescription_id 原本沒有被更新：畫面上改了處方、存檔顯示成功，資料卻沒動。
+  // 個案因此永遠留在原本的處方，也就進不了員工批次。
+  const { prescription_id, cups, meal_time, powder_type, patient_name, notes, date } = req.body;
+  const cur = db.prepare('SELECT prescription_id FROM case_orders WHERE id=?').get(req.params.id);
+  if (!cur) return res.status(404).json({ error: '找不到這筆出單' });
+
   db.prepare(
-    `UPDATE case_orders SET date=?,cups=?,meal_time=?,powder_type=?,patient_name=?,notes=? WHERE id=?`
-  ).run(orderDate, cups, meal_time, powder_type||'袋裝', patient_name||'', notes||'', req.params.id);
+    `UPDATE case_orders SET date=?,prescription_id=?,cups=?,meal_time=?,powder_type=?,patient_name=?,notes=?
+     WHERE id=?`
+  ).run(
+    date || today(),
+    Number(prescription_id) || cur.prescription_id,
+    cups, meal_time, powder_type||'袋裝', patient_name||'', notes||'', req.params.id
+  );
   res.json({ ok: true });
 });
 
