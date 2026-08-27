@@ -491,7 +491,24 @@ const App = (() => {
       else                                 { icon = '🥤'; detail = `${c.rx_name} ${c.cups}杯`; }
       const noteText = [c.contraindications, c.notes].filter(Boolean).join(' · ');
       items.push({ key: `case_${c.id}`, sk: `${mt}_1`, timeLabel: tFmt, type: 'case',
-        name: `${icon} ${who}`, detail, noteText, done: casePickedUp.has(c.id) });
+        name: `${icon} ${who}`, detail, noteText, done: casePickedUp.has(c.id),
+        caseId: c.id, prescriptionId: c.prescription_id, powderType: c.powder_type || '袋裝',
+        recipe: _caseRecipeBody(c, (prod && prod.unit) || '杯') });
+    });
+
+    // 餐盒。出餐時精力湯和便當是一起端出去的，放同一條時間軸，
+    // 不再自成一段掛在頁尾
+    ((d.meals && d.meals.orders) || []).forEach(o => {
+      const mt = o.meal_time || '0000';
+      const tFmt = mt.length === 4 ? `${mt.slice(0,2)}:${mt.slice(2)}` : mt;
+      items.push({
+        key: `meal_${o.id}`, sk: `${mt}_2`, timeLabel: tFmt, type: 'meal',
+        name: `🍱 ${o.patient_name || '員工'}`,
+        detail: [o.display_name + (o.qty > 1 ? ' ×' + o.qty : ''), o.kcal + ' kcal', o.vendor_name]
+                  .filter(Boolean).join(' · '),
+        noteText: o.notes || '', done: o.status === '已出餐',
+        mealId: o.id, mealStatus: o.status
+      });
     });
 
     // 套用手動順序或依時間排序
@@ -518,10 +535,41 @@ const App = (() => {
           <div class="sch-name">${esc(it.name)}</div>
           <div class="sch-detail">${esc(it.detail)}</div>
           ${it.noteText ? `<div class="sch-note">📝 ${esc(it.noteText)}</div>` : ''}
+          ${_schActions(it)}
+          ${it.type === 'case' && it.recipe && openCaseRecipes.has(it.caseId)
+            ? `<div class="sch-recipe">${it.recipe}</div>` : ''}
         </div>
         ${it.done ? '<div class="sch-done-mark">✓</div>' : ''}
       </div>`).join('');
-    return `<div class="schedule-title">📋 今日出餐順序</div><div id="schList">${rows}</div>`;
+    return `
+      <div class="schedule-title">
+        📋 今日出餐順序
+        <button class="btn btn-primary btn-sm" style="margin-left:auto"
+                onclick="App.openAddCase(${prod ? prod.id : 1})">＋ 出單</button>
+      </div>
+      <div id="schList">${rows}</div>`;
+  }
+
+  // 每一列自己帶操作 —— 以前要捲到下面的個案卡片才能編輯或刪除
+  function _schActions(it) {
+    if (it.type === 'case') {
+      return `<div class="sch-actions">
+        <button onclick="event.stopPropagation();App.toggleCasePickup(${it.caseId})">${it.done ? '取消拿取' : '拿取'}</button>
+        ${it.recipe ? `<button onclick="event.stopPropagation();App.toggleCaseRecipe(${it.caseId})">${openCaseRecipes.has(it.caseId) ? '收起配方' : '配方'}</button>` : ''}
+        <button onclick="event.stopPropagation();App.openCaseMenuFor(${it.prescriptionId},'${esc(it.powderType)}')">菜單</button>
+        <button onclick="event.stopPropagation();App.openEditCase(${it.caseId})">編輯</button>
+        <button class="sch-del" onclick="event.stopPropagation();App.deleteCase(${it.caseId})">刪除</button>
+      </div>`;
+    }
+    if (it.type === 'meal') {
+      return `<div class="sch-actions">
+        <span class="sch-status">${esc(it.mealStatus)}</span>
+        <button onclick="event.stopPropagation();App.advanceMealStatus(${it.mealId})">推進狀態</button>
+        <button onclick="event.stopPropagation();App.openEditMealOrder(${it.mealId})">編輯</button>
+        <button class="sch-del" onclick="event.stopPropagation();App.deleteMealOrder(${it.mealId})">刪除</button>
+      </div>`;
+    }
+    return '';
   }
 
   function renderTodaySection1(d) {
@@ -1000,22 +1048,9 @@ const App = (() => {
           placeholder="今日備料備註...">${esc(dayNotes[prod.id] || '')}</textarea>
       </div>`;
 
-    // 個案出單 — 外帶 / 內用 分組
-    let casesHtml = '';
-    if (prod.cases.length === 0) {
-      casesHtml = `<div class="empty"><div class="ei">📋</div>今日尚無個案出單</div>`;
-    } else {
-      const takeout = prod.cases.filter(c => c.powder_type !== '內用');
-      const inuse   = prod.cases.filter(c => c.powder_type === '內用');
-      if (takeout.length > 0) {
-        casesHtml += `<div class="case-group-head">🛍 外帶（${takeout.length}）</div>`;
-        casesHtml += takeout.map(c => renderCaseCard(c, unit)).join('');
-      }
-      if (inuse.length > 0) {
-        casesHtml += `<div class="case-group-head">🍽 內用（${inuse.length}）</div>`;
-        casesHtml += inuse.map(c => renderCaseCard(c, unit)).join('');
-      }
-    }
+    // 今日個案出單改由「今日出餐順序」呈現，這裡不再重複列一次。
+    // 個案資料仍要進 caseDataMap（禁忌確認、拿取等等會用到）
+    prod.cases.forEach(c => { caseDataMap[c.id] = c; });
 
     // 預約出單（未來日期）按日期分組
     let futureHtml = '';
@@ -1062,11 +1097,9 @@ const App = (() => {
         </div>
         ${notesSection}
 
-        <div class="section-head" style="margin-top:20px">
-          <span class="product-hname">▌C 個案出單</span>
-          <button class="btn btn-primary btn-sm" onclick="App.openAddCase(${prod.id})">＋ 新增</button>
-        </div>
-        ${casesHtml}
+        <!-- 個案出單卡片已併入「今日出餐順序」：同一批資料不要兩種呈現。
+             那條時間軸每一列都自帶 拿取／配方／菜單／編輯／刪除，
+             而且精力湯和餐盒在同一條線上，出餐時本來就是一起端出去的 -->
 
         <div class="section-head" style="margin-top:24px">
           <span class="product-hname">▌D 預約出單</span>
@@ -1077,6 +1110,52 @@ const App = (() => {
         <!-- 未來 14 天的單不是今天要做的事，預設收起來 -->
         ${showFutureCases ? `<div class="future-cases-box">${futureHtml}</div>` : ''}
       </div>`;
+  }
+
+  // 個案配方的內容（蔬果分區、粉類、保健品）。出餐時間軸和預約出單都用這一份，
+  // 不要各寫一次 —— 這正是這頁原本每個食材出現七次的原因
+  function _caseRecipeBody(c, unit) {
+    const pm = c.powder?.powder_multiplier || 1;
+    const powderItems = c.powder?.items || [];
+    const grid = (items, mapper) => `<div class="prep-grid">${items.map(mapper).join('')}</div>`;
+    const prepGrid = items => grid(items, p => `
+      <div class="prep-item">
+        <div class="pi-name">${esc(p.name)}${p.prep_note ? `<span class="prep-note">${esc(p.prep_note)}</span>` : ''}</div>
+        <div class="pi-val">${p.total}${p.unit}
+          <span style="font-size:11px;color:var(--text3)">×${c.cups}${unit}</span></div>
+      </div>`);
+    const powderGrid = (items, mult) => grid(items, p => {
+      const tot = Math.round(p.qty * c.cups * mult * 10) / 10;
+      const note = mult > 1 ? ` <span style="font-size:10px;color:var(--orange)">×${mult}</span>` : '';
+      return `<div class="prep-item">
+        <div class="pi-name">${esc(p.name)}</div>
+        <div class="pi-val">${tot}${p.unit}${note}
+          <span style="font-size:11px;color:var(--text3)">×${c.cups}${unit}</span></div>
+      </div>`;
+    });
+
+    let body = '';
+    if (c.powder_type === '全配方') {
+      const veg   = c.prep.filter(p => p.category === '蔬菜');
+      const fruit = c.prep.filter(p => p.category === '水果');
+      const oil   = c.prep.filter(p => p.category !== '蔬菜' && p.category !== '水果');
+      if (veg.length)   body += `<div class="prep-storage-head">🥬 蔬菜 <span class="storage-badge cold">冷藏</span></div>${prepGrid(veg)}`;
+      if (fruit.length) body += `<div class="prep-storage-head">🍎 水果 <span class="storage-badge freeze">冷凍</span></div>${prepGrid(fruit)}`;
+      if (oil.length)   body += `<div class="prep-storage-head" style="margin-top:8px">🫒 油水</div>${prepGrid(oil)}`;
+      if (powderItems.length) body += `<div class="prep-storage-head">🧪 粉類 <span class="storage-badge jar">罐裝 ×1.1</span></div>${powderGrid(powderItems, pm)}`;
+    } else if (c.formula_type !== '粉配方' && c.prep.length > 0) {
+      body = prepGrid(c.prep);
+    } else if (c.formula_type === '粉配方' && powderItems.length > 0) {
+      body = powderGrid(powderItems, pm);
+    }
+    if ((c.supplements || []).length > 0) {
+      body += `<div class="supp-grid">${c.supplements.map(s => `
+        <div class="supp-item">
+          <div class="si-name">${esc(s.name)}</div>
+          <div class="si-val">${s.total}${s.unit}</div>
+        </div>`).join('')}</div>`;
+    }
+    return body;
   }
 
   function renderCaseCard(c, unit) {
@@ -1129,62 +1208,11 @@ const App = (() => {
         ${notesHtml}
         ${casePowderHtml}
         ${(() => {
-          // 用員工標準配方的個案：份量已經併進上方「員工批次」的備料總量。
-          // 再把 11 樣食材攤開一次，既重複又沒人會照它秤料 —— 秤料看的是總量表。
-          if (c.is_staff_rx) {
-            return `<div class="case-inherit">份量已併入上方「員工批次」備料總量</div>`;
-          }
-
-          const pm = c.powder?.powder_multiplier || 1;
-          const powderItems = c.powder?.items || [];
-          function prepGrid(items) {
-            return `<div class="prep-grid">${items.map(p => `
-              <div class="prep-item">
-                <div class="pi-name">${esc(p.name)}</div>
-                <div class="pi-val">${p.total}${p.unit}
-                  <span style="font-size:11px;color:var(--text3)">×${c.cups}${unit}</span>
-                </div>
-              </div>`).join('')}</div>`;
-          }
-          function powderGrid(items, mult) {
-            return `<div class="prep-grid">${items.map(p => {
-              const tot = Math.round(p.qty * c.cups * mult * 10) / 10;
-              const note = mult > 1 ? ` <span style="font-size:10px;color:var(--orange)">×${mult}</span>` : '';
-              return `<div class="prep-item">
-                <div class="pi-name">${esc(p.name)}</div>
-                <div class="pi-val">${tot}${p.unit}${note}
-                  <span style="font-size:11px;color:var(--text3)">×${c.cups}${unit}</span>
-                </div>
-              </div>`;
-            }).join('')}</div>`;
-          }
-
-          let body = '';
-          if (c.powder_type === '全配方') {
-            // 全配方：蔬菜(冷藏) + 水果(冷凍) + 油水 + 粉×1.1
-            const veg   = c.prep.filter(p => p.category === '蔬菜');
-            const fruit = c.prep.filter(p => p.category === '水果');
-            const oil   = c.prep.filter(p => p.category !== '蔬菜' && p.category !== '水果');
-            if (veg.length)   body += `<div class="prep-storage-head">🥬 蔬菜 <span class="storage-badge cold">冷藏</span></div>${prepGrid(veg)}`;
-            if (fruit.length) body += `<div class="prep-storage-head">🍎 水果 <span class="storage-badge freeze">冷凍</span></div>${prepGrid(fruit)}`;
-            if (oil.length)   body += `<div class="prep-storage-head" style="margin-top:8px">🫒 油水</div>${prepGrid(oil)}`;
-            if (powderItems.length) body += `<div class="prep-storage-head">🧪 粉類 <span class="storage-badge jar">罐裝 ×1.1</span></div>${powderGrid(powderItems, pm)}`;
-          } else if (c.formula_type !== '粉配方' && c.prep.length > 0) {
-            body = prepGrid(c.prep);
-          } else if (c.formula_type === '粉配方' && powderItems.length > 0) {
-            body = powderGrid(powderItems, pm);
-          }
-          if ((c.supplements || []).length > 0) {
-            body += `<div class="supp-grid">${c.supplements.map(s => `
-              <div class="supp-item">
-                <div class="si-name">${esc(s.name)}</div>
-                <div class="si-val">${s.total}${s.unit}</div>
-              </div>`).join('')}</div>`;
-          }
+          // 用員工標準配方的個案：份量已經併進上方「員工批次」的備料總量，
+          // 再攤開一次是重複，而且沒人會照個案卡片秤料
+          if (c.is_staff_rx) return `<div class="case-inherit">份量已併入上方「員工批次」備料總量</div>`;
+          const body = _caseRecipeBody(c, unit);
           if (!body) return '';
-
-          // 自己有處方的個案要單獨打，所以配方留著 —— 但預設收起來，
-          // 需要的時候才展開。四張卡同時攤開 11 樣食材，畫面會被吃掉
           const open = openCaseRecipes.has(c.id);
           return `
             <button class="case-recipe-toggle" onclick="App.toggleCaseRecipe(${c.id})">
@@ -1212,6 +1240,11 @@ const App = (() => {
     if (openCaseRecipes.has(id)) openCaseRecipes.delete(id);
     else openCaseRecipes.add(id);
     _rerenderProducts();
+    // 配方現在也可以從出餐時間軸展開，那一區要一起重畫
+    if (lastTodayData) {
+      const el = document.getElementById('todaySchedule');
+      if (el) el.innerHTML = _renderSchedule(lastTodayData);
+    }
   }
   function togglePrepBatches() { showPrepBatches = !showPrepBatches; _rerenderProducts(); }
   function toggleFutureCases() { showFutureCases = !showFutureCases; _rerenderProducts(); }
@@ -2812,14 +2845,20 @@ const App = (() => {
     switchMealView(currentMealView);
   }
 
+  // 餐盒的操作現在可能發生在今日頁的時間軸上，也可能在套餐頁 ——
+  // 改完之後要重新整理「使用者正在看的那一頁」
+  async function _refreshAfterMealChange() {
+    const onToday = document.getElementById('page-today')?.classList.contains('active');
+    if (onToday) await loadToday(); else await loadMeals();
+  }
+
   async function advanceMealStatus(id) {
     const o = mealDay?.orders.find(x => x.id === id);
     if (!o) return;
     const i = STATUS_FLOW.indexOf(o.status);
     if (i < 0 || i === STATUS_FLOW.length - 1) return;   // 已出餐是終點
     await api('/api/meals/orders/' + id, 'PUT', { status: STATUS_FLOW[i + 1] });
-    await loadMeals();
-    if (lastTodayData) { lastTodayData.meals = mealDay; renderTodayMeals(mealDay); }
+    await _refreshAfterMealChange();
   }
 
   function guessProtein(itemId) {
@@ -2945,28 +2984,13 @@ const App = (() => {
     switchTab('meal');
   }
 
-  // ── 今日工作單裡的餐盒出餐清單 ────────────────────────
+  // 餐盒已經併進「今日出餐順序」，不再另外列一段。
+  // 但當日資料仍要交給 mealDay，時間軸上的狀態推進與編輯才有資料可用
   function renderTodayMeals(meals) {
     renderMealAlert(meals);
-
     const block = document.getElementById('todayMealBlock');
-    const el    = document.getElementById('todayMeals');
-    if (!block || !el) return;
-    if (!meals || !meals.orders.length) { block.style.display = 'none'; return; }
-    block.style.display = 'block';
-    mealDay = meals;   // 讓狀態晶片在今日頁也能推進
-
-    el.innerHTML = `
-      <div class="card" style="padding:12px 16px">
-        ${meals.orders.map(o => `
-          <div class="pline">
-            <span class="pline-name">${esc(o.patient_name || '員工')}</span>
-            <span class="mode-tag">${hhmm(o.meal_time)}</span>
-            <span>${esc(o.display_name)}${o.qty > 1 ? ' ×' + o.qty : ''}</span>
-            <span class="pline-money">${o.kcal} kcal</span>
-            <span style="margin-left:8px">${statusChip(o)}</span>
-          </div>`).join('')}
-      </div>`;
+    if (block) block.style.display = 'none';
+    if (meals) mealDay = meals;
   }
 
   // ── 出單 CRUD ─────────────────────────────────────────
@@ -3035,8 +3059,10 @@ const App = (() => {
     openModal('modalMealOrder');
   }
 
-  function openEditMealOrder(id) {
-    const o = mealDay.orders.find(x => x.id === id);
+  async function openEditMealOrder(id) {
+    // 從今日頁點進來時，套餐頁可能還沒開過，菜單尚未載入
+    if (!mealMenu) { try { mealMenu = await api('/api/meals/menu'); } catch (e) { return alert(e.message); } }
+    const o = (mealDay?.orders || []).find(x => x.id === id);
     if (!o) return;
     document.getElementById('mealOrderTitle').textContent = '編輯餐盒出單';
     document.getElementById('mealOrderId').value    = o.id;
@@ -3078,7 +3104,7 @@ const App = (() => {
   async function deleteMealOrder(id) {
     if (!confirm('刪除這筆餐盒出單？')) return;
     await api('/api/meals/orders/' + id, 'DELETE');
-    await loadMeals();
+    await _refreshAfterMealChange();
   }
 
   // ── 採購回填 ──────────────────────────────────────────
