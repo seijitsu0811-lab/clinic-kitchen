@@ -21,6 +21,8 @@ const App = (() => {
   let deductedBatches  = new Set(); // 今日已扣庫存的批次（以成員組成為 key，不用位置編號）
   let deductedCases    = new Set(); // case ids already inventory-deducted today
   let restoredLeaves   = new Set(); // 休假卻仍出席者，由伺服器狀態推導
+  let showPrepBatches  = false;     // 鮮食表的分批量預設收起（秤料看總量就夠）
+  let showFutureCases  = false;     // 預約出單預設收起（那不是今天要做的事）
   let dayNotes         = {};        // 每個產品的今日備料備註（跟著日期走，全廚房共用）
   let dayQc            = {};        // 今日品質確認清單（全廚房共用）
 
@@ -868,9 +870,15 @@ const App = (() => {
       if (prod.staff_prep.length > 0) {
         prepHtml = `
           <div class="card">
-            <div class="card-title">${esc(prod.staff_rx.code)} 鮮食備料（共 ${prod.total_staff_cups} ${unit}）</div>
+            <div class="card-title">${esc(prod.staff_rx.code)} 鮮食備料（共 ${prod.total_staff_cups} ${unit}）
+              <button class="prep-btag-toggle" onclick="App.togglePrepBatches()">
+                ${showPrepBatches ? '收起分批量 ▴' : '看分批量 ▾'}
+              </button>
+            </div>
             ${prod.staff_prep.map(p => {
-              const batchRow = batches.length > 0
+              // 秤料時看總量就夠，分批量是打的時候才看 —— 預設收起來，
+              // 否則每一列都掛兩顆標籤，11 列就多出一倍高度
+              const batchRow = (showPrepBatches && batches.length > 0)
                 ? `<div class="prep-btag-row">${batches.map(b => {
                     const pb = Math.round(b.size * p.per_serving * 10) / 10;
                     return `<span class="prep-btag">${b.size}${unit}批 <strong>${pb}${p.unit}</strong></span>`;
@@ -1062,8 +1070,12 @@ const App = (() => {
 
         <div class="section-head" style="margin-top:24px">
           <span class="product-hname">▌D 預約出單</span>
+          <button class="btn btn-ghost btn-sm" onclick="App.toggleFutureCases()">
+            ${(prod.future_cases || []).length} 筆・${showFutureCases ? '收起 ▴' : '展開 ▾'}
+          </button>
         </div>
-        <div class="future-cases-box">${futureHtml}</div>
+        <!-- 未來 14 天的單不是今天要做的事，預設收起來 -->
+        ${showFutureCases ? `<div class="future-cases-box">${futureHtml}</div>` : ''}
       </div>`;
   }
 
@@ -1117,6 +1129,12 @@ const App = (() => {
         ${notesHtml}
         ${casePowderHtml}
         ${(() => {
+          // 用員工標準配方的個案：份量已經併進上方「員工批次」的備料總量。
+          // 再把 11 樣食材攤開一次，既重複又沒人會照它秤料 —— 秤料看的是總量表。
+          if (c.is_staff_rx) {
+            return `<div class="case-inherit">份量已併入上方「員工批次」備料總量</div>`;
+          }
+
           const pm = c.powder?.powder_multiplier || 1;
           const powderItems = c.powder?.items || [];
           function prepGrid(items) {
@@ -1141,34 +1159,62 @@ const App = (() => {
             }).join('')}</div>`;
           }
 
+          let body = '';
           if (c.powder_type === '全配方') {
             // 全配方：蔬菜(冷藏) + 水果(冷凍) + 油水 + 粉×1.1
             const veg   = c.prep.filter(p => p.category === '蔬菜');
             const fruit = c.prep.filter(p => p.category === '水果');
             const oil   = c.prep.filter(p => p.category !== '蔬菜' && p.category !== '水果');
-            let html = '';
-            if (veg.length)   html += `<div class="prep-storage-head">🥬 蔬菜 <span class="storage-badge cold">冷藏</span></div>${prepGrid(veg)}`;
-            if (fruit.length) html += `<div class="prep-storage-head">🍎 水果 <span class="storage-badge freeze">冷凍</span></div>${prepGrid(fruit)}`;
-            if (oil.length)   html += `<div class="prep-storage-head" style="margin-top:8px">🫒 油水</div>${prepGrid(oil)}`;
-            if (powderItems.length) html += `<div class="prep-storage-head">🧪 粉類 <span class="storage-badge jar">罐裝 ×1.1</span></div>${powderGrid(powderItems, pm)}`;
-            return html;
+            if (veg.length)   body += `<div class="prep-storage-head">🥬 蔬菜 <span class="storage-badge cold">冷藏</span></div>${prepGrid(veg)}`;
+            if (fruit.length) body += `<div class="prep-storage-head">🍎 水果 <span class="storage-badge freeze">冷凍</span></div>${prepGrid(fruit)}`;
+            if (oil.length)   body += `<div class="prep-storage-head" style="margin-top:8px">🫒 油水</div>${prepGrid(oil)}`;
+            if (powderItems.length) body += `<div class="prep-storage-head">🧪 粉類 <span class="storage-badge jar">罐裝 ×1.1</span></div>${powderGrid(powderItems, pm)}`;
           } else if (c.formula_type !== '粉配方' && c.prep.length > 0) {
-            return prepGrid(c.prep);
+            body = prepGrid(c.prep);
           } else if (c.formula_type === '粉配方' && powderItems.length > 0) {
-            return powderGrid(powderItems, pm);
+            body = powderGrid(powderItems, pm);
           }
-          return '';
+          if ((c.supplements || []).length > 0) {
+            body += `<div class="supp-grid">${c.supplements.map(s => `
+              <div class="supp-item">
+                <div class="si-name">${esc(s.name)}</div>
+                <div class="si-val">${s.total}${s.unit}</div>
+              </div>`).join('')}</div>`;
+          }
+          if (!body) return '';
+
+          // 自己有處方的個案要單獨打，所以配方留著 —— 但預設收起來，
+          // 需要的時候才展開。四張卡同時攤開 11 樣食材，畫面會被吃掉
+          const open = openCaseRecipes.has(c.id);
+          return `
+            <button class="case-recipe-toggle" onclick="App.toggleCaseRecipe(${c.id})">
+              ${open ? '收起配方 ▴' : '配方明細 ▾'}
+            </button>
+            <div class="case-recipe${open ? ' open' : ''}">${body}</div>`;
         })()}
-        ${(c.supplements || []).length > 0 ? `
-        <div class="supp-grid">
-          ${(c.supplements || []).map(s => `
-            <div class="supp-item">
-              <div class="si-name">${esc(s.name)}</div>
-              <div class="si-val">${s.total}${s.unit}</div>
-            </div>`).join('')}
-        </div>` : ''}
       </div>`;
   }
+
+  // 展開／收合狀態只影響這台裝置的畫面，不進當日共用狀態。
+  // 個案卡片與備料表都在 productSections 裡，要重繪的是這一塊
+  // （renderTodaySection1 畫的是批次分組與出餐順序，不含這些）
+  const openCaseRecipes = new Set();
+
+  function _rerenderProducts() {
+    const el = document.getElementById('productSections');
+    if (!el || !lastTodayData) return;
+    caseDataMap = {};
+    el.innerHTML = lastTodayData.products
+      .map(prod => renderProductSection(prod, lastTodayData.attending_count)).join('');
+  }
+
+  function toggleCaseRecipe(id) {
+    if (openCaseRecipes.has(id)) openCaseRecipes.delete(id);
+    else openCaseRecipes.add(id);
+    _rerenderProducts();
+  }
+  function togglePrepBatches() { showPrepBatches = !showPrepBatches; _rerenderProducts(); }
+  function toggleFutureCases() { showFutureCases = !showFutureCases; _rerenderProducts(); }
 
   async function toggleAttendance(userId, newVal) {
     await api(`/api/today/attendance/${userId}`, 'PUT', { attending: newVal });
@@ -3276,6 +3322,7 @@ const App = (() => {
     loadTrialRecipes, openAddTrial, openEditTrial, saveTrial, deleteTrial,
     openAddTrialSession, saveTrialSession, deleteTrialSession,
     loadSOP, toggleQC, resetQC, saveBatchNotes,
+    toggleCaseRecipe, togglePrepBatches, toggleFutureCases,
     openStocktake, saveStocktake, reverseAutoSettle, toggleAutoSettle, ackAutoSettle,
     renderMealOrderVendor,
     downloadBackup, runBackupNow,

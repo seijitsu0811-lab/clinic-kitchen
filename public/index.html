@@ -1884,6 +1884,22 @@
     .nc-story { font-size: 13px; color: var(--text2); line-height: 1.7; }
     .nc-actions { display: flex; gap: 8px; margin-top: 10px; }
 
+    /* 收合：重複或非當下需要的資料預設不佔版面 */
+    .case-inherit {
+      font-size: 12px; color: var(--text3); background: var(--bg);
+      border-radius: var(--radius-sm); padding: 7px 12px; margin-top: 8px;
+    }
+    .case-recipe-toggle, .prep-btag-toggle {
+      background: none; border: 1px solid var(--border); border-radius: 8px;
+      color: var(--text2); cursor: pointer; font-size: 12px; font-weight: 700;
+      padding: 5px 12px; min-height: 32px; margin-top: 8px;
+    }
+    .case-recipe-toggle:hover, .prep-btag-toggle:hover { color: var(--primary); border-color: var(--primary); }
+    .prep-btag-toggle { margin: 0 0 0 auto; }
+    .card-title { display: flex; align-items: center; gap: 10px; }
+    .case-recipe { display: none; }
+    .case-recipe.open { display: block; margin-top: 8px; }
+
     /* 建單時就看得到要去哪家、走多久 —— 不用再翻採購單 */
     .mo-vendor {
       margin-top: 8px; padding: 10px 12px;
