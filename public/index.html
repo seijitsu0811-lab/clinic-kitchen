@@ -1884,6 +1884,19 @@
     .nc-story { font-size: 13px; color: var(--text2); line-height: 1.7; }
     .nc-actions { display: flex; gap: 8px; margin-top: 10px; }
 
+    /* 預約時間和這裡不同時標出來 */
+    .sch-appt {
+      display: inline-block; margin-left: 6px; font-size: 10.5px; font-weight: 700;
+      color: #B45309; background: rgba(245,158,11,.14);
+      border-radius: 5px; padding: 1px 6px; cursor: help;
+    }
+
+    .sch-gone {
+      display: inline-block; margin-left: 6px; font-size: 10.5px; font-weight: 700;
+      color: var(--red); background: rgba(239,68,68,.12);
+      border-radius: 5px; padding: 1px 6px; cursor: help;
+    }
+
     /* 只看精力湯／只看餐盒。筆數一起顯示，才知道藏了多少 */
     .sch-filter { display: flex; gap: 6px; margin: 8px 0 10px; flex-wrap: wrap; }
     .sch-filter button {

@@ -491,8 +491,12 @@ const App = (() => {
       else if (c.powder_type === '全配方') { icon = '📦'; detail = `全配方外帶 ${c.cups}天`; }
       else                                 { icon = '🥤'; detail = `${c.rx_name} ${c.cups}杯`; }
       const noteText = [c.contraindications, c.notes].filter(Boolean).join(' · ');
+      // 被廚房改過時間的，預約那邊的時間留在 appt_meal_time。
+      // 兩邊不同就標出來 —— 才分得出是刻意調的，還是預約改了沒跟上
+      const apptT = (c.appt_meal_time && c.appt_meal_time !== c.meal_time) ? c.appt_meal_time : '';
       items.push({ key: `case_${c.id}`, sk: `${mt}_1`, timeLabel: tFmt, type: 'case',
         name: `${icon} ${who}`, detail, noteText, done: casePickedUp.has(c.id),
+        apptTime: apptT ? hhmm(apptT) : '', apptMissing: !!c.appt_missing,
         caseId: c.id, prescriptionId: c.prescription_id, powderType: c.powder_type || '袋裝',
         recipe: _caseRecipeBody(c, (prod && prod.unit) || '杯') });
     });
@@ -553,7 +557,10 @@ const App = (() => {
         <div class="sch-time">${it.timeLabel}</div>
         <div class="sch-body">
           <div class="sch-name">${esc(it.name)}</div>
-          <div class="sch-detail">${esc(it.detail)}</div>
+          <div class="sch-detail">${esc(it.detail)}${it.apptTime
+            ? `<span class="sch-appt" title="預約系統上的時間和這裡不同。這一筆被改過，同步不會再覆蓋">預約 ${esc(it.apptTime)}</span>` : ''}${
+            it.apptMissing
+            ? `<span class="sch-gone" title="這筆是從預約帶入的，但那筆預約現在查不到了（可能已取消或改期）。確認後可以直接刪除">⚠ 預約已不存在</span>` : ''}</div>
           ${it.noteText ? `<div class="sch-note">📝 ${esc(it.noteText)}</div>` : ''}
           ${_schActions(it)}
           ${it.type === 'case' && it.recipe && openCaseRecipes.has(it.caseId)

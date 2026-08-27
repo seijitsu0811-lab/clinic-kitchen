@@ -143,6 +143,15 @@ try {
   // auto = 系統依休假與員工餐日推導；manual = 廚房人員手動改過，同步時不再覆蓋
   "ALTER TABLE staff_attendance ADD COLUMN source TEXT DEFAULT 'auto'",
 
+  // 預約帶入的出單：原本只新增不更新，預約改了時間廚房這邊永遠停在舊值。
+  // auto = 仍跟著預約走；manual = 廚房人員改過，同步不再覆蓋（比照 staff_attendance）
+  "ALTER TABLE case_orders ADD COLUMN sync_source TEXT DEFAULT 'auto'",
+  // 預約當下的時間，不論 auto/manual 每次同步都更新 —— 才能把差異顯示出來
+  "ALTER TABLE case_orders ADD COLUMN appt_meal_time TEXT DEFAULT ''",
+  // 預約被取消或改期後，帶入的出單不會自己消失，那一杯還是會被做出來。
+  // 標記出來讓人決定要不要刪，不自動刪 —— 一次抓取失敗就毀掉當天的單，代價太大
+  "ALTER TABLE case_orders ADD COLUMN appt_missing INTEGER DEFAULT 0",
+
   // 處理方式（帶皮／去皮／只要皮…）。同一種食材的不同處理方式不該拆成兩個品項 ——
   // 拆開之後庫存、單價、缺貨判斷都會各算各的（見 mergeApples）
   "ALTER TABLE prescription_ingredients ADD COLUMN prep TEXT DEFAULT ''",
@@ -672,15 +681,28 @@ async function syncApptOrders() {
 
   const ins = db.prepare(
     `INSERT OR IGNORE INTO case_orders
-       (date,prescription_id,cups,meal_time,powder_type,patient_name,notes,source_key)
-     VALUES (?,?,?,?,?,?,?,?)`
+       (date,prescription_id,cups,meal_time,powder_type,patient_name,notes,source_key,
+        sync_source,appt_meal_time)
+     VALUES (?,?,?,?,?,?,?,?, 'auto', ?)`
+  );
+  // 廚房沒改過的（sync_source='auto'）就跟著預約更新；改過的只更新 appt_meal_time，
+  // 好讓畫面能標出「預約是幾點、這裡是幾點」
+  const updAuto = db.prepare(
+    `UPDATE case_orders SET meal_time=?, patient_name=?, notes=?, appt_meal_time=?
+     WHERE source_key=? AND COALESCE(sync_source,'auto')='auto'`
+  );
+  const updApptTime = db.prepare(
+    `UPDATE case_orders SET appt_meal_time=? WHERE source_key=?`
   );
 
-  let created = 0, skipped = 0;
+  let created = 0, updated = 0, skipped = 0;
+  const seenByDate = {};   // 這次同步在每一天看到的 source_key，用來找出被取消的預約
+
   Object.keys(appts || {}).forEach(date => {
     if (date < from || date > to) return;
     const raw = appts[date];
     const list = Array.isArray(raw) ? raw : (raw && typeof raw === 'object' ? Object.values(raw) : []);
+    seenByDate[date] = new Set();
     list.forEach(a => {
       if (!a || typeof a !== 'object' || !a.id) return;
       (a.items || []).forEach(item => {
@@ -689,18 +711,49 @@ async function syncApptOrders() {
         if (dismissed.has('appt:' + a.id + ':' + powder)) return;
         const name = String(a.name || '').trim();
         const rxId = rxByName[name];
-        const note = rxId
-          ? '[預約帶入]'
-          : '[預約帶入] 此患者尚未建立處方，暫用員工標準配方，請確認';
-        const r = ins.run(
-          date, rxId || fallbackId, 1, apptTimeToMeal(a.start),
-          powder, name, note, 'appt:' + a.id + ':' + powder
-        );
-        if (r.changes) created++; else skipped++;
+        // 預約上的備註帶進來。原本被固定字串蓋掉，像「先.BIPAP 後.精力湯」
+        // 這種出餐順序指示就整段消失了
+        const apptNote = String(a.note || '').replace(/\s*\n\s*/g, ' · ').trim();
+        const note = [
+          '[預約帶入]',
+          rxId ? '' : '此患者尚未建立處方，暫用員工標準配方，請確認',
+          apptNote
+        ].filter(Boolean).join(' ');
+
+        const mealTime = apptTimeToMeal(a.start);
+        const key = 'appt:' + a.id + ':' + powder;
+        seenByDate[date].add(key);
+        const r = ins.run(date, rxId || fallbackId, 1, mealTime, powder, name, note, key, mealTime);
+        if (r.changes) {
+          created++;
+        } else {
+          skipped++;
+          // 已存在：預約若改了時間或備註，沒被廚房改過的要跟著更新
+          const u = updAuto.run(mealTime, name, note, mealTime, key);
+          if (u.changes) updated++; else updApptTime.run(mealTime, key);
+        }
       });
     });
   });
-  if (created) console.log('預約帶入：新建 ' + created + ' 筆出單（已存在 ' + skipped + ' 筆略過）');
+  // 找出預約已經不在了、單卻還留著的（預約被取消或改期）。
+  // 只檢查這次確實有抓到資料的日期 —— 沒抓到資料的日期不能當作「預約沒了」
+  let missing = 0;
+  Object.entries(seenByDate).forEach(([date, keys]) => {
+    const rows = db.prepare(
+      "SELECT id, source_key, appt_missing FROM case_orders WHERE date=? AND COALESCE(source_key,'')<>''"
+    ).all(date);
+    rows.forEach(r => {
+      const gone = keys.has(r.source_key) ? 0 : 1;
+      if ((r.appt_missing || 0) !== gone) {
+        db.prepare('UPDATE case_orders SET appt_missing=? WHERE id=?').run(gone, r.id);
+      }
+      if (gone) missing++;
+    });
+  });
+
+  if (created || updated || missing) {
+    console.log(`預約帶入：新建 ${created} 筆、更新 ${updated} 筆、預約已不存在 ${missing} 筆（已存在 ${skipped} 筆）`);
+  }
   return { created, skipped };
 }
 
@@ -1234,8 +1287,10 @@ app.put('/api/today/cases/:id', (req, res) => {
   const cur = db.prepare('SELECT prescription_id FROM case_orders WHERE id=?').get(req.params.id);
   if (!cur) return res.status(404).json({ error: '找不到這筆出單' });
 
+  // 廚房人員改過就標成 manual，之後預約同步不再覆蓋這一筆
   db.prepare(
-    `UPDATE case_orders SET date=?,prescription_id=?,cups=?,meal_time=?,powder_type=?,patient_name=?,notes=?
+    `UPDATE case_orders SET date=?,prescription_id=?,cups=?,meal_time=?,powder_type=?,patient_name=?,notes=?,
+            sync_source='manual'
      WHERE id=?`
   ).run(
     date || today(),
