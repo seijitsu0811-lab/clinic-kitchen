@@ -2787,26 +2787,26 @@ const App = (() => {
 
   // ── 自動補扣通知 ──────────────────────────────────────
   // 系統在沒人確認的情況下動了庫存，就一定要講出來，而且要能改回去
+  // 這是「過去幾天的帳務更正」，不是今天要做的事，所以只給一行。
+  // 明細要看再展開；看過按「知道了」就收掉 —— 否則它會永遠佔著版面頂端。
+  let _autoSettleOpen = false;
+
   async function renderAutoSettle() {
     const el = document.getElementById('autoSettleAlert');
     if (!el) return;
     let rows = [];
-    try { rows = await api('/api/consumption/auto?days=14'); } catch (e) { return; }
+    try { rows = await api('/api/consumption/auto?days=14&pending=1'); } catch (e) { return; }
     if (!rows.length) { el.innerHTML = ''; return; }
 
     const byDate = {};
-    rows.forEach(r => {
-      if (!byDate[r.date]) byDate[r.date] = [];
-      byDate[r.date].push(r);
-    });
+    rows.forEach(r => { (byDate[r.date] = byDate[r.date] || []).push(r); });
+    const dates = Object.keys(byDate).sort().reverse();
+    const totalCups = Math.round(rows.reduce((s, r) => s + r.cups, 0) * 10) / 10;
 
-    el.innerHTML = `
-      <div class="auto-settle">
-        <div class="as-title">🧾 系統自動補扣了庫存</div>
-        <div style="color:var(--text2);margin-bottom:6px">
-          這幾天沒有人確認出餐，系統依當天的出席與出單補扣了食材。做錯了可以還原。
-        </div>
-        ${Object.keys(byDate).sort().reverse().map(d => {
+    const detail = !_autoSettleOpen ? '' : `
+      <div class="as-detail">
+        <div class="as-hint">這幾天沒有人按「拿取」，系統依當天的出席與出單補扣了食材。數字不對可以整天還原。</div>
+        ${dates.map(d => {
           const list = byDate[d];
           const cups = Math.round(list.reduce((s, r) => s + r.cups, 0) * 10) / 10;
           return `<div class="as-row">
@@ -2816,6 +2816,30 @@ const App = (() => {
           </div>`;
         }).join('')}
       </div>`;
+
+    el.innerHTML = `
+      <div class="auto-settle${_autoSettleOpen ? ' open' : ''}">
+        <div class="as-line">
+          <span class="as-ico">🧾</span>
+          <span class="as-sum">系統補扣了 <strong>${dates.length}</strong> 天的庫存，共 <strong>${totalCups}</strong> 杯</span>
+          <button class="as-toggle" onclick="App.toggleAutoSettle()">${_autoSettleOpen ? '收起' : '查看'}</button>
+          <button class="as-ack" onclick="App.ackAutoSettle()">知道了</button>
+        </div>
+        ${detail}
+      </div>`;
+  }
+
+  function toggleAutoSettle() {
+    _autoSettleOpen = !_autoSettleOpen;
+    renderAutoSettle();
+  }
+
+  async function ackAutoSettle() {
+    try {
+      await api('/api/consumption/ack', 'POST', {});
+      _autoSettleOpen = false;
+      await renderAutoSettle();
+    } catch (e) { alert(e.message); }
   }
 
   async function reverseAutoSettle(date) {
@@ -3218,7 +3242,7 @@ const App = (() => {
     loadTrialRecipes, openAddTrial, openEditTrial, saveTrial, deleteTrial,
     openAddTrialSession, saveTrialSession, deleteTrialSession,
     loadSOP, toggleQC, resetQC, saveBatchNotes,
-    openStocktake, saveStocktake, reverseAutoSettle,
+    openStocktake, saveStocktake, reverseAutoSettle, toggleAutoSettle, ackAutoSettle,
     downloadBackup, runBackupNow,
     toggleLeaveRestore,
     loadMeals, switchMealTab, switchMealView, advanceMealStatus, goBuyMeals,

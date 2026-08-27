@@ -741,22 +741,36 @@
       padding: 2px 8px;
       font-weight: 600;
     }
-    /* 自動補扣：系統動了庫存，一定要讓人看到，而且改得回來 */
+    /* 自動補扣：系統動了庫存要讓人知道，但那是過去幾天的帳務更正，
+       不是今天的工作 —— 預設只佔一行，看過按「知道了」就收掉 */
     .auto-settle {
-      background: rgba(99, 102, 241, 0.07);
-      border: 1px solid rgba(99, 102, 241, 0.28);
+      background: rgba(99, 102, 241, 0.06);
+      border: 1px solid rgba(99, 102, 241, 0.22);
       border-radius: var(--radius-md);
-      padding: 12px 14px; margin: 12px 0 4px; font-size: 13px; line-height: 1.8;
+      padding: 8px 12px; margin: 10px 0 4px; font-size: 13px;
     }
-    .auto-settle .as-title { font-weight: 700; color: var(--purple); margin-bottom: 6px; }
+    .auto-settle .as-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .auto-settle .as-ico { font-size: 14px; }
+    .auto-settle .as-sum { color: var(--text2); }
+    .auto-settle .as-sum strong { color: var(--text); }
+    .auto-settle .as-toggle, .auto-settle .as-ack {
+      min-height: 32px; padding: 4px 12px; font-size: 12px; font-weight: 700;
+      background: none; cursor: pointer; border-radius: 8px;
+    }
+    .auto-settle .as-toggle { margin-left: auto; color: var(--purple); border: 1px solid rgba(99,102,241,.35); }
+    .auto-settle .as-ack    { color: var(--text3); border: 1px solid var(--border); }
+    .auto-settle .as-ack:hover { color: var(--text2); }
+
+    .auto-settle .as-detail { margin-top: 8px; padding-top: 8px; border-top: 1px dashed rgba(99,102,241,.25); }
+    .auto-settle .as-hint { color: var(--text3); font-size: 12px; line-height: 1.7; margin-bottom: 6px; }
     .auto-settle .as-row {
       display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-      padding: 4px 0; border-top: 1px dashed rgba(99, 102, 241, 0.2);
+      padding: 4px 0; border-top: 1px dashed rgba(99, 102, 241, 0.18);
     }
     .auto-settle .as-row:first-of-type { border-top: none; }
     .auto-settle .as-date { font-weight: 700; color: var(--text); min-width: 82px; }
-    .auto-settle button {
-      margin-left: auto; min-height: 34px; padding: 5px 12px; font-size: 12px; font-weight: 700;
+    .auto-settle .as-row button {
+      margin-left: auto; min-height: 32px; padding: 4px 12px; font-size: 12px; font-weight: 700;
       background: none; color: var(--purple); cursor: pointer;
       border: 1px solid rgba(99, 102, 241, 0.4); border-radius: 8px;
     }
@@ -2291,11 +2305,15 @@
 
   <!-- 今日工作單 -->
   <div class="page active" id="page-today">
-    <div id="autoSettleAlert"></div>
+    <!-- 順序＝急迫性。買便當有截止時間，排最前面；
+         自動補扣是過去幾天的帳務更正，排在它後面，而且只佔一行 -->
     <div id="todayMealAlert"></div>
+    <div id="autoSettleAlert"></div>
     <div class="section-head">
       <h2 style="display:flex;align-items:center;gap:10px;">
-        <span>▌1 今日總出單</span>
+        <!-- 編號體系是 A→B→C→D（B 員工批次、C 個案出單、D 預約出單 在 app.js）。
+             這裡原本寫「1」，看起來像有 2、3 卻沒有 -->
+        <span>▌A 今日總出單</span>
         <span id="todayDateLabel" style="font-size:14px;color:var(--text2);font-weight:600;background:var(--bg);padding:2px 10px;border-radius:6px;border:1px solid var(--border);"></span>
       </h2>
       <div style="display:flex;gap:8px;align-items:center">

@@ -176,6 +176,9 @@ try {
      reversed_at TEXT DEFAULT '',
      created_at TEXT DEFAULT (datetime('now','localtime')))`,
   "CREATE INDEX IF NOT EXISTS idx_consumption_date ON consumption_log(date)",
+  // 「我看過了」。沒有這個欄位，自動補扣的通知只能靠「還原」才會消失 ——
+  // 但還原是撤銷，不是確認，於是通知永遠賴在畫面上
+  "ALTER TABLE consumption_log ADD COLUMN acked_at TEXT DEFAULT ''",
 
   // 工時改成「每批固定 + 每杯額外」：3 杯是同一鍋打的，不該算 3 倍備料工。
   // 舊的 labor_min_per_cup 保留不刪，但已不再參與計算。
@@ -1535,15 +1538,33 @@ function settleRecentDays(userId) {
 }
 
 // 最近的自動補扣紀錄（讓人看得到、能還原）
+// pending=1 只回還沒被確認過的，今日頁的提示用這個 —— 確認過就不該再佔版面
 app.get('/api/consumption/auto', (req, res) => {
   const days = Number(req.query.days || 14);
   const from = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
+  const onlyPending = req.query.pending === '1';
   res.json(db.prepare(
     `SELECT cl.*, p.name rx_name, p.code rx_code
      FROM consumption_log cl LEFT JOIN prescriptions p ON p.id=cl.prescription_id
      WHERE cl.source='auto' AND cl.date >= ? AND COALESCE(cl.reversed_at,'')=''
+       ${onlyPending ? "AND COALESCE(cl.acked_at,'')=''" : ''}
      ORDER BY cl.date DESC, cl.id DESC`
   ).all(from));
+});
+
+// 「知道了」：標記已確認，通知就不再出現。庫存不動，只是不用再看
+app.post('/api/consumption/ack', (req, res) => {
+  const dates = Array.isArray(req.body.dates) ? req.body.dates : null;
+  const r = dates && dates.length
+    ? db.prepare(
+        `UPDATE consumption_log SET acked_at=datetime('now','localtime')
+         WHERE source='auto' AND COALESCE(acked_at,'')='' AND date IN (${dates.map(() => '?').join(',')})`
+      ).run(...dates)
+    : db.prepare(
+        `UPDATE consumption_log SET acked_at=datetime('now','localtime')
+         WHERE source='auto' AND COALESCE(acked_at,'')=''`
+      ).run();
+  res.json({ ok: true, acked: r.changes });
 });
 
 // 還原一筆自動補扣：把食材加回去，並標記已還原
