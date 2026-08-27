@@ -796,14 +796,38 @@
     .batch-grp-time:hover {
       filter: brightness(0.95);
     }
-    .batch-time-input {
-      font-size: 11px;
-      border: 1px solid var(--primary);
-      border-radius: 6px;
-      padding: 1px 4px;
-      width: 80px;
-      font-family: inherit;
+    /* 時間本身只是顯示，要改必須點旁邊的 ✎ —— 手機上不會再誤觸 */
+    .batch-time-wrap { display: inline-flex; align-items: center; gap: 2px; }
+    .batch-grp-time { cursor: default; }
+    .batch-grp-time.bt-manual { outline: 1px dashed var(--primary); }
+    .batch-time-edit {
+      background: none; border: none; cursor: pointer; padding: 4px 6px;
+      font-size: 12px; color: var(--text3); line-height: 1; border-radius: 6px;
+      min-width: 30px; min-height: 30px;
     }
+    .batch-time-edit:hover { color: var(--primary); background: var(--primary-light); }
+
+    .batch-time-edit-box {
+      display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap;
+      background: var(--primary-light); border-radius: 8px; padding: 3px 5px;
+    }
+    .batch-time-input {
+      font-size: 12px;
+      border: 1.5px solid var(--primary);
+      border-radius: 6px;
+      padding: 3px 6px;
+      width: 104px;
+      font-family: inherit;
+      background: var(--card-solid);
+      color: var(--text);
+    }
+    .batch-time-edit-box button {
+      border: 1px solid var(--border); background: var(--card-solid);
+      border-radius: 6px; cursor: pointer; font-size: 11px; font-weight: 700;
+      padding: 4px 7px; min-height: 28px; color: var(--text2);
+    }
+    .batch-time-edit-box .bt-ok { color: var(--green); border-color: rgba(16,185,129,.4); }
+    .batch-time-edit-box .bt-cancel { color: var(--red); border-color: rgba(239,68,68,.35); }
 
     /* Case Chip */
     .case-chip {

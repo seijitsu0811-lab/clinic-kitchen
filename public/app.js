@@ -418,7 +418,10 @@ const App = (() => {
         <div class="batch-grp-head">
           <span class="batch-grp-label">批次 ${bi + 1}</span>
           <span class="batch-grp-sz">${_batchCups(batch)}杯</span>
-          <span class="batch-grp-time" title="點擊修改時間" onclick="App.editBatchTime(${bi},this)">⏰ ${timeLabel}</span>
+          <span class="batch-time-wrap"><span class="batch-grp-time${batch.manualTime ? ' bt-manual' : ''}"
+                  title="${batch.manualTime ? '手動指定的時間' : '依成員取餐時間自動判定'}">⏰ ${timeLabel}</span><button
+                  class="batch-time-edit" title="修改這批的時間"
+                  onclick="App.editBatchTime(${bi},this)">✎</button></span>
           ${conflictTag}
           ${allDone ? '<span class="batch-grp-done-tag">✓ 完成</span>' : ''}
           <button class="batch-grp-del" onclick="App.removeBatch(${bi})">×</button>
@@ -708,23 +711,37 @@ const App = (() => {
       if (lastTodayData) { _saveDayState(lastTodayData.date); renderTodaySection1(lastTodayData); }
     }
   }
+  // 時間編輯只能從 ✎ 進入，時間本身不再是按鈕 ——
+  // 原本整顆時間標籤都可點，手機上很容易誤觸，畫面上就多一個看起來壞掉的空白框
   function editBatchTime(bi, el) {
     const batch = staffBatchGroups && staffBatchGroups[bi];
     if (!batch) return;
-    const cur = batch.manualTime || '1130';
-    const input = document.createElement('input');
-    input.type = 'time';
-    input.value = `${cur.slice(0,2)}:${cur.slice(2)}`;
-    input.className = 'batch-time-input';
-    el.replaceWith(input);
+    const wrap = el.closest('.batch-time-wrap');
+    if (!wrap || wrap.querySelector('.batch-time-input')) return;   // 已經在編輯中
+
+    const cur = batch.manualTime || _getBatchTime(batch).sk.slice(0, 4);
+    const box = document.createElement('span');
+    box.className = 'batch-time-edit-box';
+    box.innerHTML = `
+      <input type="time" class="batch-time-input" value="${cur.slice(0,2)}:${cur.slice(2)}">
+      <button class="bt-ok" title="確定">✓</button>
+      <button class="bt-auto" title="改回自動（依成員取餐時間）">自動</button>
+      <button class="bt-cancel" title="取消">✕</button>`;
+    const original = wrap.innerHTML;
+    wrap.innerHTML = '';
+    wrap.appendChild(box);
+
+    const input = box.querySelector('.batch-time-input');
     input.focus();
-    const save = () => {
-      const v = input.value.replace(':', '');
-      if (v && /^\d{4}$/.test(v)) batch.manualTime = v;
-      if (lastTodayData) { _saveDayState(lastTodayData.date); renderTodaySection1(lastTodayData); }
+
+    const done = () => { if (lastTodayData) { _saveDayState(lastTodayData.date); renderTodaySection1(lastTodayData); } };
+    box.querySelector('.bt-ok').onclick = () => {
+      const v = (input.value || '').replace(':', '');
+      if (/^\d{4}$/.test(v)) batch.manualTime = v;
+      done();
     };
-    input.addEventListener('change', save);
-    input.addEventListener('blur', save);
+    box.querySelector('.bt-auto').onclick = () => { delete batch.manualTime; done(); };
+    box.querySelector('.bt-cancel').onclick = () => { wrap.innerHTML = original; };
   }
   function addBatch() {
     if (!staffBatchGroups) staffBatchGroups = [];
