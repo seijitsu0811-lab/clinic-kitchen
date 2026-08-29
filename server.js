@@ -1523,22 +1523,42 @@ app.post('/api/inventory/consume', (req, res) => {
 });
 
 // ── 隔日自動補扣 ──────────────────────────────────────────
-// 庫存只在有人按「拿取」時才扣，忘了按就永遠不扣，帳面只會越來越虛高。
-// 這裡在過了那一天之後，比對「那天應該扣的」與「實際扣掉的」，只補差額。
+// 過了那一天之後，比對「那天應該扣的」與「實際扣掉的」，只補差額。
 // 補扣一律標 source='auto' 並且可以整筆還原 —— 自動但看得見、改得回來。
+
+// 例外管理：排程上的東西預設就是做了、送出去了，只有被明確標記的才是沒發生。
+// 例外和批次狀態存在同一份 day_state（整個廚房共用），這裡讀那一份，不另外算一次。
+function dayExceptions(date) {
+  const empty = { staffMissed: new Set(), caseMissed: new Set() };
+  try {
+    const row = db.prepare('SELECT state FROM day_state WHERE date=?').get(date);
+    if (!row) return empty;
+    const s = JSON.parse(row.state || '{}');
+    return {
+      staffMissed: new Set(s.staffMissed || []),
+      caseMissed:  new Set(s.caseMissed  || [])
+    };
+  } catch (e) { return empty; }
+}
+
 function expectedForDate(date) {
   const out = [];   // { rxId, cups, powderType }
-  const attending = db.prepare(
-    'SELECT COUNT(*) c FROM staff_attendance WHERE date=? AND attending=1'
-  ).get(date)?.c || 0;
+  const ex = dayExceptions(date);
+  // 出席的人裡面扣掉被標「未領」的。逐一比對 id，不用數量相減 ——
+  // 被標未領的人有可能同時也沒出席，相減會扣到兩次
+  const attendingIds = db.prepare(
+    'SELECT user_id FROM staff_attendance WHERE date=? AND attending=1'
+  ).all(date).map(r => r.user_id);
+  const staffCups = attendingIds.filter(id => !ex.staffMissed.has(id)).length;
   const staffRx = db.prepare(
     'SELECT id FROM prescriptions WHERE is_staff_rx=1 AND active=1 LIMIT 1'
   ).get();
-  if (staffRx && attending > 0) out.push({ rxId: staffRx.id, cups: attending, powderType: '' });
+  if (staffRx && staffCups > 0) out.push({ rxId: staffRx.id, cups: staffCups, powderType: '' });
 
   db.prepare(
-    'SELECT prescription_id, cups, powder_type FROM case_orders WHERE date=?'
+    'SELECT id, prescription_id, cups, powder_type FROM case_orders WHERE date=?'
   ).all(date).forEach(o => {
+    if (ex.caseMissed.has(o.id)) return;
     out.push({ rxId: o.prescription_id, cups: o.cups, powderType: o.powder_type || '' });
   });
   return out;
@@ -1591,6 +1611,23 @@ function settleRecentDays(userId) {
   }
   return results;
 }
+
+// 今天「應該扣多少」——把例外扣掉之後的結果。
+// 這條規則決定隔天自動補扣的數量，攤開來才查得到為什麼是這個數字
+app.get('/api/consumption/expected', (req, res) => {
+  const date = req.query.date || today();
+  const ex = dayExceptions(date);
+  const items = expectedForDate(date).map(r => {
+    const p = db.prepare('SELECT code, name FROM prescriptions WHERE id=?').get(r.rxId) || {};
+    return { rx_id: r.rxId, rx_code: p.code || '', rx_name: p.name || '',
+             cups: r.cups, powder_type: r.powderType };
+  });
+  res.json({
+    date, items,
+    total_cups: Math.round(items.reduce((s, i) => s + i.cups, 0) * 10) / 10,
+    exceptions: { staff_missed: [...ex.staffMissed], case_missed: [...ex.caseMissed] }
+  });
+});
 
 // 最近的自動補扣紀錄（讓人看得到、能還原）
 // pending=1 只回還沒被確認過的，今日頁的提示用這個 —— 確認過就不該再佔版面
@@ -2366,6 +2403,74 @@ app.get('/api/meals/today', async (req, res) => {
   const date = req.query.date || today();
   try { await syncApptMealOrders(); } catch (err) { console.error('餐盒預約帶入失敗:', err.message); }
   res.json(buildMealDay(date));
+});
+
+// 採購用的清單：按店家分組、同款合併數量。
+// 出門買便當的人要的不是今日頁那條 3000px 的時間軸，是「去哪幾家、各買什麼」。
+// 同一款被三個人點，他要看到的是 ×3，不是三行。
+app.get('/api/meals/shopping', (req, res) => {
+  const date = req.query.date || today();
+  const rows = db.prepare(
+    `SELECT o.id, o.qty, o.meal_time, o.patient_name, o.purchase_mode, o.status, o.notes,
+            o.snap_display_name, o.snap_price,
+            mi.display_name item_name, mi.vendor_item_name,
+            v.id vendor_id, v.name vendor_name, v.branch, v.phone, v.walk_minutes, v.order_note
+       FROM meal_orders o
+       JOIN meal_items mi ON mi.id = o.meal_item_id
+       JOIN meal_series ms ON ms.id = mi.series_id
+       JOIN vendors v ON v.id = ms.vendor_id
+      WHERE o.date = ?
+      ORDER BY v.name, o.meal_time`
+  ).all(date);
+
+  const stops = [];
+  const byVendor = new Map();
+  rows.forEach(r => {
+    if (!byVendor.has(r.vendor_id)) {
+      const stop = { vendor_id: r.vendor_id, vendor_name: r.vendor_name, branch: r.branch,
+                     phone: r.phone, walk_minutes: r.walk_minutes, order_note: r.order_note,
+                     lines: [], total_qty: 0, pending_qty: 0, earliest_time: r.meal_time };
+      byVendor.set(r.vendor_id, stop); stops.push(stop);
+    }
+    const stop = byVendor.get(r.vendor_id);
+    if (r.meal_time < stop.earliest_time) stop.earliest_time = r.meal_time;
+    // 同一款、同一種買法合成一行；點餐時報的是店家的品名
+    const key = (r.vendor_item_name || r.item_name) + '|' + r.purchase_mode;
+    let ln = stop.lines.find(l => l.key === key);
+    if (!ln) {
+      ln = { key, order_name: r.vendor_item_name || r.item_name,
+             our_name: r.snap_display_name || r.item_name, mode: r.purchase_mode,
+             qty: 0, price_each: r.snap_price, order_ids: [], for_who: [], notes: [], all_bought: true };
+      stop.lines.push(ln);
+    }
+    ln.qty += r.qty;
+    ln.order_ids.push(r.id);
+    if (r.patient_name) ln.for_who.push(r.patient_name);
+    if (r.notes) ln.notes.push(r.notes);
+    if (r.status === '待採購') { ln.all_bought = false; stop.pending_qty += r.qty; }
+    stop.total_qty += r.qty;
+  });
+
+  // 走路久的先出發
+  stops.sort((a, b) => (b.walk_minutes || 0) - (a.walk_minutes || 0));
+  res.json({
+    date, stops,
+    total_qty: stops.reduce((s, v) => s + v.total_qty, 0),
+    pending_qty: stops.reduce((s, v) => s + v.pending_qty, 0)
+  });
+});
+
+// 一次把一行（同款合併後的那些單）標成已採購
+app.post('/api/meals/shopping/bought', (req, res) => {
+  const ids = Array.isArray(req.body.order_ids) ? req.body.order_ids : [];
+  const undo = !!req.body.undo;
+  const to = undo ? '待採購' : '已採購';
+  const from = undo ? '已採購' : '待採購';
+  let n = 0;
+  ids.forEach(id => {
+    n += db.prepare('UPDATE meal_orders SET status=? WHERE id=? AND status=?').run(to, id, from).changes;
+  });
+  res.json({ ok: true, changed: n, status: to });
 });
 
 app.post('/api/meals/orders', (req, res) => {

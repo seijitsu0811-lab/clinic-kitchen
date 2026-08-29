@@ -6,7 +6,7 @@
 
 ---
 
-## 動手之前一定要知道的四件事
+## 動手之前一定要知道的五件事
 
 ### 1. 部署是 `railway up`，不是 git push
 
@@ -41,6 +41,18 @@ Production DB：`/data/clinic_v2.db`（`DB_PATH` 環境變數）。
 `buildPrepAndPowder()`、`calcBatches()`、粉類 ×1.1 的規則 —— 這些是廚房每天照著做的東西，**改動前必須先問**。加功能時只加欄位、不改既有回傳值的意義。
 
 回歸測試的底線：`/api/today` 的批次、備料、粉配方數字必須與改動前完全一致。
+
+### 5. 出餐狀態是「例外管理」，預設就是已出餐
+
+排程上的東西**預設就是做了、送出去了**。使用者只標記「沒發生」的那些（`staffMissed` / `caseMissed`），正常的一天不必點任何一下。
+
+會這樣設計是因為原本的做法失敗了：舊版要人逐一勾「拿取」，一個十人的員工日加上個案要按十四次。實際資料顯示 **8/20、8/21、8/24、8/25、8/27 幾乎每個工作日都靠隔天的自動補扣收尾**，其中兩天是整批十杯完全沒勾 —— 也就是沒有人在按。庫存準確度當時是靠安全網撐著，不是靠工作流程。
+
+**唯一的例外：有禁忌註記（`contraindications`）的個案仍要人工核對過才算出餐。** 那是安全閘門，不能為了省點擊拿掉。
+
+判定規則只定義在 `public/app.js` 的 `_caseDelivered()` / `_memberDelivered()` / `_batchDone()`，伺服器端在 `expectedForDate()` 讀同一份 `day_state`。**要在別處判斷有沒有出餐，從這些函式讀，不要自己再寫一次。**
+
+扣庫存有一道時間閘門（`_timePassed()`）：預設已出餐之後，一開頁面所有批次就都是完成狀態，沒有這道閘門早上八點就會把中午的料扣掉。過了出餐時間才扣，真的沒扣到的由隔天的自動補扣接住。
 
 ---
 
@@ -110,14 +122,19 @@ Production DB：`/data/clinic_v2.db`（`DB_PATH` 環境變數）。
 
 ## 測試
 
-改完一定要跑，三套都要過（共 50 項）。
+改完一定要跑，六套都要過（共 65 項）。
 
 ```bash
-PORT=3999 node server.js          # 另一個終端機
-node scripts/test-meals.mjs       # 26 項：套餐、熱量、採購模式、小卡閘門
-node scripts/test-day-state.mjs   # 10 項：休假比對、出席自洽、狀態共用
-node scripts/test-inventory.mjs   # 14 項：消耗紀錄、補差額、盤點、備份
+PORT=3999 node server.js            # 另一個終端機
+node scripts/test-meals.mjs         # 26 項：套餐、熱量、採購模式、小卡閘門
+node scripts/test-day-state.mjs     # 10 項：休假比對、出席自洽、狀態共用
+node scripts/test-inventory.mjs     # 14 項：消耗紀錄、補差額、盤點、備份
+node scripts/test-case-orders.mjs   #  7 項：出單 CRUD、改處方會存進去
+node scripts/test-exceptions.mjs    #  8 項：例外管理有沒有真的影響應扣量
+node scripts/test-appt-sync.mjs     #  9 項：預約帶入、改過的不被覆蓋（假日會略過）
 ```
+
+`test-exceptions` 會自己造出席與出單，不依賴當天剛好有資料 —— 週末跑起來全部略過而「通過」的測試等於沒有測試。
 
 測試會自己清乾淨，但**跑之前先確認沒有殘留的 node 行程開著同一個資料庫** —— 多個伺服器同時跑會讓數字對不上，查半天以為是 bug。
 

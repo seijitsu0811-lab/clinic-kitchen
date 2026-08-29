@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>採購單 · 診所廚房</title>
+<style>
+  /* 這一頁是走路的時候單手看的。
+     字大、按鈕大、一次只看一家店 —— 不要把今日頁那些東西搬過來 */
+  :root {
+    --bg:#f6f7f9; --card:#fff; --text:#16181d; --text2:#5b6270; --text3:#98a0ad;
+    --border:#e3e6ec; --primary:#2563eb; --green:#16a34a; --orange:#f97316;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#14161a; --card:#1d2026; --text:#f2f4f7; --text2:#a8b0bd; --text3:#6b7482;
+            --border:#2c313a; }
+  }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  body { margin:0; background:var(--bg); color:var(--text);
+         font-family:-apple-system,"Noto Sans TC","Microsoft JhengHei",sans-serif;
+         font-size:16px; line-height:1.55;
+         padding:0 0 calc(24px + env(safe-area-inset-bottom)); }
+  header { position:sticky; top:0; z-index:10; background:var(--card);
+           border-bottom:1px solid var(--border); padding:14px 16px;
+           padding-top:calc(14px + env(safe-area-inset-top));
+           display:flex; align-items:center; gap:12px; }
+  header h1 { font-size:19px; margin:0; font-weight:800; }
+  .sum { margin-left:auto; font-size:15px; font-weight:700; color:var(--text2); }
+  .back { font-size:15px; font-weight:700; color:var(--primary); text-decoration:none;
+          min-height:44px; min-width:56px; display:flex; align-items:center; }
+  main { padding:16px; max-width:640px; margin:0 auto; }
+
+  .stop { background:var(--card); border:1px solid var(--border); border-radius:14px;
+          padding:18px; margin-bottom:18px; }
+  .stop.done { opacity:.55; }
+  .shop { font-size:21px; font-weight:800; margin:0 0 4px; }
+  .branch { font-size:15px; color:var(--text2); }
+  .meta { display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin:12px 0 4px; }
+  .walk { font-size:15px; font-weight:700; color:var(--orange);
+          background:rgba(249,115,22,.1); padding:7px 12px; border-radius:9px; }
+  .tel { font-size:15px; font-weight:700; color:#fff; background:var(--green);
+         padding:11px 18px; border-radius:10px; min-height:44px;
+         display:inline-flex; align-items:center; text-decoration:none; }
+  .note { font-size:15px; color:var(--text2); background:var(--bg);
+          border-radius:9px; padding:10px 12px; margin-top:10px; }
+
+  .line { display:flex; align-items:flex-start; gap:14px; padding:16px 0;
+          border-top:1px solid var(--border); }
+  .qty { font-size:26px; font-weight:800; color:var(--primary); min-width:52px; }
+  .line.bought .qty { color:var(--text3); }
+  .lname { font-size:17px; font-weight:700; }
+  .line.bought .lname { text-decoration:line-through; color:var(--text3); }
+  .lsub { font-size:14px; color:var(--text2); margin-top:3px; }
+  .lnote { font-size:14px; color:var(--orange); margin-top:3px; font-weight:700; }
+  .tick { margin-left:auto; min-width:88px; min-height:48px; border-radius:11px;
+          border:2px solid var(--border); background:var(--card); color:var(--text2);
+          font-size:15px; font-weight:800; cursor:pointer; }
+  .tick.on { background:var(--green); border-color:var(--green); color:#fff; }
+  .empty { text-align:center; color:var(--text3); padding:56px 16px; font-size:16px; }
+  .err { background:#fee2e2; color:#991b1b; border-radius:10px; padding:14px; font-weight:700; }
+</style>
+</head>
+<body>
+<header>
+  <a class="back" href="/">‹ 返回</a>
+  <h1>採購單</h1>
+  <span class="sum" id="sum"></span>
+</header>
+<main id="main"><div class="empty">載入中…</div></main>
+
+<script>
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c =>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const uid = () => { try { return (JSON.parse(localStorage.getItem('kitchen_user')||'{}').id)||''; }
+                    catch(e){ return ''; } };
+const api = async (p, m='GET', b=null) => {
+  const r = await fetch(p, { method:m,
+    headers:{ 'X-Kitchen-User-Id': uid(), 'Content-Type':'application/json' },
+    body: b ? JSON.stringify(b) : undefined });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+};
+const hhmm = t => (t && t.length === 4) ? t.slice(0,2)+':'+t.slice(2) : (t||'');
+// 店家備註只有在講「走路幾分鐘」以外的事情時才值得佔一行 —— 走路時間上面已經有了
+const usefulNote = s => {
+  const n = (s.order_note || '').trim();
+  if (!n) return false;
+  // 把數字和空白拿掉之後只剩「步行約分鐘」的，就是純粹在重複走路時間
+  const skeleton = n.replace(/[0-9 　]/g, '');
+  return skeleton !== '步行約分鐘' && skeleton !== '步行約分';
+};
+
+let data = null;
+
+function render() {
+  const main = document.getElementById('main');
+  if (!data || !data.stops.length) {
+    main.innerHTML = '<div class="empty">今天沒有要買的餐盒</div>';
+    document.getElementById('sum').textContent = '';
+    return;
+  }
+  document.getElementById('sum').textContent =
+    data.pending_qty > 0 ? `還要買 ${data.pending_qty} 份` : '全部買齊了';
+
+  main.innerHTML = data.stops.map(s => {
+    const done = s.lines.every(l => l.all_bought);
+    return `<section class="stop${done ? ' done' : ''}">
+      <div class="shop">${esc(s.vendor_name)}${done ? ' ✓' : ''}</div>
+      ${s.branch ? `<div class="branch">${esc(s.branch)}</div>` : ''}
+      <div class="meta">
+        ${s.walk_minutes ? `<span class="walk">🚶 來回約 ${s.walk_minutes} 分</span>` : ''}
+        ${s.phone ? `<a class="tel" href="tel:${esc(s.phone)}">📞 打電話</a>` : ''}
+      </div>
+      ${usefulNote(s) ? `<div class="note">${esc(s.order_note)}</div>` : ''}
+      ${s.lines.map((l, i) => `
+        <div class="line${l.all_bought ? ' bought' : ''}">
+          <div class="qty">×${l.qty}</div>
+          <div style="flex:1">
+            <div class="lname">${esc(l.order_name)}</div>
+            <div class="lsub">${esc(l.mode)}${l.our_name !== l.order_name
+                ? ' · 我們叫它「' + esc(l.our_name) + '」' : ''}${
+                l.for_who.length ? ' · ' + esc(l.for_who.join('、')) : ''}</div>
+            ${l.notes.length ? `<div class="lnote">📝 ${esc(l.notes.join(' / '))}</div>` : ''}
+          </div>
+          <button class="tick${l.all_bought ? ' on' : ''}"
+                  onclick="toggle(${s.vendor_id},${i})">${l.all_bought ? '已買 ✓' : '買到了'}</button>
+        </div>`).join('')}
+    </section>`;
+  }).join('');
+}
+
+async function toggle(vendorId, lineIdx) {
+  const stop = data.stops.find(s => s.vendor_id === vendorId);
+  const line = stop.lines[lineIdx];
+  const undo = line.all_bought;
+  line.all_bought = !undo;      // 先畫，走在路上不要等網路
+  render();
+  try {
+    await api('/api/meals/shopping/bought', 'POST', { order_ids: line.order_ids, undo });
+    await load(true);
+  } catch (e) {
+    line.all_bought = undo;     // 失敗就退回去，不要讓畫面說謊
+    render();
+    document.getElementById('main').insertAdjacentHTML('afterbegin',
+      `<div class="err">沒有存成功，請確認網路後再試一次</div>`);
+  }
+}
+
+async function load(quiet) {
+  try {
+    data = await api('/api/meals/shopping');
+    render();
+  } catch (e) {
+    // 還沒選人就直接開這一頁的話，回主畫面登入，不要把原始錯誤丟給現場的人看
+    if (/User is required/.test(e.message)) { location.href = '/'; return; }
+    if (!quiet) document.getElementById('main').innerHTML =
+      `<div class="err">讀不到採購單，請確認網路後重新整理</div>`;
+  }
+}
+load();
+setInterval(() => load(true), 30000);   // 有人在診所加單，走在路上也會看到
+</script>
+</body>
+</html>

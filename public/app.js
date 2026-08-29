@@ -9,8 +9,12 @@ const App = (() => {
   let costMonth = new Date().toISOString().slice(0, 7); // YYYY-MM
   let currentCostTab = 'today';
   let lastTodayData = null;
-  let staffPickedUp = new Set();
+  let staffPickedUp = new Set();  // 只用在「需人工核對」的個案（有禁忌註記那種）
   let casePickedUp  = new Set();
+  // 例外管理：排程上的預設是「已出餐」，這兩份記的是「沒發生」的那些。
+  // 舊的 staffPickedUp/casePickedUp 保留不動，歷史資料才不會被誤讀
+  let staffMissed   = new Set();  // 出席但沒領到的員工 userId
+  let caseMissed    = new Set();  // 沒出餐的個案 caseId
   let staffBatchGroups = null; // [{size, members:[{id,name,type,userId?,caseId?}]}]
   let batchInitDate    = null; // prevent re-init within same day
   let schCustomOrder   = null; // [key,...] null=auto time-sort
@@ -24,6 +28,7 @@ const App = (() => {
   let showPrepBatches  = false;     // 鮮食表的分批量預設收起（秤料看總量就夠）
   let showFutureCases  = false;     // 預約出單預設收起（那不是今天要做的事）
   let schFilter        = 'all';     // 出餐時間軸的篩選：all / tonic / meal
+  let schMoreOpen      = new Set(); // 哪幾列展開了次要動作（配方／菜單／編輯）
   let dayNotes         = {};        // 每個產品的今日備料備註（跟著日期走，全廚房共用）
   let dayQc            = {};        // 今日品質確認清單（全廚房共用）
 
@@ -108,6 +113,8 @@ const App = (() => {
     return {
       staff: [...staffPickedUp],
       cases: [...casePickedUp],
+      staffMissed: [...staffMissed],
+      caseMissed:  [...caseMissed],
       batchGroups: staffBatchGroups ? staffBatchGroups.map(b => ({
         manualTime: b.manualTime || null,
         memberIds: b.members.map(m => m.id)
@@ -120,17 +127,53 @@ const App = (() => {
     };
   }
 
+  // 存不回伺服器時，以前只寫進 console —— 現場完全不會知道。
+  // 廚房的 wifi 本來就不穩，這條路徑會讓兩台裝置看到不一樣的東西而且雙方都沒發覺。
+  function _showSyncTrouble(msg) {
+    let bar = document.getElementById('syncTrouble');
+    if (!bar) {
+      bar = document.createElement('div');
+      bar.id = 'syncTrouble';
+      bar.className = 'sync-trouble';
+      document.body.appendChild(bar);
+    }
+    bar.innerHTML = `<span>⚠ ${esc(msg)}</span>
+      <button onclick="App.retrySync()">立即重試</button>`;
+    bar.style.display = 'flex';
+  }
+  function _clearSyncTrouble() {
+    const bar = document.getElementById('syncTrouble');
+    if (bar) bar.style.display = 'none';
+  }
+  function retrySync() {
+    if (lastTodayData) _pushDayState(lastTodayData.date, _dayStatePayload());
+  }
+
+  let _pendingState = null;   // 最後一次沒送成功的狀態，連線回來就補送
+  function _pushDayState(date, payload) {
+    return api('/api/today/state', 'PUT', { date, state: payload })
+      .then(() => { _pendingState = null; _clearSyncTrouble(); })
+      .catch(e => {
+        _pendingState = { date, payload };
+        _showSyncTrouble('這次的變更還沒存回伺服器，其他裝置看不到。' + (e.message || ''));
+      });
+  }
+
   function _saveDayState(date) {
     const payload = _dayStatePayload();
     // 連線斷掉時還能撐住，但它只是備援，不是真實來源
     try { localStorage.setItem(`clinic_day_${date}`, JSON.stringify(payload)); } catch (e) {}
     clearTimeout(_saveTimer);
-    _saveTimer = setTimeout(() => {
-      api('/api/today/state', 'PUT', { date, state: payload }).catch(e => {
-        console.error('工作狀態存回伺服器失敗，其他裝置看不到這次變更：', e.message);
-      });
-    }, 400);
+    _saveTimer = setTimeout(() => _pushDayState(date, payload), 400);
   }
+
+  // 連線回來就自動補送，不必等人按
+  setInterval(() => {
+    if (_pendingState) _pushDayState(_pendingState.date, _pendingState.payload);
+  }, 15000);
+  window.addEventListener('online', () => {
+    if (_pendingState) _pushDayState(_pendingState.date, _pendingState.payload);
+  });
 
   function _loadDayState(d) {
     // 伺服器優先；沒有才回頭看本機備援
@@ -141,6 +184,8 @@ const App = (() => {
     if (!s) return null;
     staffPickedUp   = new Set(s.staff || []);
     casePickedUp    = new Set(s.cases || []);
+    staffMissed     = new Set(s.staffMissed || []);
+    caseMissed      = new Set(s.caseMissed  || []);
     deductedBatches = new Set(s.deductedBatches || []);
     deductedCases   = new Set(s.deductedCases || []);
     dayNotes        = s.notes || {};
@@ -214,6 +259,7 @@ const App = (() => {
 
     document.getElementById('staffCount').textContent = `${d.attending_count}人`;
     renderTodaySection1(d);
+    _runDeductions();
 
     // 2+3. 每個產品的批次 + 個案
     caseDataMap = {};
@@ -408,9 +454,7 @@ const App = (() => {
     if (!staffBatchGroups || staffBatchGroups.length === 0) return '';
     let html = _renderBatchTally() + '<div class="batch-groups-wrap">';
     staffBatchGroups.forEach((batch, bi) => {
-      const allDone = batch.members.length > 0 && batch.members.every(m =>
-        m.type === 'staff' ? staffPickedUp.has(m.userId) : casePickedUp.has(m.caseId)
-      );
+      const allDone = _batchDone(batch);
       const { label: timeLabel, conflict, times } = _getBatchTime(batch);
       // 同一批裡有人要 11:30、有人要 12:30，就把衝突標出來讓人自己決定要不要拆批
       const conflictTag = conflict
@@ -431,16 +475,21 @@ const App = (() => {
         </div>
         <div class="batch-grp-members">
           ${batch.members.map(m => {
-            const picked = m.type === 'staff' ? staffPickedUp.has(m.userId) : casePickedUp.has(m.caseId);
+            const delivered = _memberDelivered(m);
+            const needsTap  = m.type === 'case' && _needsCheck(_findCase(m.caseId)) && !delivered;
             const onclick = m.type === 'staff'
               ? `App.handleStaffChipClick(${m.userId},1)`
               : `App.toggleCasePickup(${m.caseId})`;
-            return `<div class="bmember-chip${picked ? ' picked' : ''}${m.type === 'case' ? ' bmember-case' : ''}"
-                         draggable="true"
+            const cls = needsTap ? ' needs-check' : (delivered ? '' : ' missed');
+            const tag = needsTap ? ' ⚠' : (delivered ? '' : ' 未領');
+            const title = needsTap ? '這位有禁忌註記，要核對過才算出餐'
+                        : (delivered ? '預設已出餐。點一下標記為未領' : '已標記未領。點一下改回已出餐');
+            return `<div class="bmember-chip${cls}${m.type === 'case' ? ' bmember-case' : ''}"
+                         draggable="true" title="${title}"
                          ondragstart="App.batchDragStart(event,${bi},'${m.id}')"
                          ondragend="App.batchDragEnd()"
                          onclick="${onclick}">
-              ${esc(m.name)}${picked ? ' ✓' : ''}
+              ${esc(m.name)}${tag}
             </div>`;
           }).join('')}
         </div>
@@ -464,9 +513,7 @@ const App = (() => {
     // 員工批次
     if (staffBatchGroups && staffBatchGroups.length > 0) {
       staffBatchGroups.forEach((batch, bi) => {
-        const allDone = batch.members.length > 0 && batch.members.every(m =>
-          m.type === 'staff' ? staffPickedUp.has(m.userId) : casePickedUp.has(m.caseId)
-        );
+        const allDone = _batchDone(batch);
         const { sk: bSk, label: bTimeLabel } = _getBatchTime(batch);
         items.push({
           key: `batch_${bi}`,
@@ -495,7 +542,8 @@ const App = (() => {
       // 兩邊不同就標出來 —— 才分得出是刻意調的，還是預約改了沒跟上
       const apptT = (c.appt_meal_time && c.appt_meal_time !== c.meal_time) ? c.appt_meal_time : '';
       items.push({ key: `case_${c.id}`, sk: `${mt}_1`, timeLabel: tFmt, type: 'case',
-        name: `${icon} ${who}`, detail, noteText, done: casePickedUp.has(c.id),
+        name: `${icon} ${who}`, detail, noteText, done: _caseDelivered(c),
+        needsCheck: _needsCheck(c),
         apptTime: apptT ? hhmm(apptT) : '', apptMissing: !!c.appt_missing,
         caseId: c.id, prescriptionId: c.prescription_id, powderType: c.powder_type || '袋裝',
         recipe: _caseRecipeBody(c, (prod && prod.unit) || '杯') });
@@ -579,25 +627,46 @@ const App = (() => {
   }
 
   // 每一列自己帶操作 —— 以前要捲到下面的個案卡片才能編輯或刪除
+  // 刪除不再放在這一排。它換行後會落在最常按的那顆正下方，位置一樣、大小一樣，
+  // 忙起來很容易按錯 —— 改放進編輯視窗，那裡本來就是刻意進去的地方。
   function _schActions(it) {
     if (it.type === 'case') {
+      // 一列只放一顆主要動作。配方／菜單／編輯是偶爾才用的，
+      // 全部攤開來每列要換行兩次，整頁高度會翻倍 —— 在手機上等於一直捲
+      const mark = it.needsCheck && !it.done
+        ? `<button class="sch-primary" onclick="event.stopPropagation();App.toggleCasePickup(${it.caseId})">⚠ 核對出餐</button>`
+        : `<button class="${it.done ? '' : 'sch-missed'}" onclick="event.stopPropagation();App.toggleCasePickup(${it.caseId})">${it.done ? '標未出餐' : '改回已出餐'}</button>`;
+      const open = schMoreOpen.has(it.key);
       return `<div class="sch-actions">
-        <button onclick="event.stopPropagation();App.toggleCasePickup(${it.caseId})">${it.done ? '取消拿取' : '拿取'}</button>
+        ${mark}
+        <button class="sch-more${open ? ' on' : ''}" title="其他操作"
+                onclick="event.stopPropagation();App.toggleSchMore('${it.key}')">${open ? '收起' : '⋯'}</button>
+      </div>
+      ${open ? `<div class="sch-actions sch-more-row">
         ${it.recipe ? `<button onclick="event.stopPropagation();App.toggleCaseRecipe(${it.caseId})">${openCaseRecipes.has(it.caseId) ? '收起配方' : '配方'}</button>` : ''}
         <button onclick="event.stopPropagation();App.openCaseMenuFor(${it.prescriptionId},'${esc(it.powderType)}')">菜單</button>
         <button onclick="event.stopPropagation();App.openEditCase(${it.caseId})">編輯</button>
-        <button class="sch-del" onclick="event.stopPropagation();App.deleteCase(${it.caseId})">刪除</button>
-      </div>`;
+      </div>` : ''}`;
     }
     if (it.type === 'meal') {
+      const mopen = schMoreOpen.has(it.key);
       return `<div class="sch-actions">
         <span class="sch-status">${esc(it.mealStatus)}</span>
         <button onclick="event.stopPropagation();App.advanceMealStatus(${it.mealId})">推進狀態</button>
+        <button class="sch-more${mopen ? ' on' : ''}" title="其他操作"
+                onclick="event.stopPropagation();App.toggleSchMore('${it.key}')">${mopen ? '收起' : '⋯'}</button>
+      </div>
+      ${mopen ? `<div class="sch-actions sch-more-row">
         <button onclick="event.stopPropagation();App.openEditMealOrder(${it.mealId})">編輯</button>
-        <button class="sch-del" onclick="event.stopPropagation();App.deleteMealOrder(${it.mealId})">刪除</button>
-      </div>`;
+      </div>` : ''}`;
     }
     return '';
+  }
+
+  function toggleSchMore(key) {
+    if (schMoreOpen.has(key)) schMoreOpen.delete(key);
+    else schMoreOpen.add(key);
+    if (lastTodayData) renderTodaySection1(lastTodayData);
   }
 
   function renderTodaySection1(d) {
@@ -617,7 +686,8 @@ const App = (() => {
     const powderCases = allCases.filter(c => c.formula_type === '粉配方');
 
     function caseChip(c, type) {
-      const picked = casePickedUp.has(c.id);
+      const delivered = _caseDelivered(c);
+      const needsTap  = _needsCheck(c) && !delivered;
       const isInuse = c.powder_type === '內用';
       const name = c.patient_name || c.rx_name || c.code;
       const mt = c.meal_time && c.meal_time.length === 4
@@ -625,9 +695,10 @@ const App = (() => {
       const sub = type === 'fresh'
         ? `${esc(c.rx_name)}${mt ? ' · ' + mt : ''}`
         : `${c.cups}天 ${esc(ptLabel(c.powder_type))}${mt ? ' · ' + mt : ''}`;
-      return `<div class="case-chip ${picked ? 'picked' : ''}" data-type="${type}" data-inuse="${isInuse?1:0}"
+      const cls = needsTap ? 'needs-check' : (delivered ? '' : 'missed');
+      return `<div class="case-chip ${cls}" data-type="${type}" data-inuse="${isInuse?1:0}"
                    onclick="App.toggleCasePickup(${c.id})">
-        <div class="sname">${esc(name)}</div>
+        <div class="sname">${esc(name)}${needsTap ? ' ⚠' : (delivered ? '' : ' 未出餐')}</div>
         <div class="chip-sub">${isInuse ? '🍽 內用精力湯' : ''}${sub}</div>
       </div>`;
     }
@@ -650,22 +721,56 @@ const App = (() => {
   // 用成員組成當識別，不用批次位置。
   // 位置會因為新增／刪除／拖動而平移，原本扣過的批次會被當成沒扣過（重複扣庫存），
   // 或沒扣過的被當成扣過（永遠不扣）。
+  // ── 「已出餐」判定：整份系統只定義這一次 ───────────────────────
+  // 預設是做了、送出去了；只有被明確標記的例外才是沒發生。
+  // 唯一的例外是有禁忌註記的個案 —— 那個要人核對過才算，安全閘門不能因為省點擊就拿掉。
+  function _needsCheck(c) {
+    return !!(c && c.contraindications && String(c.contraindications).trim());
+  }
+  function _findCase(caseId) {
+    const all = (lastTodayData && lastTodayData.products)
+      ? lastTodayData.products.flatMap(p => p.cases || []) : [];
+    return all.find(x => x.id === caseId) || null;
+  }
+  function _caseDelivered(c) {
+    if (!c) return false;
+    return _needsCheck(c) ? casePickedUp.has(c.id) : !caseMissed.has(c.id);
+  }
+  function _memberDelivered(m) {
+    if (m.type === 'staff') return !staffMissed.has(m.userId);
+    const c = _findCase(m.caseId);
+    return c ? _caseDelivered(c) : !caseMissed.has(m.caseId);
+  }
+  // 這一批是不是全部都出餐了（空批次不算完成）
+  function _batchDone(batch) {
+    return batch.members.length > 0 && batch.members.every(_memberDelivered);
+  }
+
   function _batchKey(batch) {
     return batch.members.map(m => m.id).sort().join('|');
   }
 
+  // 只看時間，不看日期 —— 這幾個判定都只用在「今天」這一頁
+  function _timePassed(hhmm) {
+    if (!hhmm || hhmm.length !== 4) return false;
+    const now = new Date();
+    return (now.getHours() * 100 + now.getMinutes()) >= Number(hhmm);
+  }
+
+  // 改成預設已出餐之後，一開頁面所有批次就都是「完成」狀態。
+  // 沒有這道時間閘門的話，早上八點就會把中午的料扣掉 —— 那時候還可能有人請假或加單。
+  // 過了出餐時間才扣；真的沒扣到的，隔天伺服器的自動補扣會接住
   function _checkBatchDeductions() {
     if (!staffBatchGroups) return;
     staffBatchGroups.forEach(batch => {
       const key = _batchKey(batch);
       if (!key || deductedBatches.has(key)) return;
-      const allDone = batch.members.length > 0 && batch.members.every(m =>
-        m.type === 'staff' ? staffPickedUp.has(m.userId) : casePickedUp.has(m.caseId)
-      );
-      if (!allDone) return;
+      if (!_batchDone(batch)) return;
+      const { sk } = _getBatchTime(batch);
+      if (!_timePassed(String(sk).slice(0, 4))) return;
       deductedBatches.add(key);
-      // 員工人數 → 員工配方
-      const staffCount = batch.members.filter(m => m.type === 'staff').length;
+      // 員工人數 → 員工配方（被標未領的不算）
+      const staffCount = batch.members.filter(m => m.type === 'staff' && !staffMissed.has(m.userId)).length;
       if (staffCount > 0 && empRxId) {
         api('/api/inventory/consume', 'POST', { prescription_id: empRxId, cups: staffCount }).catch(() => {});
       }
@@ -676,14 +781,35 @@ const App = (() => {
     });
   }
 
+  // 個案（自己的處方）過了出餐時間就扣。和批次那條走同一個規則，只是資料來源不同
+  function _checkCaseDeductions() {
+    if (!lastTodayData) return;
+    (lastTodayData.products || []).flatMap(p => p.cases || []).forEach(c => {
+      if (c.is_staff_rx) return;                 // 員工標準配方走批次那條路
+      if (!_caseDelivered(c)) return;            // 標了未出餐的不扣
+      if (!_timePassed(c.meal_time)) return;     // 還沒到出餐時間
+      _deductCaseOnce(c);
+    });
+  }
+
+  // 扣庫存的唯一入口。頁面開著的時候每分鐘跑一次，時間一到就自動扣，不必有人按
+  function _runDeductions() {
+    _checkBatchDeductions();
+    _checkCaseDeductions();
+    if (lastTodayData) _saveDayState(lastTodayData.date);
+  }
+  setInterval(() => { if (lastTodayData) _runDeductions(); }, 60000);
+
+  // 點一下不是「勾我領了」，而是「標記這個人沒領到」。正常的一天不必點任何一下
   function handleStaffChipClick(userId, isAttending) {
     if (!isAttending) {
       toggleAttendance(userId, 1);
       return;
     }
-    if (staffPickedUp.has(userId)) staffPickedUp.delete(userId);
-    else staffPickedUp.add(userId);
+    if (staffMissed.has(userId)) staffMissed.delete(userId);
+    else staffMissed.add(userId);
     _checkBatchDeductions();
+    _checkCaseDeductions();
     if (lastTodayData) { _saveDayState(lastTodayData.date); renderTodaySection1(lastTodayData); }
   }
 
@@ -706,34 +832,39 @@ const App = (() => {
     div.querySelector('#contraCancel').onclick = () => div.remove();
   }
 
+  // 兩種個案走不同路：
+  //   有禁忌註記 → 維持原本的人工核對，核對過才算出餐（安全閘門）
+  //   其餘       → 預設已出餐，點一下是標「沒出餐」
   function toggleCasePickup(caseId) {
-    const wasPickedUp = casePickedUp.has(caseId);
-    // Un-pickup: always allowed without confirmation
-    if (wasPickedUp) {
-      casePickedUp.delete(caseId);
+    const c = _findCase(caseId);
+    const after = () => {
       _checkBatchDeductions();
-      if (lastTodayData) { _saveDayState(lastTodayData.date); renderTodaySection1(lastTodayData); }
-      return;
-    }
-    // Pickup: check contraindications first
-    const allCases = lastTodayData?.products?.flatMap(p => p.cases) || [];
-    const c = allCases.find(x => x.id === caseId);
-    const doPickup = () => {
-      casePickedUp.add(caseId);
-      if (!deductedCases.has(caseId) && c && !c.is_staff_rx) {
-        deductedCases.add(caseId);
-        api('/api/inventory/consume', 'POST', {
-          prescription_id: c.prescription_id, cups: c.cups, powder_type: c.powder_type
-        }).catch(() => {});
-      }
-      _checkBatchDeductions();
+      _checkCaseDeductions();
       if (lastTodayData) { _saveDayState(lastTodayData.date); renderTodaySection1(lastTodayData); }
     };
-    if (c && c.contraindications) {
-      _showContraConfirm(c.patient_name || c.rx_name, c.contraindications, doPickup);
-    } else {
-      doPickup();
+
+    if (_needsCheck(c)) {
+      if (casePickedUp.has(caseId)) { casePickedUp.delete(caseId); return after(); }
+      _showContraConfirm(c.patient_name || c.rx_name, c.contraindications, () => {
+        casePickedUp.add(caseId);
+        _deductCaseOnce(c);
+        after();
+      });
+      return;
     }
+
+    if (caseMissed.has(caseId)) { caseMissed.delete(caseId); return after(); }
+    caseMissed.add(caseId);
+    after();
+  }
+
+  // 扣庫存只扣一次。個案自己的處方才在這裡扣，員工標準配方走批次那條路
+  function _deductCaseOnce(c) {
+    if (!c || c.is_staff_rx || deductedCases.has(c.id)) return;
+    deductedCases.add(c.id);
+    api('/api/inventory/consume', 'POST', {
+      prescription_id: c.prescription_id, cups: c.cups, powder_type: c.powder_type
+    }).catch(() => {});
   }
 
   // ── 批次拖曳（左側員工重新分批）────────────────────────────────
@@ -922,7 +1053,7 @@ const App = (() => {
             </div>
             
             <div style="overflow-x:auto">
-              <table style="width:100%; border-collapse:collapse; font-size:13px; text-align:left; border:1px solid var(--border); border-radius:var(--radius-sm)">
+              <table style="width:100%; border-collapse:collapse; font-size:14px; text-align:left; border:1px solid var(--border); border-radius:var(--radius-sm)">
                 <thead>
                   <tr style="background:var(--bg); border-bottom:1px solid var(--border); color:var(--text2); font-weight:600">
                     <th style="padding:6px 8px">配方粉類</th>
@@ -936,7 +1067,7 @@ const App = (() => {
               </table>
             </div>
 
-            <div style="margin-top:12px; font-size:12px; color:var(--text3); line-height:1.5">
+            <div style="margin-top:12px; font-size:14px; color:var(--text3); line-height:1.5">
               💡 <strong>今日出餐批次建議量：</strong><br>
               ${pw.batches.map(b => `• <strong>${b.label}</strong>：每批取總粉量 <strong>${b.per_batch}g</strong>`).join('<br>')}
             </div>
@@ -964,7 +1095,7 @@ const App = (() => {
               <div class="row">
                 <span class="row-label">${esc(p.name)}${p.prep_note ? `<span class="prep-note">${esc(p.prep_note)}</span>` : ''}</span>
                 <span class="row-value" style="font-weight:700">${p.total}${p.unit}
-                  <span style="font-size:12px;color:var(--text3)">（${p.per_serving}${p.unit}/${unit}）</span>
+                  <span style="font-size:14px;color:var(--text3)">（${p.per_serving}${p.unit}/${unit}）</span>
                   ${batchRow}
                 </span>
               </div>`;
@@ -1056,8 +1187,8 @@ const App = (() => {
         items.forEach(item => {
           rows += `<div class="row">
             <span class="row-label">${esc(item.name)}</span>
-            <span class="row-value" style="font-weight:700">${item.total}<span style="font-size:12px;color:var(--text3)">${item.unit}</span>
-              <span style="font-size:11px;color:var(--text3);font-weight:400;margin-left:4px">（${item.per}${item.unit}/杯）</span>
+            <span class="row-value" style="font-weight:700">${item.total}<span style="font-size:14px;color:var(--text3)">${item.unit}</span>
+              <span style="font-size:14px;color:var(--text3);font-weight:400;margin-left:4px">（${item.per}${item.unit}/杯）</span>
             </span></div>`;
         });
       });
@@ -1150,7 +1281,7 @@ const App = (() => {
       <div class="prep-item">
         <div class="pi-name">${esc(p.name)}${p.prep_note ? `<span class="prep-note">${esc(p.prep_note)}</span>` : ''}</div>
         <div class="pi-val">${p.total}${p.unit}
-          <span style="font-size:11px;color:var(--text3)">×${c.cups}${unit}</span></div>
+          <span style="font-size:14px;color:var(--text3)">×${c.cups}${unit}</span></div>
       </div>`);
     const powderGrid = (items, mult) => grid(items, p => {
       const tot = Math.round(p.qty * c.cups * mult * 10) / 10;
@@ -1158,7 +1289,7 @@ const App = (() => {
       return `<div class="prep-item">
         <div class="pi-name">${esc(p.name)}</div>
         <div class="pi-val">${tot}${p.unit}${note}
-          <span style="font-size:11px;color:var(--text3)">×${c.cups}${unit}</span></div>
+          <span style="font-size:14px;color:var(--text3)">×${c.cups}${unit}</span></div>
       </div>`;
     });
 
@@ -1332,6 +1463,8 @@ const App = (() => {
     document.getElementById('caseDate').value = new Date().toISOString().slice(0, 10);
     const bagRadio = document.querySelector('input[name="casePowderType"][value="袋裝"]');
     if (bagRadio) bagRadio.checked = true;
+    const del = document.getElementById('caseDeleteBtn');
+    if (del) del.style.display = 'none';
     openModal('modalAddCase');
   }
 
@@ -1348,6 +1481,9 @@ const App = (() => {
     document.getElementById('caseDate').value = c.date || new Date().toISOString().slice(0, 10);
     const radio = document.querySelector(`input[name="casePowderType"][value="${c.powder_type||'袋裝'}"]`);
     if (radio) radio.checked = true;
+    // 刪除只在編輯既有出單時出現，新增時沒有東西可刪
+    const del = document.getElementById('caseDeleteBtn');
+    if (del) { del.style.display = ''; del.onclick = () => { closeModal('modalAddCase'); deleteCase(id); }; }
     openModal('modalAddCase');
   }
 
@@ -3009,14 +3145,15 @@ const App = (() => {
           <div class="ma-sub">${detail}</div>
         </div>
         <div class="ma-go">
-          <button onclick="App.goBuyMeals()">看採購清單</button>
+          <button onclick="App.goBuyMeals()">帶著出門 →</button>
         </div>
       </div>`;
   }
 
+  // 出門買便當是走路中、單手、要打電話的情境，
+  // 不該叫人在今日頁裡自己捲找店家。給一頁只有這件事的畫面
   function goBuyMeals() {
-    currentMealView = 'buy';
-    switchTab('meal');
+    location.href = '/shopping.html';
   }
 
   // 餐盒已經併進「今日出餐順序」，不再另外列一段。
@@ -3091,6 +3228,8 @@ const App = (() => {
     document.getElementById('mealOrderNotes').value = '';
     document.getElementById('mealOrderCase').innerHTML = caseOrderOptions(null);
     document.getElementById('mealOrderStatusGroup').style.display = 'none';
+    const mdel = document.getElementById('mealDeleteBtn');
+    if (mdel) mdel.style.display = 'none';
     openModal('modalMealOrder');
   }
 
@@ -3112,6 +3251,8 @@ const App = (() => {
     document.getElementById('mealOrderCase').innerHTML = caseOrderOptions(o.case_order_id);
     document.getElementById('mealOrderStatusGroup').style.display = 'block';
     document.getElementById('mealOrderStatus').value = o.status;
+    const mdel = document.getElementById('mealDeleteBtn');
+    if (mdel) { mdel.style.display = ''; mdel.onclick = () => { closeModal('modalMealOrder'); deleteMealOrder(id); }; }
     openModal('modalMealOrder');
   }
 
@@ -3366,7 +3507,7 @@ const App = (() => {
 
   return {
     selectUser, logout, switchTab,
-    toggleAttendance, handleStaffChipClick, toggleCasePickup,
+    toggleAttendance, handleStaffChipClick, toggleCasePickup, retrySync, toggleSchMore,
     batchDragStart, batchDragEnd, batchDrop, batchDropDelete, editBatchTime, addBatch, removeBatch,
     schDragStart, schDragOver, schDragLeave, schDrop,
     deleteCase, openAddCase, openEditCase, addCase,
