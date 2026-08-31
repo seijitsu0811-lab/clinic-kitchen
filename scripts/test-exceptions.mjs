@@ -42,30 +42,36 @@ const mk = await api('/api/today/cases', 'POST',
 const caseId = mk.id;
 await setState({ ...origState, staffMissed: [], caseMissed: [] });
 const base = await expected();
-check('前置就緒：2 位出席 ＋ 1 筆 3 杯的出單', base.total_cups === 5,
-      `應扣 ${base.total_cups} 杯（員工 2 ＋ 個案 3）`);
+// 用差值驗，不驗絕對值 —— 今天本來就可能已經有別的出單，
+// 假設「全世界只有我造的資料」的測試，換一天跑就會假失敗
+check('前置就緒：算得出今天的應扣量', base.total_cups >= 5,
+      `基準 ${base.total_cups} 杯（含本測試造的：員工 2 ＋ 個案 3）`);
 
 line('\n━━ 1. 標記員工未領，應扣量要跟著少 ━━');
 await setState({ ...origState, staffMissed: [uA.user_id], caseMissed: [] });
 let after = await expected();
-check('少一位員工＝少一杯', after.total_cups === 4, `5 → ${after.total_cups}`);
+check('少一位員工＝少一杯', base.total_cups - after.total_cups === 1,
+      `${base.total_cups} → ${after.total_cups}`);
 
 line('\n━━ 2. 標記個案未出餐，整筆不列入 ━━');
 await setState({ ...origState, staffMissed: [], caseMissed: [caseId] });
 after = await expected();
-check('少一筆 3 杯的個案', after.total_cups === 2, `5 → ${after.total_cups}`);
+check('少一筆 3 杯的個案', base.total_cups - after.total_cups === 3,
+      `${base.total_cups} → ${after.total_cups}`);
 
 line('\n━━ 3. 兩種例外同時存在 ━━');
 await setState({ ...origState, staffMissed: [uA.user_id, uB.user_id], caseMissed: [caseId] });
 after = await expected();
-check('全部標掉就沒有東西要扣', after.total_cups === 0, `5 → ${after.total_cups}`);
+check('本測試造的量全部被扣掉', base.total_cups - after.total_cups === 5,
+      `${base.total_cups} → ${after.total_cups}（少掉員工 2 ＋ 個案 3）`);
 
 line('\n━━ 4. 沒出席的人被標未領，不會扣兩次 ━━');
 const absent = day.staff.find(s => s.user_id !== uA.user_id && s.user_id !== uB.user_id);
 if (absent) {
   await setState({ ...origState, staffMissed: [absent.user_id], caseMissed: [] });
   after = await expected();
-  check('沒出席的人標未領不影響應扣量', after.total_cups === 5, `應維持 5，實際 ${after.total_cups}`);
+  check('沒出席的人標未領不影響應扣量', after.total_cups === base.total_cups,
+        `應維持 ${base.total_cups}，實際 ${after.total_cups}`);
 } else {
   line('  － 沒有第三位員工可測，略過');
 }

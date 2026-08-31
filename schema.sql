@@ -139,7 +139,7 @@ INSERT OR IGNORE INTO ingredients (name, unit, category, safety_stock, storage_n
   ('甜菜根',     'g',  '蔬菜', 0,    '完整7天｜切開冷藏5天'),
   ('蘋果', 'g',  '水果', 1350, '完整7天｜切塊冷凍後30天'),
   ('檸檬',       'g',  '水果', 135,  '完整7天｜切開冷藏3天'),
-  ('莓果',       'g',  '水果', 1680, '冷凍-18°C｜開袋密封後30天'),
+  ('綜合莓',     'g',  '水果', 1680, '冷凍-18°C｜開袋密封後30天'),
   ('香蕉',       'g',  '水果', 0,    '完整5天｜切塊冷凍後30天'),
   ('奇異果',     'g',  '水果', 0,    '完整5天｜切塊冷凍後30天'),
   ('鳳梨',     'g',  '水果', 0,    ''),
@@ -163,7 +163,7 @@ SELECT id, CASE name
   WHEN '芽菜'     THEN 360  WHEN '羽衣甘藍' THEN 350
   WHEN '貝比生菜' THEN 450  WHEN '胡蘿蔔'   THEN 600
   WHEN '蘋果' THEN 5060 WHEN '檸檬'  THEN 500
-  WHEN '莓果'       THEN 1650 WHEN '奇異果' THEN 64
+  WHEN '綜合莓'     THEN 1650 WHEN '奇異果' THEN 64
   WHEN '燕麥'     THEN 2070 WHEN '核桃'     THEN 1000
   WHEN '薑黃粉'   THEN 170  WHEN '肉桂粉'   THEN 13
   WHEN '薑粉'     THEN 80   WHEN '蛋白粉'   THEN 5000
@@ -191,7 +191,7 @@ INSERT OR IGNORE INTO prescription_ingredients (prescription_id, ingredient_id, 
 INSERT OR IGNORE INTO prescription_ingredients (prescription_id, ingredient_id, qty_per_cup) SELECT (SELECT id FROM prescriptions WHERE code='EMP-00'),(SELECT id FROM ingredients WHERE name='貝比生菜'),15;
 INSERT OR IGNORE INTO prescription_ingredients (prescription_id, ingredient_id, qty_per_cup) SELECT (SELECT id FROM prescriptions WHERE code='EMP-00'),(SELECT id FROM ingredients WHERE name='蘋果'),80;
 INSERT OR IGNORE INTO prescription_ingredients (prescription_id, ingredient_id, qty_per_cup) SELECT (SELECT id FROM prescriptions WHERE code='EMP-00'),(SELECT id FROM ingredients WHERE name='檸檬'),15;
-INSERT OR IGNORE INTO prescription_ingredients (prescription_id, ingredient_id, qty_per_cup) SELECT (SELECT id FROM prescriptions WHERE code='EMP-00'),(SELECT id FROM ingredients WHERE name='莓果'),20;
+INSERT OR IGNORE INTO prescription_ingredients (prescription_id, ingredient_id, qty_per_cup) SELECT (SELECT id FROM prescriptions WHERE code='EMP-00'),(SELECT id FROM ingredients WHERE name='綜合莓'),20;
 INSERT OR IGNORE INTO prescription_ingredients (prescription_id, ingredient_id, qty_per_cup) SELECT (SELECT id FROM prescriptions WHERE code='EMP-00'),(SELECT id FROM ingredients WHERE name='香蕉'),30;
 INSERT OR IGNORE INTO prescription_ingredients (prescription_id, ingredient_id, qty_per_cup) SELECT (SELECT id FROM prescriptions WHERE code='EMP-00'),(SELECT id FROM ingredients WHERE name='燕麥'),10;
 INSERT OR IGNORE INTO prescription_ingredients (prescription_id, ingredient_id, qty_per_cup) SELECT (SELECT id FROM prescriptions WHERE code='EMP-00'),(SELECT id FROM ingredients WHERE name='核桃'),1;
@@ -205,7 +205,7 @@ INSERT OR IGNORE INTO prescription_ingredients (prescription_id, ingredient_id, 
 INSERT OR IGNORE INTO prescription_ingredients (prescription_id, ingredient_id, qty_per_cup) SELECT (SELECT id FROM prescriptions WHERE code='RX-01'),(SELECT id FROM ingredients WHERE name='木瓜'),30;
 INSERT OR IGNORE INTO prescription_ingredients (prescription_id, ingredient_id, qty_per_cup) SELECT (SELECT id FROM prescriptions WHERE code='RX-01'),(SELECT id FROM ingredients WHERE name='蘋果'),40;
 INSERT OR IGNORE INTO prescription_ingredients (prescription_id, ingredient_id, qty_per_cup) SELECT (SELECT id FROM prescriptions WHERE code='RX-01'),(SELECT id FROM ingredients WHERE name='檸檬'),30;
-INSERT OR IGNORE INTO prescription_ingredients (prescription_id, ingredient_id, qty_per_cup) SELECT (SELECT id FROM prescriptions WHERE code='RX-01'),(SELECT id FROM ingredients WHERE name='莓果'),20;
+INSERT OR IGNORE INTO prescription_ingredients (prescription_id, ingredient_id, qty_per_cup) SELECT (SELECT id FROM prescriptions WHERE code='RX-01'),(SELECT id FROM ingredients WHERE name='綜合莓'),20;
 INSERT OR IGNORE INTO prescription_ingredients (prescription_id, ingredient_id, qty_per_cup) SELECT (SELECT id FROM prescriptions WHERE code='RX-01'),(SELECT id FROM ingredients WHERE name='奇異果'),20;
 INSERT OR IGNORE INTO prescription_ingredients (prescription_id, ingredient_id, qty_per_cup) SELECT (SELECT id FROM prescriptions WHERE code='RX-01'),(SELECT id FROM ingredients WHERE name='燕麥'),20;
 INSERT OR IGNORE INTO prescription_ingredients (prescription_id, ingredient_id, qty_per_cup) SELECT (SELECT id FROM prescriptions WHERE code='RX-01'),(SELECT id FROM ingredients WHERE name='核桃'),1;

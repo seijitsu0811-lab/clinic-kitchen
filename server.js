@@ -72,6 +72,13 @@ try {
 // 接著 prescription_ingredients 的種子又會用預設份量插入，把真實配方蓋掉。
 // 先改名，既有那筆就會被 INSERT OR IGNORE 認出來，id 與份量都保住。
 try { db.exec("UPDATE ingredients SET name='蘋果' WHERE name='蘋果(帶皮)'"); } catch(e) {}
+// 「莓果」太籠統，拆成藍莓／綜合莓／蔓越莓／草莓／冷凍草莓之後，它本身改名為綜合莓，
+// 採購與庫存歷史跟著留在同一筆。這行同樣必須在 schema.sql 之前 —— 放後面的話，
+// 種子會重新建一個「莓果」並把它塞回 EMP-00 與 RX-01 的配方
+try {
+  const hasMixed = db.prepare("SELECT 1 FROM ingredients WHERE name='綜合莓'").get();
+  if (!hasMixed) db.exec("UPDATE ingredients SET name='綜合莓' WHERE name='莓果'");
+} catch(e) {}
 
 db.exec(fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8'));
 try { db.exec("ALTER TABLE users ADD COLUMN password TEXT DEFAULT ''"); } catch(e) {}
@@ -198,12 +205,24 @@ try {
   // AW 原本是寫死在庫存試算裡的（每日 1 杯 + 7 杯緩衝），改成處方上的設定，
   // 換人或停用只要改資料，不用改程式。這行只在欄位還是預設值時填一次。
   "UPDATE prescriptions SET daily_cups=1, buffer_cups=7 WHERE name='AW' AND COALESCE(daily_cups,0)=0 AND COALESCE(buffer_cups,0)=0",
+  // 雙週輪替：同一個 rotation_group 裡的處方會依週期自動換手，不必有人記得每兩週去切換
+  "ALTER TABLE prescriptions ADD COLUMN rotation_group TEXT DEFAULT ''",
+  "ALTER TABLE prescriptions ADD COLUMN rotation_index INTEGER DEFAULT 0",
+  // 備料階段：標成「冷凍包」的用料進每週分裝，其餘出餐當天現秤。一個標記長出兩張表
+  "ALTER TABLE prescription_ingredients ADD COLUMN prep_stage TEXT DEFAULT ''",
+  "INSERT OR IGNORE INTO settings (key,value) VALUES ('rotation_weeks','2')",
+  "INSERT OR IGNORE INTO settings (key,value) VALUES ('rotation_anchor','2026-09-07')",
   // 當日工作狀態的單一來源（批次分組、拿取勾選、庫存已扣紀錄）
   `CREATE TABLE IF NOT EXISTS day_state (
      date TEXT PRIMARY KEY, state TEXT NOT NULL DEFAULT '{}',
      updated_at TEXT DEFAULT (datetime('now','localtime')), updated_by TEXT DEFAULT '')`,
 ].forEach(sql => { try { db.exec(sql); } catch(e) {} });
-db.exec("UPDATE prescriptions SET is_staff_rx=1 WHERE code='EMP-00'");
+// 只有在還沒有任何輪替員工處方時，才把 EMP-00 當員工處方。
+// 新配方上線後 EMP-00 退役，這行不能再把它拉回來
+try {
+  const hasRot = db.prepare("SELECT 1 FROM prescriptions WHERE rotation_group='EMP' AND active=1").get();
+  if (!hasRot) db.exec("UPDATE prescriptions SET is_staff_rx=1 WHERE code='EMP-00'");
+} catch (e) { db.exec("UPDATE prescriptions SET is_staff_rx=1 WHERE code='EMP-00'"); }
 db.exec("UPDATE prescriptions SET product_id=1 WHERE product_id IS NULL");
 
 // ── 食材資料整理（idempotent）───────────────────────────
@@ -318,6 +337,164 @@ db.exec('PRAGMA foreign_keys = OFF');
 db.exec('PRAGMA foreign_keys = ON');
 
 mergeApples();   // 必須在上面的改名與去重之後，此時「蘋果」這個品項才存在
+
+// ── 2026-09 新配方：雙週輪替，員工與個案分家 ───────────────
+// 一次性，settings 留永久標記。之後在畫面上怎麼改都不會被這段蓋回去 ——
+// 這是刻意不寫進 schema.sql 的原因：那裡的種子每次部署都會跑，會把使用者刪掉的用料行復活
+const FORMULA_A = [
+  ['羽衣甘藍', 20, '生鮮冷藏', ''], ['貝比生菜', 20, '生鮮冷藏', ''],
+  ['胡蘿蔔', 15, '帶皮切塊', ''],   ['甜菜根', 15, '熟即食或生鮮', ''],
+  ['西洋芹', 15, '生洗切段', ''],   ['大黃瓜', 20, '帶皮切塊', ''],
+  ['冷凍菠菜', 15, '殺菁後冷凍直取', '冷凍包'],
+  ['冷凍花椰菜', 15, 'IQF 冷凍直取', '冷凍包'],
+  ['蘋果', 40, '帶皮切塊', ''],     ['檸檬', 10, '帶皮切角', ''],
+  ['奇異果', 20, '帶皮刷毛', ''],   ['鳳梨', 15, '去皮切塊後冷凍', '冷凍包'],
+  ['香蕉', 15, '熟成去皮切段後冷凍', '冷凍包'],
+  ['芭樂', 15, '帶籽切塊', ''],     ['藍莓', 15, '冷凍直取', '冷凍包'],
+  ['蛋白粉', 30, '', ''], ['肉桂粉', 1, '', ''], ['黑胡椒', 1, '', ''],
+  ['核桃', 10, '', ''],   ['橄欖油', 10, '特級初榨', ''], ['水', 275, '常溫 250~300ml', '']
+];
+const FORMULA_B = [
+  ['羽衣甘藍', 20, '生鮮冷藏', ''], ['貝比生菜', 20, '生鮮冷藏', ''],
+  ['甜椒', 15, '生洗去籽（紅黃皆可）', ''], ['牛番茄', 20, '帶皮切塊', ''],
+  ['紫高麗菜', 15, '切絲生打', ''], ['櫛瓜', 15, '帶皮生切', ''],
+  ['青江菜', 15, '生洗切段（有機）', ''], ['蘿蔓生菜', 15, '生洗切段（取菜心）', ''],
+  ['蘋果', 40, '帶皮切塊', ''],     ['檸檬', 10, '帶皮切角', ''],
+  ['綜合莓', 20, '三種綜合、冷凍直取', '冷凍包'],
+  ['木瓜', 15, '去籽切塊', ''],     ['酪梨', 15, '去皮切塊、冷藏或冷凍', '冷凍包'],
+  ['甜橙', 15, '去外皮留白絲（香吉士亦可）', ''],
+  ['葡萄', 15, '無籽、帶皮冷凍', '冷凍包'],
+  ['蛋白粉', 30, '', ''], ['肉桂粉', 1, '', ''], ['黑胡椒', 1, '', ''],
+  ['核桃', 10, '', ''],   ['橄欖油', 10, '特級初榨', ''], ['水', 275, '常溫 250~300ml', '']
+];
+
+// 修掉一次意外：莓果改名時序放錯，schema.sql 又生了一筆「莓果」並塞回配方，
+// 造成同一張處方同時有綜合莓與莓果。只刪重複那筆，原本的用量不動
+function dropDuplicateBerry() {
+  if (db.prepare("SELECT 1 FROM settings WHERE key='dropped_dup_berry'").get()) return;
+  const dup = db.prepare("SELECT id FROM ingredients WHERE name='莓果'").get();
+  const keep = db.prepare("SELECT id FROM ingredients WHERE name='綜合莓'").get();
+  if (dup && keep) {
+    tx(() => {
+      // 兩者都在同一張處方時，刪掉後來多出來的「莓果」那行；
+      // 只有莓果沒有綜合莓的處方，把它接回綜合莓，用量原封不動
+      db.prepare(`DELETE FROM prescription_ingredients WHERE ingredient_id=? AND prescription_id IN
+                  (SELECT prescription_id FROM prescription_ingredients WHERE ingredient_id=?)`)
+        .run(dup.id, keep.id);
+      db.prepare('UPDATE prescription_ingredients SET ingredient_id=? WHERE ingredient_id=?')
+        .run(keep.id, dup.id);
+      db.prepare('DELETE FROM inventory WHERE ingredient_id=?').run(dup.id);
+      db.prepare('DELETE FROM ingredients WHERE id=?').run(dup.id);
+      db.prepare("INSERT OR REPLACE INTO settings (key,value) VALUES ('dropped_dup_berry',?)")
+        .run(new Date().toISOString().slice(0,19).replace('T',' '));
+    });
+    console.log('已清除重複的「莓果」品項，配方接回綜合莓');
+  }
+}
+dropDuplicateBerry();
+
+function installFormulaSets() {
+  if (db.prepare("SELECT 1 FROM settings WHERE key='formula_sets_2026_09'").get()) return;
+
+  const upIng = db.prepare(
+    'INSERT OR IGNORE INTO ingredients (name,unit,category,safety_stock,storage_note) VALUES (?,?,?,?,?)');
+  // 冷凍與生鮮是分開採購、分開計價、分開存放的兩種貨，所以是兩個品項；
+  // 「帶皮切塊」「去皮冷凍」那種同一批貨的處理方式，寫在用料行的 prep，不另建品項
+  [
+    ['西洋芹','蔬菜',0,'完整7天｜切段冷藏3天'],   ['大黃瓜','蔬菜',0,'完整7天｜切塊冷藏3天'],
+    ['冷凍菠菜','蔬菜',0,'冷凍-18°C｜殺菁IQF｜開袋後30天'],
+    ['冷凍花椰菜','蔬菜',0,'冷凍-18°C｜IQF｜開袋後30天'],
+    ['甜椒','蔬菜',0,'完整7天｜去籽冷藏3天'],     ['牛番茄','蔬菜',0,'完整5天｜切塊冷藏2天'],
+    ['紫高麗菜','蔬菜',0,'完整10天｜切絲冷藏3天'],['櫛瓜','蔬菜',0,'完整7天｜切開冷藏3天'],
+    ['青江菜','蔬菜',0,'冷藏4°C｜最長5天'],       ['蘿蔓生菜','蔬菜',0,'冷藏4°C｜最長5天'],
+    ['芭樂','水果',0,'完整7天｜切塊冷藏2天'],     ['酪梨','水果',0,'後熟後冷藏3天｜切塊可冷凍'],
+    ['甜橙','水果',0,'完整14天｜去皮後冷藏2天'],  ['葡萄','水果',0,'冷藏7天｜帶皮冷凍30天'],
+    ['藍莓','水果',0,'冷凍-18°C｜開袋密封後30天'],
+    ['蔓越莓','水果',0,'冷凍-18°C｜開袋密封後30天'],
+    ['草莓','水果',0,'冷藏4°C｜最長3天'],
+    ['冷凍草莓','水果',0,'冷凍-18°C｜開袋密封後30天']
+  ].forEach(([n,c,ss,note]) => upIng.run(n,'g',c,ss,note));
+
+  // 「莓果」是個籠統的舊品項，改名成綜合莓，採購與庫存歷史跟著留下來；
+  // 其餘莓類另外建，不去動它的歷史
+  // 「莓果」→「綜合莓」的改名在檔案上方、schema.sql 之前就做掉了
+
+  const ingId = n => (db.prepare('SELECT id FROM ingredients WHERE name=?').get(n) || {}).id;
+  const mkRx = (code, name, group, idx, isStaff, rows) => {
+    let rx = db.prepare('SELECT id FROM prescriptions WHERE code=?').get(code);
+    if (!rx) {
+      db.prepare(
+        `INSERT INTO prescriptions (product_id,code,name,formula_type,timing,is_staff_rx,active,rotation_group,rotation_index)
+         VALUES (1,?,?, '全配方','餐前',?,1,?,?)`
+      ).run(code, name, isStaff ? 1 : 0, group, idx);
+      rx = db.prepare('SELECT id FROM prescriptions WHERE code=?').get(code);
+    }
+    const ins = db.prepare(
+      `INSERT OR IGNORE INTO prescription_ingredients (prescription_id,ingredient_id,qty_per_cup,prep,prep_stage)
+       VALUES (?,?,?,?,?)`);
+    rows.forEach(([n, q, prep, stage]) => { const id = ingId(n); if (id) ins.run(rx.id, id, q, prep, stage); });
+    return rx.id;
+  };
+
+  tx(() => {
+    mkRx('EMP-01', '員工配方 第1組', 'EMP', 0, 1, FORMULA_A);
+    mkRx('EMP-02', '員工配方 第2組', 'EMP', 1, 1, FORMULA_B);
+    mkRx('RX-08',  '輪替配方 第1組', 'RX08', 0, 0, FORMULA_A);
+    mkRx('RX-09',  '輪替配方 第2組', 'RX08', 1, 0, FORMULA_B);
+
+    // RX-07 是 EMP-00 的重複，內容已經漂移（檸檬 15 vs 30、核桃 1 vs 0）且從來沒有出單走它。
+    // 停用而不是刪除 —— 萬一有人記得它，還找得回來
+    db.exec("UPDATE prescriptions SET active=0, is_staff_rx=0 WHERE code='RX-07'");
+    // EMP-00 退役但保留：歷史出單指向它，砍掉會讓過去的成本算不出來
+    db.exec("UPDATE prescriptions SET active=0, is_staff_rx=0 WHERE code='EMP-00'");
+
+    db.prepare("INSERT OR REPLACE INTO settings (key,value) VALUES ('formula_sets_2026_09',?)")
+      .run(new Date().toISOString().slice(0,19).replace('T',' '));
+  });
+  console.log('新配方已建立：EMP-01/EMP-02（員工）、RX-08/RX-09（個案），EMP-00 與 RX-07 已退役');
+}
+installFormulaSets();
+
+// ── 雙週輪替配方 ─────────────────────────────────────────
+// 兩組配方交替使用，由日期算出今天該用哪一組 —— 沒有人需要每兩週去按一次切換。
+// 週期長度與起算日放在 settings，改設定就能變成三組輪替或改成每三週。
+function rotationSetting(key, dflt) {
+  try {
+    const r = db.prepare('SELECT value FROM settings WHERE key=?').get(key);
+    return r && r.value ? r.value : dflt;
+  } catch (e) { return dflt; }
+}
+
+// 某個輪替組在指定日期該用的處方。組員少於 2 張就直接回傳唯一那張
+function activeRxInGroup(group, date) {
+  const members = db.prepare(
+    "SELECT id, code, rotation_index FROM prescriptions WHERE rotation_group=? AND active=1 ORDER BY rotation_index"
+  ).all(group);
+  if (!members.length) return null;
+  if (members.length === 1) return members[0];
+  const weeks = Number(rotationSetting('rotation_weeks', '2')) || 2;
+  const anchor = rotationSetting('rotation_anchor', '2026-09-07');
+  const ms = Date.parse(date + 'T00:00:00') - Date.parse(anchor + 'T00:00:00');
+  const cycle = Math.floor(ms / (7 * 86400000 * weeks));
+  // 起算日之前是負數，取正的餘數才不會落到組員範圍外
+  const idx = ((cycle % members.length) + members.length) % members.length;
+  return members.find(m => m.rotation_index === idx) || members[0];
+}
+
+// 員工處方只在這裡決定一次。四個地方原本各自 SELECT ... LIMIT 1，
+// 兩張員工處方同時啟用時 LIMIT 1 會變成不確定，批次和庫存就會各算各的
+function staffRxFor(date, productId) {
+  const rot = activeRxInGroup('EMP', date || today());
+  if (rot) {
+    const full = db.prepare('SELECT * FROM prescriptions WHERE id=?').get(rot.id);
+    if (full && (!productId || full.product_id === productId)) return full;
+    if (full && productId && full.product_id !== productId) return null;
+  }
+  return productId
+    ? db.prepare('SELECT * FROM prescriptions WHERE product_id=? AND is_staff_rx=1 AND active=1 LIMIT 1').get(productId)
+    : db.prepare('SELECT * FROM prescriptions WHERE is_staff_rx=1 AND active=1 LIMIT 1').get();
+}
+
 
 // 新增食材（不存在才加）
 [
@@ -867,9 +1044,7 @@ function calcDailyCost(date, ucCache, lp) {
     let ingCost = 0, staffCups = 0, caseCups = 0;
 
     // 員工批次
-    const staffRx = db.prepare(
-      'SELECT id FROM prescriptions WHERE product_id=? AND is_staff_rx=1 AND active=1 LIMIT 1'
-    ).get(prod.id);
+    const staffRx = staffRxFor(date, prod.id);
     if (staffRx && attendingCount > 0) {
       staffCups = attendingCount;
       db.prepare(
@@ -1136,9 +1311,7 @@ app.get('/api/today', async (req, res) => {
 
   const productData = products.map(prod => {
     // 員工標準處方
-    const staffRx = db.prepare(
-      `SELECT * FROM prescriptions WHERE product_id=? AND is_staff_rx=1 AND active=1 LIMIT 1`
-    ).get(prod.id);
+    const staffRx = staffRxFor(date, prod.id);
 
     // 個案出單（今日，此產品）— 先取得以計算批次
     const cases = db.prepare(
@@ -1364,10 +1537,23 @@ app.delete('/api/prescriptions/:id', (req, res) => {
 });
 
 // 取得處方食材
+// 某個輪替組在某一天該用哪一張處方。畫面和測試都問這裡，不各自算一次
+app.get('/api/rotation/active', (req, res) => {
+  const group = req.query.group || 'EMP';
+  const date  = req.query.date  || today();
+  const rx = activeRxInGroup(group, date);
+  if (!rx) return res.json({ group, date, code: null, id: null });
+  const full = db.prepare('SELECT id, code, name FROM prescriptions WHERE id=?').get(rx.id);
+  res.json({ group, date, ...full,
+             weeks: Number(rotationSetting('rotation_weeks', '2')),
+             anchor: rotationSetting('rotation_anchor', '2026-09-07') });
+});
+
 app.get('/api/prescriptions/:id/ingredients', (req, res) => {
   const all = db.prepare('SELECT id, name, unit, category, sort_order FROM ingredients WHERE active=1 ORDER BY sort_order, category, name').all();
   const used = db.prepare(
-    `SELECT pi.ingredient_id, pi.qty_per_cup, COALESCE(pi.prep,'') prep
+    `SELECT pi.ingredient_id, pi.qty_per_cup, COALESCE(pi.prep,'') prep,
+            COALESCE(pi.prep_stage,'') prep_stage
      FROM prescription_ingredients pi WHERE pi.prescription_id=?`
   ).all(req.params.id);
   const usedMap = {};
@@ -1375,21 +1561,28 @@ app.get('/api/prescriptions/:id/ingredients', (req, res) => {
   res.json(all.map(i => ({
     ...i,
     qty_per_cup: usedMap[i.id] ? usedMap[i.id].qty_per_cup : 0,
-    prep:        usedMap[i.id] ? usedMap[i.id].prep : ''
+    prep:        usedMap[i.id] ? usedMap[i.id].prep : '',
+    prep_stage:  usedMap[i.id] ? usedMap[i.id].prep_stage : ''
   })));
 });
 
 // 更新處方食材（完整覆蓋）
 app.put('/api/prescriptions/:id/ingredients', (req, res) => {
-  const items = req.body; // [{ingredient_id, qty_per_cup, prep}]
+  const items = req.body; // [{ingredient_id, qty_per_cup, prep, prep_stage}]
   tx(() => {
+    // 這裡是先刪再插，送進來沒帶 prep_stage 的話冷凍包標記會整批消失。
+    // 先把現有的記下來，沒帶就沿用原值
+    const prev = {};
+    db.prepare("SELECT ingredient_id, COALESCE(prep_stage,'') ps FROM prescription_ingredients WHERE prescription_id=?")
+      .all(req.params.id).forEach(r => { prev[r.ingredient_id] = r.ps; });
     db.prepare('DELETE FROM prescription_ingredients WHERE prescription_id=?').run(req.params.id);
     const ins = db.prepare(
-      'INSERT INTO prescription_ingredients (prescription_id,ingredient_id,qty_per_cup,prep) VALUES (?,?,?,?)'
+      'INSERT INTO prescription_ingredients (prescription_id,ingredient_id,qty_per_cup,prep,prep_stage) VALUES (?,?,?,?,?)'
     );
     items.forEach(item => {
       if (item.qty_per_cup > 0) {
-        ins.run(req.params.id, item.ingredient_id, item.qty_per_cup, (item.prep || '').trim());
+        const stage = item.prep_stage !== undefined ? item.prep_stage : (prev[item.ingredient_id] || '');
+        ins.run(req.params.id, item.ingredient_id, item.qty_per_cup, (item.prep || '').trim(), stage);
       }
     });
   });
@@ -1550,9 +1743,7 @@ function expectedForDate(date) {
     'SELECT user_id FROM staff_attendance WHERE date=? AND attending=1'
   ).all(date).map(r => r.user_id);
   const staffCups = attendingIds.filter(id => !ex.staffMissed.has(id)).length;
-  const staffRx = db.prepare(
-    'SELECT id FROM prescriptions WHERE is_staff_rx=1 AND active=1 LIMIT 1'
-  ).get();
+  const staffRx = staffRxFor(date);
   if (staffRx && staffCups > 0) out.push({ rxId: staffRx.id, cups: staffCups, powderType: '' });
 
   db.prepare(
@@ -1734,7 +1925,7 @@ app.get('/api/inventory/check', (req, res) => {
   const empCups = todayIsMeal
     ? todayAtt + Math.max(empDays - 1, 0) * roster
     : empDays * roster;
-  const empRx = db.prepare("SELECT id FROM prescriptions WHERE is_staff_rx=1 AND active=1 LIMIT 1").get();
+  const empRx = staffRxFor(today());
   if (empRx) addRxNeeds(empRx.id, empCups);
 
   // 3. 本週已排個案出單（排除 AW 和員工配方，避免重複計算）

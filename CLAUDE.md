@@ -36,6 +36,16 @@ Production DB：`/data/clinic_v2.db`（`DB_PATH` 環境變數）。
 > 這個專案發生過：`schema.sql` 每次啟動塞 14 筆固定日期的採購，而那個日期正好是某個遷移的觸發條件，該遷移又沒留執行標記 —— 結果**每次部署都把採購歷史刪光**，兩個月的資料就這樣沒了。
 > 一次性遷移一定要在 `settings` 寫永久標記。
 
+### 3.5 配方是雙週輪替的，不要寫死代號
+
+員工與個案各有兩張處方輪流用（`rotation_group` + `rotation_index`），週期與起算日在 `settings`（`rotation_weeks` / `rotation_anchor`）。
+
+**要拿「現在的員工處方」一律呼叫 `staffRxFor(date)`，不要自己寫 `WHERE is_staff_rx=1 ... LIMIT 1`** —— 兩張同時啟用時 LIMIT 1 是不確定的，批次和庫存會各算各的。前端與測試問 `/api/rotation/active`。
+
+`EMP-00` 與 `RX-07` 已退役（`active=0`）但保留：歷史出單指向它們，砍掉過去的成本就算不出來。
+
+新配方**不寫進 `schema.sql`**，而是 `installFormulaSets()` 這個有永久標記的一次性遷移 —— 放進種子的話，使用者在畫面上刪掉的用料行每次部署都會復活。
+
 ### 4. 精力湯的計算邏輯是凍結的
 
 `buildPrepAndPowder()`、`calcBatches()`、粉類 ×1.1 的規則 —— 這些是廚房每天照著做的東西，**改動前必須先問**。加功能時只加欄位、不改既有回傳值的意義。
@@ -75,6 +85,10 @@ Production DB：`/data/clinic_v2.db`（`DB_PATH` 環境變數）。
 **處理方式（帶皮／去皮／打泥）是配方那一行的屬性（`prescription_ingredients.prep`），不是另一種物料。** 要新增食材前先問：這是不是已經有的東西換個做法？
 
 > 改食材名稱時注意：**改名必須在 `db.exec(schema.sql)` 之前**。schema 的種子資料是用名稱找食材的，改名放在後面會讓它以為食材不存在而新建一筆（id 也變），接著 `prescription_ingredients` 的種子就用預設份量把真實配方蓋掉。
+>
+> 這條規則在 2026-08 被踩了第二次：把「莓果」改名成「綜合莓」的那段寫在遷移裡（schema.sql 之後），
+> 種子就重新建了一個「莓果」並塞回 EMP-00 與 RX-01 的配方，同一張處方同時有兩種莓，熱量多算 10 kcal。
+> 改名一律放進檔案上方那個「schema.sql 之前」的區塊，**而且 `schema.sql` 裡的種子名稱要一起改**，否則下次部署又生一筆。
 
 ### 二、讓系統自己抓矛盾，不要靠人用眼睛核對
 

@@ -150,8 +150,11 @@ const t = await api('/api/today');
 check('/api/today 仍回傳 products', Array.isArray(t.products) && t.products.length > 0);
 check('精力湯批次計算未受影響', !!t.products[0].batches);
 check('/api/today 新增 meals 區塊', !!t.meals);
-const rxCost = costs.prescriptions.find(p => p.code === 'EMP-00');
-check('處方成本表仍正常', rxCost && rxCost.total_cost > 0, `EMP-00 每杯 ${money(rxCost.total_cost)}`);
+// 不寫死代號 —— 員工配方會隨雙週輪替換手，寫死哪一張遲早會失效
+const staffCode = t.products[0].staff_rx && t.products[0].staff_rx.code;
+const rxCost = costs.prescriptions.find(p => p.code === staffCode);
+check('處方成本表仍正常', rxCost && rxCost.total_cost > 0,
+      `${staffCode} 每杯 ${rxCost ? money(rxCost.total_cost) : '查無'}`);
 
 line('\n━━ 12. 清理測試資料 ━━');
 for (const o of (await api('/api/meals/today')).orders) {
