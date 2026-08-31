@@ -788,6 +788,46 @@
     }
 
     /* 存量掉到安全水位以下：這週夠不夠是一回事，該不該補是另一回事 */
+    /* 逐日庫存預測 */
+    .fc-wrap { margin: 4px 0 18px; }
+    .fc-card {
+      background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-md);
+      padding: 14px 16px; margin-bottom: 10px; box-shadow: var(--shadow-sm);
+    }
+    .fc-card h3 { font-size: 15px; font-weight: 800; margin: 0 0 4px; color: var(--text); }
+    .fc-sub { font-size: 13px; color: var(--text2); }
+    .fc-switch { border-left: 4px solid var(--orange); }
+    .fc-switch h3 { color: var(--orange); }
+    .fc-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+    .fc-chip {
+      font-size: 13px; font-weight: 700; padding: 6px 10px; border-radius: 999px;
+      background: var(--bg); border: 1px solid var(--border); color: var(--text2);
+    }
+    .fc-chip.short { background: rgba(239,68,68,.10); border-color: rgba(239,68,68,.35); color: var(--red); }
+    .fc-table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 14px; }
+    .fc-table th {
+      text-align: left; font-size: 12px; font-weight: 700; color: var(--text3);
+      padding: 6px 8px; border-bottom: 1px solid var(--border); white-space: nowrap;
+    }
+    .fc-table td { padding: 8px; border-bottom: 1px solid var(--border); }
+    .fc-table td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .fc-buy { font-weight: 800; color: var(--primary); }
+    .fc-out { font-size: 12px; color: var(--red); font-weight: 700; white-space: nowrap; }
+    .fc-scroll { overflow-x: auto; }
+    .fc-more {
+      background: none; border: none; color: var(--primary); font-size: 14px; font-weight: 700;
+      cursor: pointer; padding: 10px 4px; min-height: 44px;
+    }
+    .fc-days { display: flex; gap: 4px; overflow-x: auto; padding: 8px 0 2px; }
+    .fc-day {
+      flex: 0 0 auto; min-width: 62px; text-align: center; padding: 8px 6px;
+      border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--bg);
+      font-size: 12px; line-height: 1.5;
+    }
+    .fc-day.meal { border-color: var(--orange); }
+    .fc-day.st   { background: var(--primary-light); }
+    .fc-day.swap { border-color: var(--orange); border-width: 2px; font-weight: 800; }
+    .fc-day b { display: block; font-size: 13px; }
     .inv-below-safety { color: #B45309; font-weight: 700; }
 
     /* 處理方式：同一種食材的不同做法（帶皮／去皮／打泥），備料時要看得到 */
@@ -2505,6 +2545,7 @@
         <button class="btn btn-primary btn-sm" onclick="App.openPurchase()">進貨</button>
       </div>
     </div>
+    <div id="invForecast"></div>
     <div id="invList"></div>
   </div>
 

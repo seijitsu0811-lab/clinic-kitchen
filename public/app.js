@@ -1769,8 +1769,92 @@ const App = (() => {
     alert('配方已儲存');
   }
 
+  // ── 逐日庫存預測 ────────────────────────────────────────
+  // 備料的人打開庫存頁要問三件事：這批要備多少、撐到哪一天、換方案前要先叫什麼。
+  // 逐項現況是查證用的，放在後面
+  let fcShowAll = false;
+  let fcShowAllSwitch = false;   // 換組預警的完整清單
+
+  function _fcDow(n) { return ['日','一','二','三','四','五','六'][n]; }
+  function _fcMd(d)  { return d.slice(5).replace('-', '/'); }
+
+  async function renderForecast() {
+    const el = document.getElementById('invForecast');
+    if (!el) return;
+    let f;
+    try { f = await api('/api/inventory/forecast?days=28'); }
+    catch (e) { el.innerHTML = ''; return; }
+
+    const w = f.switch_warning;
+    // 換方案預警擺最上面：這是唯一「現在不做、之後補不了」的事 ——
+    // 下一個方案的蔬果在這個方案期間完全不會被動到，庫存 0 也不會有任何警告
+    const switchCard = w ? `
+      <div class="fc-card fc-switch">
+        <h3>⚠ ${_fcMd(w.date)} 換 ${esc(w.to)}（還有 ${w.days_ahead} 天）</h3>
+        <div class="fc-sub">這些現在完全不會用到，所以平常不會有缺貨警告。要先叫貨：</div>
+        <div class="fc-chips">
+          ${(fcShowAllSwitch ? w.missing : w.missing.slice(0, 6)).map(m =>
+            `<span class="fc-chip short">${esc(m.name)} 缺 ${Math.round(m.need - m.stock)}g</span>`).join('')}
+        </div>
+        ${w.missing.length > 6 ? `<button class="fc-more" onclick="App.toggleSwitchAll()">${
+          fcShowAllSwitch ? '收起' : `還有 ${w.missing.length - 6} 樣・展開全部 ▾`}</button>` : ''}
+      </div>` : '';
+
+    // 這一批要備多少
+    const buy = f.ingredients.filter(i => i.buy > 0);
+    const shown = fcShowAll ? buy : buy.slice(0, 8);
+    const rows = shown.map(i => `
+      <tr>
+        <td>${esc(i.name)}${i.below_safety ? ' <span class="fc-out">低於安全量</span>' : ''}</td>
+        <td class="num">${i.stock}</td>
+        <td class="num">${i.need_window}</td>
+        <td class="num">${i.buffer}</td>
+        <td class="num fc-buy">${i.buy}${esc(i.unit)}</td>
+        <td class="num">${i.runs_out_on ? `<span class="fc-out">${_fcMd(i.runs_out_on)}</span>` : '—'}</td>
+      </tr>`).join('');
+
+    const buyCard = `
+      <div class="fc-card">
+        <h3>這一批要備到 ${_fcMd(f.prep_window.to)}（${f.prep_window.days} 天）</h3>
+        <div class="fc-sub">
+          下一個盤點日是 ${_fcMd(f.prep_window.to)}，中間沒人盤點，所以要一次備足。
+          緩衝抓 ${f.buffer.pct}% 或 ${f.buffer.cups} 杯份（突發外帶）的大者。
+        </div>
+        ${buy.length ? `
+        <div class="fc-scroll"><table class="fc-table">
+          <tr><th>食材</th><th>現有</th><th>這批要用</th><th>緩衝</th><th>要買</th><th>見底</th></tr>
+          ${rows}
+        </table></div>
+        ${buy.length > 8 ? `<button class="fc-more" onclick="App.toggleForecastAll()">${
+          fcShowAll ? '收起' : `還有 ${buy.length - 8} 樣・展開 ▾`}</button>` : ''}`
+        : '<div class="fc-sub" style="margin-top:8px">這一批的量都夠，不用叫貨。</div>'}
+      </div>`;
+
+    // 未來兩週的節奏：哪天有員工餐、哪天要盤點、哪天換方案
+    const first = f.days[0] && f.days[0].plan_code;
+    const daysCard = `
+      <div class="fc-card">
+        <h3>接下來兩週</h3>
+        <div class="fc-sub">目前是${esc(f.plan_today ? f.plan_today.name : '—')}　橘框＝員工餐日　藍底＝盤點日</div>
+        <div class="fc-days">
+          ${f.days.slice(0, 14).map(d => `
+            <div class="fc-day${d.is_staff_meal_day ? ' meal' : ''}${d.is_stocktake_day ? ' st' : ''}${
+                 d.plan_code !== first ? ' swap' : ''}">
+              <b>${_fcMd(d.date)}</b>週${_fcDow(d.dow)}
+              <div>${d.cups ? d.cups + '杯' : '—'}</div>
+            </div>`).join('')}
+        </div>
+      </div>`;
+
+    el.innerHTML = '<div class="fc-wrap">' + switchCard + buyCard + daysCard + '</div>';
+  }
+
+  function toggleForecastAll() { fcShowAll = !fcShowAll; renderForecast(); }
+  function toggleSwitchAll()   { fcShowAllSwitch = !fcShowAllSwitch; renderForecast(); }
+
   // ── 庫存管理 ────────────────────────────────────────────
   async function loadInventory() {
+    renderForecast();          // 不等它，庫存清單先出來
     const [items, checkRes] = await Promise.all([
       api('/api/inventory'),
       api('/api/inventory/check')
@@ -3561,6 +3645,7 @@ const App = (() => {
     toggleLeaveRestore,
     loadMeals, switchMealTab, switchMealView, advanceMealStatus, goBuyMeals,
     openAddMealOrder, openEditMealOrder, saveMealOrder, deleteMealOrder, updateBoxHint,
+    toggleForecastAll, toggleSwitchAll,
     openVendorPurchase, saveMealPurchase,
     openEditMealItem, saveMealItem,
     openEditNutritionCard, saveNutritionCard, reviewCard, openPrintCards,
