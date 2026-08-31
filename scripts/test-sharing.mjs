@@ -37,8 +37,12 @@ check('阿北套餐在菜單上', !!abei, abei ? `${abei.display_name} $${abei.p
 check('價格 125', abei && abei.price_box === 125, abei && String(abei.price_box));
 check('報給店家的品名是內容物', abei && /小肉|豬血湯/.test(abei.vendor_item_name || ''),
       abei && abei.vendor_item_name);
-check('熱量標為待確認，不用估算值充數',
-      abei && abei.kcal === 0, abei && `${abei.kcal} kcal`);
+check('熱量已算出並標明是估算', abei && abei.kcal === 485 && abei.kcal_source === '內部估算',
+      abei && `${abei.kcal} kcal（${abei.kcal_source}）`);
+const shop = (menu.series || []).find(s => (s.items || []).some(i => i.code === 'SET-A4-PORK'));
+check('店家資訊齊全（採購單靠它排順序與撥號）',
+      shop && shop.vendor_name === '大鼎豬血湯專門店' && shop.walk_minutes === 1 && !!shop.vendor_phone,
+      shop && `${shop.vendor_name}｜走 ${shop.walk_minutes} 分｜${shop.vendor_phone}`);
 
 line('\n━━ 2. 一人一盒 ━━');
 await mk(3, 1, 1, 'ZZ分食測試甲');

@@ -363,9 +363,9 @@ const FORMULA_A = [
 ];
 const FORMULA_B = [
   ['羽衣甘藍', 20, '生鮮冷藏', ''], ['貝比生菜', 20, '生鮮冷藏', ''],
-  ['甜椒', 15, '生洗去籽（紅黃皆可）', ''], ['牛番茄', 20, '帶皮切塊', ''],
+  ['櫻桃蘿蔔', 15, '帶皮洗淨切塊', ''], ['牛番茄', 20, '帶皮切塊', ''],
   ['紫高麗菜', 15, '切絲生打', ''], ['櫛瓜', 15, '帶皮生切', ''],
-  ['青江菜', 15, '生洗切段（有機）', ''], ['蘿蔓生菜', 15, '生洗切段（取菜心）', ''],
+  ['青江菜', 15, '生洗切段（有機）', ''], ['萵苣', 15, '洗淨撕小片（美生菜）', ''],
   ['蘋果', 40, '帶皮切塊', ''],     ['檸檬', 10, '帶皮切角', ''],
   ['綜合莓', 20, '三種綜合、冷凍直取', '冷凍包'],
   ['木瓜', 15, '去籽切塊', ''],     ['酪梨', 15, '去皮切塊、冷藏或冷凍', '冷凍包'],
@@ -402,6 +402,61 @@ dropDuplicateBerry();
 
 // 阿北套餐與加菜。一次性、有永久標記；店家的分店／電話／步行時間留白，
 // 由使用者在畫面上補 —— 採購單靠這些欄位排順序和撥號
+// 第二組配方換兩樣（甜椒→櫻桃蘿蔔、蘿蔓生菜→萵苣），並補上阿北的店家與熱量。
+// 只換這兩行，其餘用量不動；換下來的兩樣沒有人用了就停用，不刪除
+function updateFormulaB2026() {
+  if (db.prepare("SELECT 1 FROM settings WHERE key='formula_b_swap_2026_09'").get()) return;
+  const ingId = n => (db.prepare('SELECT id FROM ingredients WHERE name=?').get(n) || {}).id;
+  const mkIng = (n, c, note) =>
+    db.prepare('INSERT OR IGNORE INTO ingredients (name,unit,category,safety_stock,storage_note) VALUES (?,?,?,0,?)')
+      .run(n, 'g', c, note);
+
+  tx(() => {
+    mkIng('櫻桃蘿蔔', '蔬菜', '完整10天｜切塊冷藏3天');
+    mkIng('萵苣',     '蔬菜', '冷藏4°C｜最長5天');
+
+    const swaps = [['甜椒', '櫻桃蘿蔔', '帶皮洗淨切塊'], ['蘿蔓生菜', '萵苣', '洗淨撕小片（美生菜）']];
+    ['EMP-02', 'RX-09'].forEach(code => {
+      const rx = db.prepare('SELECT id FROM prescriptions WHERE code=?').get(code);
+      if (!rx) return;
+      swaps.forEach(([from, to, prep]) => {
+        const fid = ingId(from), tid = ingId(to);
+        if (!fid || !tid) return;
+        const row = db.prepare('SELECT qty_per_cup FROM prescription_ingredients WHERE prescription_id=? AND ingredient_id=?')
+                      .get(rx.id, fid);
+        if (!row) return;
+        db.prepare('DELETE FROM prescription_ingredients WHERE prescription_id=? AND ingredient_id=?')
+          .run(rx.id, fid);
+        db.prepare(`INSERT OR IGNORE INTO prescription_ingredients
+                     (prescription_id,ingredient_id,qty_per_cup,prep,prep_stage) VALUES (?,?,?,?,'')`)
+          .run(rx.id, tid, row.qty_per_cup, prep);
+      });
+    });
+
+    // 換下來的兩樣如果沒有任何處方在用，就停用；有人用就留著
+    ['甜椒', '蘿蔓生菜'].forEach(n => {
+      const id = ingId(n);
+      if (!id) return;
+      const used = db.prepare('SELECT 1 FROM prescription_ingredients WHERE ingredient_id=?').get(id);
+      if (!used) db.prepare('UPDATE ingredients SET active=0 WHERE id=?').run(id);
+    });
+
+    // 阿北的店家資訊
+    db.prepare("UPDATE vendors SET name='大鼎豬血湯專門店', phone='02-2515-2519', walk_minutes=1, order_note='' WHERE name='阿北'")
+      .run();
+
+    // 阿北套餐熱量：半碗飯 130 + 控肉 250 + 豬血湯 60 + 加青菜 45。
+    // 控肉大小是最大的變數（70~100g 差約 100 kcal），所以標為內部估算
+    db.prepare(`UPDATE meal_items SET kcal=485, protein_g=20.3, kcal_single=485, protein_g_single=20.3,
+                 kcal_source='內部估算', nutrition_as_of=?
+                WHERE code='SET-A4-PORK'`).run(new Date().toISOString().slice(0, 10));
+
+    db.prepare("INSERT OR REPLACE INTO settings (key,value) VALUES ('formula_b_swap_2026_09',?)")
+      .run(new Date().toISOString().slice(0, 19).replace('T', ' '));
+  });
+  console.log('第二組配方已換成櫻桃蘿蔔與萵苣；阿北店家與熱量已補上');
+}
+
 function installAbeiSet() {
   if (db.prepare("SELECT 1 FROM settings WHERE key='abei_set_2026_09'").get()) return;
   tx(() => {
@@ -431,6 +486,7 @@ function installAbeiSet() {
   console.log('阿北套餐與加菜品項已建立（店家資訊待補）');
 }
 installAbeiSet();
+updateFormulaB2026();
 
 function installFormulaSets() {
   if (db.prepare("SELECT 1 FROM settings WHERE key='formula_sets_2026_09'").get()) return;
@@ -445,7 +501,8 @@ function installFormulaSets() {
     ['冷凍花椰菜','蔬菜',0,'冷凍-18°C｜IQF｜開袋後30天'],
     ['甜椒','蔬菜',0,'完整7天｜去籽冷藏3天'],     ['牛番茄','蔬菜',0,'完整5天｜切塊冷藏2天'],
     ['紫高麗菜','蔬菜',0,'完整10天｜切絲冷藏3天'],['櫛瓜','蔬菜',0,'完整7天｜切開冷藏3天'],
-    ['青江菜','蔬菜',0,'冷藏4°C｜最長5天'],       ['蘿蔓生菜','蔬菜',0,'冷藏4°C｜最長5天'],
+    ['青江菜','蔬菜',0,'冷藏4°C｜最長5天'],       ['萵苣','蔬菜',0,'冷藏4°C｜最長5天'],
+    ['櫻桃蘿蔔','蔬菜',0,'完整10天｜切塊冷藏3天'],
     ['芭樂','水果',0,'完整7天｜切塊冷藏2天'],     ['酪梨','水果',0,'後熟後冷藏3天｜切塊可冷凍'],
     ['甜橙','水果',0,'完整14天｜去皮後冷藏2天'],  ['葡萄','水果',0,'冷藏7天｜帶皮冷凍30天'],
     ['藍莓','水果',0,'冷凍-18°C｜開袋密封後30天'],

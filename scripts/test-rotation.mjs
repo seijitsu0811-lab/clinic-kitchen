@@ -71,5 +71,40 @@ check('第1組有當天現秤用料', fresh.length > 0, `${fresh.length} 樣`);
 check('兩者相加等於全部用料', pack.length + fresh.length === ings.length,
       `${pack.length} + ${fresh.length} = ${ings.length}`);
 
+line('\n━━ 7. 兩組配方的內容 ━━');
+// 用量釘死在測試裡。配方是每天照著做的東西，改錯一個數字不會有人立刻發現
+const SET_A = { '羽衣甘藍':20, '貝比生菜':20, '胡蘿蔔':15, '甜菜根':15, '西洋芹':15,
+  '大黃瓜':20, '冷凍菠菜':15, '冷凍花椰菜':15, '蘋果':40, '檸檬':10, '奇異果':20,
+  '鳳梨':15, '香蕉':15, '芭樂':15, '藍莓':15, '蛋白粉':30, '肉桂粉':1, '黑胡椒':1,
+  '核桃':10, '橄欖油':10, '水':275 };
+const SET_B = { '羽衣甘藍':20, '貝比生菜':20, '櫻桃蘿蔔':15, '牛番茄':20, '紫高麗菜':15,
+  '櫛瓜':15, '青江菜':15, '萵苣':15, '蘋果':40, '檸檬':10, '綜合莓':20, '木瓜':15,
+  '酪梨':15, '甜橙':15, '葡萄':15, '蛋白粉':30, '肉桂粉':1, '黑胡椒':1,
+  '核桃':10, '橄欖油':10, '水':275 };
+
+const recipeOf = async id =>
+  Object.fromEntries((await api('/api/prescriptions/' + id + '/ingredients'))
+    .filter(i => i.qty_per_cup > 0).map(i => [i.name, i.qty_per_cup]));
+
+for (const [code, want, label] of [['EMP-01', SET_A, '第1組'], ['EMP-02', SET_B, '第2組']]) {
+  const got = await recipeOf(byCode[code].id);
+  const missing = Object.keys(want).filter(n => got[n] === undefined);
+  const wrong   = Object.keys(want).filter(n => got[n] !== undefined && got[n] !== want[n])
+                    .map(n => `${n} 應 ${want[n]} 實 ${got[n]}`);
+  const extra   = Object.keys(got).filter(n => want[n] === undefined);
+  check(`${code}（${label}）用料齊全`, missing.length === 0, missing.join('、') || `${Object.keys(got).length} 樣`);
+  check(`${code} 每一樣的用量都對`, wrong.length === 0, wrong.join('；') || '全部相符');
+  check(`${code} 沒有多出來的用料`, extra.length === 0, extra.join('、') || '無');
+}
+
+// 換掉的兩樣不該再出現在任何配方裡
+const allRx = await api('/api/prescriptions?include_inactive=1');
+let stale = [];
+for (const r of allRx.filter(x => x.active === 1)) {
+  const got = await recipeOf(r.id);
+  ['甜椒', '蘿蔓生菜'].forEach(n => { if (got[n] !== undefined) stale.push(`${r.code}:${n}`); });
+}
+check('換掉的甜椒與蘿蔓生菜沒有殘留', stale.length === 0, stale.join('、') || '已清乾淨');
+
 line(`\n${'─'.repeat(46)}\n通過 ${pass} 項，失敗 ${fail} 項`);
 process.exit(fail ? 1 : 0);
