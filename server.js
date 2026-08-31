@@ -205,13 +205,20 @@ try {
   // AW 原本是寫死在庫存試算裡的（每日 1 杯 + 7 杯緩衝），改成處方上的設定，
   // 換人或停用只要改資料，不用改程式。這行只在欄位還是預設值時填一次。
   "UPDATE prescriptions SET daily_cups=1, buffer_cups=7 WHERE name='AW' AND COALESCE(daily_cups,0)=0 AND COALESCE(buffer_cups,0)=0",
+  // 一盒可以幾個人分。qty 一直是「幾人份」，要買幾盒由比例算出來 ——
+  // 舊資料 1:1，boxes 就等於 qty，語意不變
+  "ALTER TABLE meal_orders ADD COLUMN share_people INTEGER DEFAULT 1",
+  "ALTER TABLE meal_orders ADD COLUMN share_boxes  INTEGER DEFAULT 1",
+  // 加菜跟餐盒一起買、但不參與分食計算
+  "ALTER TABLE meal_items ADD COLUMN item_type TEXT DEFAULT '餐盒'",
+  "INSERT OR IGNORE INTO settings (key,value) VALUES ('share_ratios','1:1,2:1,3:2')",
   // 雙週輪替：同一個 rotation_group 裡的處方會依週期自動換手，不必有人記得每兩週去切換
   "ALTER TABLE prescriptions ADD COLUMN rotation_group TEXT DEFAULT ''",
   "ALTER TABLE prescriptions ADD COLUMN rotation_index INTEGER DEFAULT 0",
   // 備料階段：標成「冷凍包」的用料進每週分裝，其餘出餐當天現秤。一個標記長出兩張表
   "ALTER TABLE prescription_ingredients ADD COLUMN prep_stage TEXT DEFAULT ''",
   "INSERT OR IGNORE INTO settings (key,value) VALUES ('rotation_weeks','2')",
-  "INSERT OR IGNORE INTO settings (key,value) VALUES ('rotation_anchor','2026-09-07')",
+  "INSERT OR IGNORE INTO settings (key,value) VALUES ('rotation_anchor','2026-08-31')",
   // 當日工作狀態的單一來源（批次分組、拿取勾選、庫存已扣紀錄）
   `CREATE TABLE IF NOT EXISTS day_state (
      date TEXT PRIMARY KEY, state TEXT NOT NULL DEFAULT '{}',
@@ -393,6 +400,38 @@ function dropDuplicateBerry() {
 }
 dropDuplicateBerry();
 
+// 阿北套餐與加菜。一次性、有永久標記；店家的分店／電話／步行時間留白，
+// 由使用者在畫面上補 —— 採購單靠這些欄位排順序和撥號
+function installAbeiSet() {
+  if (db.prepare("SELECT 1 FROM settings WHERE key='abei_set_2026_09'").get()) return;
+  tx(() => {
+    db.prepare("INSERT OR IGNORE INTO vendors (name,branch,phone,walk_minutes,order_note) VALUES (?,?,?,?,?)")
+      .run('阿北', '', '', 0, '分店、電話、步行時間待補');
+    const v = db.prepare("SELECT id FROM vendors WHERE name='阿北'").get();
+    db.prepare("INSERT OR IGNORE INTO meal_series (code,vendor_id,name,sort_order) VALUES (?,?,?,?)")
+      .run('SER-ABEI', v.id, '阿北套餐', 4);
+    const ser = db.prepare("SELECT id FROM meal_series WHERE code='SER-ABEI'").get();
+
+    const ins = db.prepare(
+      `INSERT OR IGNORE INTO meal_items
+         (code,series_id,protein,display_name,vendor_item_name,kcal,protein_g,
+          kcal_source,price_single,price_box,default_mode,item_type,sort_order)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+    // 熱量還沒有來源，先留 0 並標明 —— 標了估算值會被當成真的
+    ins.run('SET-A4-PORK', ser.id, '豬', '阿北套餐', '小肉飯＋豬血湯加菜',
+            0, 0, '待確認', 0, 125, '餐盒', '餐盒', 1);
+
+    // 加菜是跟餐盒一起買、但不參與分食計算的品項
+    ins.run('ADD-VEG', ser.id, '蔬菜', '燙青菜（加買）', '燙青菜',
+            0, 0, '待確認', 0, 0, '餐盒', '加菜', 90);
+
+    db.prepare("INSERT OR REPLACE INTO settings (key,value) VALUES ('abei_set_2026_09',?)")
+      .run(new Date().toISOString().slice(0,19).replace('T',' '));
+  });
+  console.log('阿北套餐與加菜品項已建立（店家資訊待補）');
+}
+installAbeiSet();
+
 function installFormulaSets() {
   if (db.prepare("SELECT 1 FROM settings WHERE key='formula_sets_2026_09'").get()) return;
 
@@ -455,6 +494,23 @@ function installFormulaSets() {
 }
 installFormulaSets();
 
+// 一張餐盒單要買幾盒。qty 是幾人份，share_people:share_boxes 是選單選的分法。
+// 只在這裡算一次 —— 採購單、成本、彙總都讀這個，不各自算一份
+function boxesForOrder(o) {
+  const people = Number(o.qty) || 0;
+  const sp = Number(o.share_people) || 1;
+  const sb = Number(o.share_boxes)  || 1;
+  if (people <= 0) return 0;
+  if (sp <= 1 && sb <= 1) return people;          // 一人一盒
+  return Math.ceil(people * sb / sp);
+}
+
+// 一份要分攤多少錢：一盒的價格 ÷ 這盒分給幾個人
+function shareLabel(o) {
+  const sp = Number(o.share_people) || 1, sb = Number(o.share_boxes) || 1;
+  return (sp <= 1 && sb <= 1) ? '一人一盒' : `${sp} 人 ${sb} 盒`;
+}
+
 // ── 雙週輪替配方 ─────────────────────────────────────────
 // 兩組配方交替使用，由日期算出今天該用哪一組 —— 沒有人需要每兩週去按一次切換。
 // 週期長度與起算日放在 settings，改設定就能變成三組輪替或改成每三週。
@@ -473,7 +529,7 @@ function activeRxInGroup(group, date) {
   if (!members.length) return null;
   if (members.length === 1) return members[0];
   const weeks = Number(rotationSetting('rotation_weeks', '2')) || 2;
-  const anchor = rotationSetting('rotation_anchor', '2026-09-07');
+  const anchor = rotationSetting('rotation_anchor', '2026-08-31');
   const ms = Date.parse(date + 'T00:00:00') - Date.parse(anchor + 'T00:00:00');
   const cycle = Math.floor(ms / (7 * 86400000 * weeks));
   // 起算日之前是負數，取正的餘數才不會落到組員範圍外
@@ -961,7 +1017,12 @@ function calcBatches(cups, batchSize) {
 // 退回用全部歷史計算，免得單價變成 0。
 function getSettings() {
   const s = {};
-  db.prepare('SELECT key,value FROM settings').all().forEach(r => { s[r.key] = parseFloat(r.value); });
+  // 只有整個值就是數字才轉數字。日期（2026-08-31）和比例（1:1,2:1,3:2）
+  // 用 parseFloat 會被悄悄截成 2026 和 1，讀到的人不會發現出了錯
+  db.prepare('SELECT key,value FROM settings').all().forEach(r => {
+    const raw = String(r.value ?? '').trim();
+    s[r.key] = /^-?d+(.d+)?$/.test(raw) ? parseFloat(raw) : r.value;
+  });
   return s;
 }
 
@@ -1110,9 +1171,14 @@ function calcDailyCost(date, ucCache, lp) {
   // 還沒回填採購的日子先用出單快照價當預估，並標明來源。
   let mealCost = { count: 0, planned: 0, actual: 0, basis: 'none', total: 0 };
   try {
-    const planned = db.prepare(
-      'SELECT COALESCE(SUM(snap_price*qty),0) p, COALESCE(SUM(qty),0) c FROM meal_orders WHERE date=?'
-    ).get(date);
+    // 付錢是按盒付的，分食時人數多於盒數，用 qty 乘會多算
+    const planRows = db.prepare(
+      'SELECT snap_price, qty, share_people, share_boxes FROM meal_orders WHERE date=?'
+    ).all(date);
+    const planned = {
+      p: planRows.reduce((t, o) => t + (o.snap_price || 0) * boxesForOrder(o), 0),
+      c: planRows.reduce((t, o) => t + (Number(o.qty) || 0), 0)   // 份數仍以人計
+    };
     const actual = db.prepare(
       'SELECT COALESCE(SUM(total_price),0) p, COUNT(*) n FROM meal_purchase_log WHERE date=?'
     ).get(date);
@@ -1546,7 +1612,7 @@ app.get('/api/rotation/active', (req, res) => {
   const full = db.prepare('SELECT id, code, name FROM prescriptions WHERE id=?').get(rx.id);
   res.json({ group, date, ...full,
              weeks: Number(rotationSetting('rotation_weeks', '2')),
-             anchor: rotationSetting('rotation_anchor', '2026-09-07') });
+             anchor: rotationSetting('rotation_anchor', '2026-08-31') });
 });
 
 app.get('/api/prescriptions/:id/ingredients', (req, res) => {
@@ -2551,12 +2617,14 @@ function buildMealDay(date) {
     if (!line) {
       line = { key, item: o.vendor_item_name || o.display_name,
                display_name: o.display_name, mode: o.purchase_mode,
-               qty: 0, unit_price: unit, subtotal: 0,
+               qty: 0, people: 0, unit_price: unit, subtotal: 0,
                all_purchased: true, order_ids: [] };
       g.lines.push(line);
     }
-    line.qty      += o.qty;
-    line.subtotal += unit * o.qty;
+    const boxes = boxesForOrder(o);
+    line.qty      += boxes;
+    line.people   += Number(o.qty) || 0;
+    line.subtotal += unit * boxes;
     line.order_ids.push(o.id);
     if (o.status === '待採購') line.all_purchased = false;
   });
@@ -2602,7 +2670,8 @@ app.get('/api/meals/today', async (req, res) => {
 app.get('/api/meals/shopping', (req, res) => {
   const date = req.query.date || today();
   const rows = db.prepare(
-    `SELECT o.id, o.qty, o.meal_time, o.patient_name, o.purchase_mode, o.status, o.notes,
+    `SELECT o.id, o.qty, o.share_people, o.share_boxes,
+            o.meal_time, o.patient_name, o.purchase_mode, o.status, o.notes,
             o.snap_display_name, o.snap_price,
             mi.display_name item_name, mi.vendor_item_name,
             v.id vendor_id, v.name vendor_name, v.branch, v.phone, v.walk_minutes, v.order_note
@@ -2631,15 +2700,20 @@ app.get('/api/meals/shopping', (req, res) => {
     if (!ln) {
       ln = { key, order_name: r.vendor_item_name || r.item_name,
              our_name: r.snap_display_name || r.item_name, mode: r.purchase_mode,
-             qty: 0, price_each: r.snap_price, order_ids: [], for_who: [], notes: [], all_bought: true };
+             qty: 0, people: 0, share_note: '',
+             price_each: r.snap_price, order_ids: [], for_who: [], notes: [], all_bought: true };
       stop.lines.push(ln);
     }
-    ln.qty += r.qty;
+    // 採購的人要買的是「盒」；人數另外標，才知道這幾盒是分給誰
+    const boxes = boxesForOrder(r);
+    ln.qty    += boxes;
+    ln.people += Number(r.qty) || 0;
+    if (boxes !== Number(r.qty)) ln.share_note = shareLabel(r);
     ln.order_ids.push(r.id);
     if (r.patient_name) ln.for_who.push(r.patient_name);
     if (r.notes) ln.notes.push(r.notes);
-    if (r.status === '待採購') { ln.all_bought = false; stop.pending_qty += r.qty; }
-    stop.total_qty += r.qty;
+    if (r.status === '待採購') { ln.all_bought = false; stop.pending_qty += boxes; }
+    stop.total_qty += boxes;
   });
 
   // 走路久的先出發
@@ -2665,7 +2739,8 @@ app.post('/api/meals/shopping/bought', (req, res) => {
 });
 
 app.post('/api/meals/orders', (req, res) => {
-  const { meal_item_id, qty, meal_time, patient_name, case_order_id, purchase_mode, notes, date } = req.body;
+  const { meal_item_id, qty, meal_time, patient_name, case_order_id, purchase_mode, notes, date,
+          share_people, share_boxes } = req.body;
   const item = db.prepare('SELECT * FROM meal_items WHERE id=?').get(meal_item_id);
   if (!item) return res.status(400).json({ error: '找不到這款餐盒' });
 
@@ -2673,12 +2748,13 @@ app.post('/api/meals/orders', (req, res) => {
   const r = db.prepare(
     `INSERT INTO meal_orders
        (date,meal_item_id,qty,meal_time,patient_name,case_order_id,purchase_mode,
-        snap_display_name,snap_kcal,snap_price,notes)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?)`
+        snap_display_name,snap_kcal,snap_price,notes,share_people,share_boxes)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`
   ).run(
     date || today(), meal_item_id, qty || 1, meal_time || '1330',
     patient_name || '', case_order_id || null, mode,
-    item.display_name, mealItemKcal(item, mode), mealItemPrice(item, mode), notes || ''
+    item.display_name, mealItemKcal(item, mode), mealItemPrice(item, mode), notes || '',
+    Math.max(1, Number(share_people) || 1), Math.max(1, Number(share_boxes) || 1)
   );
   res.json({ id: r.lastInsertRowid });
 });
@@ -2686,7 +2762,8 @@ app.post('/api/meals/orders', (req, res) => {
 app.put('/api/meals/orders/:id', (req, res) => {
   const cur = db.prepare('SELECT * FROM meal_orders WHERE id=?').get(req.params.id);
   if (!cur) return res.status(404).json({ error: '找不到這筆出單' });
-  const { qty, meal_time, patient_name, purchase_mode, status, notes, case_order_id } = req.body;
+  const { qty, meal_time, patient_name, purchase_mode, status, notes, case_order_id,
+          share_people, share_boxes } = req.body;
   const mode = purchase_mode === '單點' ? '單點' : (purchase_mode === '餐盒' ? '餐盒' : cur.purchase_mode);
 
   // 換了採購模式，價格與熱量快照要跟著換
@@ -2698,13 +2775,17 @@ app.put('/api/meals/orders/:id', (req, res) => {
 
   db.prepare(
     `UPDATE meal_orders SET qty=?, meal_time=?, patient_name=?, purchase_mode=?,
-            status=?, notes=?, case_order_id=?, snap_kcal=?, snap_price=? WHERE id=?`
+            status=?, notes=?, case_order_id=?, snap_kcal=?, snap_price=?,
+            share_people=?, share_boxes=? WHERE id=?`
   ).run(
     qty ?? cur.qty, meal_time || cur.meal_time,
     patient_name ?? cur.patient_name, mode,
     status || cur.status, notes ?? cur.notes,
     case_order_id === undefined ? cur.case_order_id : (case_order_id || null),
-    snapKcal, snapPrice, req.params.id
+    snapKcal, snapPrice,
+    share_people === undefined ? cur.share_people : Math.max(1, Number(share_people) || 1),
+    share_boxes  === undefined ? cur.share_boxes  : Math.max(1, Number(share_boxes)  || 1),
+    req.params.id
   );
   res.json({ ok: true });
 });

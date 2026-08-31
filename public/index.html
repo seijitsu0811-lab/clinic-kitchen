@@ -1997,6 +1997,11 @@
     .case-recipe.open { display: block; margin-top: 8px; }
 
     /* 建單時就看得到要去哪家、走多久 —— 不用再翻採購單 */
+    .box-hint {
+      margin-top: 6px; font-size: 14px; font-weight: 700; color: var(--primary);
+      background: var(--primary-light); border-radius: var(--radius-sm); padding: 8px 10px;
+    }
+    .box-hint.leftover { color: var(--orange); background: rgba(249,115,22,.10); }
     .mo-vendor {
       margin-top: 8px; padding: 10px 12px;
       background: var(--bg); border: 1px solid var(--border);
@@ -3113,13 +3118,22 @@
     </div>
     <div style="display:flex;gap:12px">
       <div class="form-group" style="flex:1">
-        <label>份數</label>
-        <input type="number" id="mealOrderQty" value="1" min="1">
+        <label>幾人份</label>
+        <input type="number" id="mealOrderQty" value="1" min="1" onchange="App.updateBoxHint()">
       </div>
       <div class="form-group" style="flex:1">
         <label>用餐時間</label>
         <input type="text" id="mealOrderTime" value="1330" placeholder="1330">
       </div>
+    </div>
+    <div class="form-group">
+      <label>分法</label>
+      <select id="mealOrderShare" onchange="App.updateBoxHint()">
+        <option value="1:1">一人一盒</option>
+        <option value="2:1">兩人一盒</option>
+        <option value="3:2">三人兩盒</option>
+      </select>
+      <div id="mealOrderBoxHint" class="box-hint"></div>
     </div>
     <div class="form-group">
       <label>個案姓名</label>

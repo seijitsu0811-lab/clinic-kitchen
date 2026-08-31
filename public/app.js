@@ -3214,6 +3214,29 @@ const App = (() => {
     ).join('');
   }
 
+  // 要買幾盒。和伺服器的 boxesForOrder() 是同一條規則，改一邊要改兩邊 ——
+  // 這裡只負責讓人在按下確定之前就看到結果，真正的數字以伺服器為準
+  function _boxesFor(people, sp, sb) {
+    if (people <= 0) return 0;
+    if (sp <= 1 && sb <= 1) return people;
+    return Math.ceil(people * sb / sp);
+  }
+
+  function updateBoxHint() {
+    const el = document.getElementById('mealOrderBoxHint');
+    if (!el) return;
+    const people = Number(document.getElementById('mealOrderQty').value) || 0;
+    const [sp, sb] = (document.getElementById('mealOrderShare').value || '1:1').split(':').map(Number);
+    const boxes = _boxesFor(people, sp, sb);
+    if (people <= 0) { el.textContent = ''; el.className = 'box-hint'; return; }
+    // 分不盡的份量要講出來，不要讓人自己算
+    const capacity = Math.floor(boxes * sp / sb);
+    const leftover = capacity - people;
+    el.textContent = `${people} 人份 → 要買 ${boxes} 盒` +
+      (leftover > 0 ? `（多出 ${leftover} 份）` : '');
+    el.className = 'box-hint' + (leftover > 0 ? ' leftover' : '');
+  }
+
   function openAddMealOrder() {
     if (!mealMenu) return alert('菜單還在載入，請稍候');
     document.getElementById('mealOrderTitle').textContent = '新增餐盒';
@@ -3223,6 +3246,7 @@ const App = (() => {
     document.getElementById('mealOrderItem').disabled = false;   // 編輯模式會鎖住，這裡要解開
     document.getElementById('mealOrderMode').value  = '餐盒';
     document.getElementById('mealOrderQty').value   = 1;
+    document.getElementById('mealOrderShare').value = '1:1';
     document.getElementById('mealOrderTime').value  = '1330';
     document.getElementById('mealOrderName').value  = '';
     document.getElementById('mealOrderNotes').value = '';
@@ -3230,6 +3254,7 @@ const App = (() => {
     document.getElementById('mealOrderStatusGroup').style.display = 'none';
     const mdel = document.getElementById('mealDeleteBtn');
     if (mdel) mdel.style.display = 'none';
+    updateBoxHint();
     openModal('modalMealOrder');
   }
 
@@ -3245,6 +3270,8 @@ const App = (() => {
     document.getElementById('mealOrderItem').disabled = true;
     document.getElementById('mealOrderMode').value  = o.purchase_mode;
     document.getElementById('mealOrderQty').value   = o.qty;
+    document.getElementById('mealOrderShare').value =
+      `${o.share_people || 1}:${o.share_boxes || 1}`;
     document.getElementById('mealOrderTime').value  = o.meal_time;
     document.getElementById('mealOrderName').value  = o.patient_name || '';
     document.getElementById('mealOrderNotes').value = o.notes || '';
@@ -3253,6 +3280,7 @@ const App = (() => {
     document.getElementById('mealOrderStatus').value = o.status;
     const mdel = document.getElementById('mealDeleteBtn');
     if (mdel) { mdel.style.display = ''; mdel.onclick = () => { closeModal('modalMealOrder'); deleteMealOrder(id); }; }
+    updateBoxHint();
     openModal('modalMealOrder');
   }
 
@@ -3262,6 +3290,8 @@ const App = (() => {
       meal_item_id:  Number(document.getElementById('mealOrderItem').value),
       purchase_mode: document.getElementById('mealOrderMode').value,
       qty:           Number(document.getElementById('mealOrderQty').value) || 1,
+      share_people:  Number((document.getElementById('mealOrderShare').value || '1:1').split(':')[0]) || 1,
+      share_boxes:   Number((document.getElementById('mealOrderShare').value || '1:1').split(':')[1]) || 1,
       meal_time:     document.getElementById('mealOrderTime').value || '1330',
       patient_name:  document.getElementById('mealOrderName').value.trim(),
       case_order_id: Number(document.getElementById('mealOrderCase').value) || null,
@@ -3530,7 +3560,7 @@ const App = (() => {
     downloadBackup, runBackupNow,
     toggleLeaveRestore,
     loadMeals, switchMealTab, switchMealView, advanceMealStatus, goBuyMeals,
-    openAddMealOrder, openEditMealOrder, saveMealOrder, deleteMealOrder,
+    openAddMealOrder, openEditMealOrder, saveMealOrder, deleteMealOrder, updateBoxHint,
     openVendorPurchase, saveMealPurchase,
     openEditMealItem, saveMealItem,
     openEditNutritionCard, saveNutritionCard, reviewCard, openPrintCards,

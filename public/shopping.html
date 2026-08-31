@@ -47,6 +47,7 @@
   .line { display:flex; align-items:flex-start; gap:14px; padding:16px 0;
           border-top:1px solid var(--border); }
   .qty { font-size:26px; font-weight:800; color:var(--primary); min-width:52px; }
+  .qunit { font-size:13px; font-weight:700; margin-left:2px; }
   .line.bought .qty { color:var(--text3); }
   .lname { font-size:17px; font-weight:700; }
   .line.bought .lname { text-decoration:line-through; color:var(--text3); }
@@ -100,7 +101,7 @@ function render() {
     return;
   }
   document.getElementById('sum').textContent =
-    data.pending_qty > 0 ? `還要買 ${data.pending_qty} 份` : '全部買齊了';
+    data.pending_qty > 0 ? `還要買 ${data.pending_qty} 盒` : '全部買齊了';
 
   main.innerHTML = data.stops.map(s => {
     const done = s.lines.every(l => l.all_bought);
@@ -114,10 +115,11 @@ function render() {
       ${usefulNote(s) ? `<div class="note">${esc(s.order_note)}</div>` : ''}
       ${s.lines.map((l, i) => `
         <div class="line${l.all_bought ? ' bought' : ''}">
-          <div class="qty">×${l.qty}</div>
+          <div class="qty">×${l.qty}<span class="qunit">盒</span></div>
           <div style="flex:1">
             <div class="lname">${esc(l.order_name)}</div>
-            <div class="lsub">${esc(l.mode)}${l.our_name !== l.order_name
+            <div class="lsub">${esc(l.mode)}${l.share_note
+                ? ' · <b>' + esc(l.share_note) + '</b>（' + l.people + ' 人份）' : ''}${l.our_name !== l.order_name
                 ? ' · 我們叫它「' + esc(l.our_name) + '」' : ''}${
                 l.for_who.length ? ' · ' + esc(l.for_who.join('、')) : ''}</div>
             ${l.notes.length ? `<div class="lnote">📝 ${esc(l.notes.join(' / '))}</div>` : ''}
