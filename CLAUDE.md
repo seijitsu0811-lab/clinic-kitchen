@@ -36,15 +36,37 @@ Production DB：`/data/clinic_v2.db`（`DB_PATH` 環境變數）。
 > 這個專案發生過：`schema.sql` 每次啟動塞 14 筆固定日期的採購，而那個日期正好是某個遷移的觸發條件，該遷移又沒留執行標記 —— 結果**每次部署都把採購歷史刪光**，兩個月的資料就這樣沒了。
 > 一次性遷移一定要在 `settings` 寫永久標記。
 
-### 3.5 配方是雙週輪替的，不要寫死代號
+### 3.5 輪替在「蔬果方案」那一層，不在處方
 
-員工與個案各有兩張處方輪流用（`rotation_group` + `rotation_index`），週期與起算日在 `settings`（`rotation_weeks` / `rotation_anchor`）。
+方案一／方案二**只差在蔬果**（各 15 樣：蔬菜 8 ＋ 水果 7）。蛋白粉、油、粉類、保健品是每個人自己的，不跟著輪替。
 
-**要拿「現在的員工處方」一律呼叫 `staffRxFor(date)`，不要自己寫 `WHERE is_staff_rx=1 ... LIMIT 1`** —— 兩張同時啟用時 LIMIT 1 是不確定的，批次和庫存會各算各的。前端與測試問 `/api/rotation/active`。
+```
+produce_plans / produce_plan_items   ← 會輪替的蔬果，只定義一次
+prescriptions.produce_plan_group     ← 指向方案；空字串 = 不用方案
+```
 
-`EMP-00` 與 `RX-07` 已退役（`active=0`）但保留：歷史出單指向它們，砍掉過去的成本就算不出來。
+員工（`EMP-01`）與 AW（`RX-01`）指向 `主方案`，**其他個案的 `produce_plan_group` 是空的，結構上碰不到**。
 
-新配方**不寫進 `schema.sql`**，而是 `installFormulaSets()` 這個有永久標記的一次性遷移 —— 放進種子的話，使用者在畫面上刪掉的用料行每次部署都會復活。
+**要拿某人某天的完整配方，一律呼叫 `effectiveItems(rxId, date)`** ——
+它把「這個人自己的用料」和「那天的蔬果方案」合起來（方案先鋪底，個人的蓋過去）。
+備料、扣庫存、成本、熱量、庫存試算五個地方都走它；少接一個，那裡算出來的量就會跟其他人不一樣。
+
+**日期一定要傳。** 預約出單、還原補扣都可能落在別的方案期 ——
+還原補扣如果用今天的日期，會把另一個方案的蔬果加回庫存。
+
+週期與起算日在 settings（`rotation_weeks` / `rotation_anchor`）。`rotationPick()` 是共用的輪替算式。
+
+### 3.55 庫存要逐日展開，不能打成一坨
+
+`buildForecast()` 逐日往前推：每一天各自問「那天用哪個方案、那天有誰要喝」。
+`/api/inventory/forecast` 和 `/api/stocktake/shortlist` 共用它。
+
+為什麼不能只算「今天的配方 × 天數」：**方案二的蔬果在方案一期間完全不會被碰到，庫存 0 也不會有任何警告** —— 換組當天早上才發現就來不及叫貨。所以有 `switch_warning`，提前一個輪替週期就列出屆時會缺什麼。
+
+備料區間是「到下一個盤點日之前」，不是固定一週 —— 盤點的人只有特定幾天上班（`stocktake_dows`，預設週一二四）。
+緩衝取 **`buffer_pct`% 與 `buffer_cups` 杯份的大者**：突發外帶是 3~5 杯的絕對量，比例在小週會不夠。
+
+`ingredients.track_stock=0` 的品項（例如水）記在配方裡但不盤點、不採購。
 
 ### 3.6 餐盒：錢按「盒」算，衛教小卡按「人」算
 
@@ -148,7 +170,7 @@ Production DB：`/data/clinic_v2.db`（`DB_PATH` 環境變數）。
 
 ## 測試
 
-改完一定要跑，六套都要過（共 65 項）。
+改完一定要跑，十套全部都要過（共 155 項）。
 
 ```bash
 PORT=3999 node server.js            # 另一個終端機

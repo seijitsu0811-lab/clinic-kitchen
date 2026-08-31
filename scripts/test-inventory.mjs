@@ -59,9 +59,12 @@ check('庫存有扣', (await qtyOf('燕麥')) === Math.round((startQty - 20) * 1
 
 line('\n━━ 2. 隔日自動補扣 ━━');
 // 昨天掛 5 杯出單，其中 2 杯已經手動扣過
-await api('/api/today/cases', 'POST',
+// 記住 id —— 這筆掛在「昨天」，不會出現在 /api/today 的清單裡。
+// 只靠掃今日頁清理的話，每跑一次就留一筆，之後每次啟動都被補扣一次，
+// 庫存會愈跑愈偏（本機曾累積 21 筆）
+const ydayOrder = await api('/api/today/cases', 'POST',
   { prescription_id: rx.id, cups: 5, meal_time: '1130', powder_type: '袋裝',
-    patient_name: 'ZZ補扣測試', notes: 'ZZ', date: yday }).catch(() => {});
+    patient_name: 'ZZ補扣測試', notes: 'ZZ', date: yday }).catch(() => null);
 // case_orders 的日期是今天，改成昨天
 const before = await qtyOf('燕麥');
 await api('/api/today');           // 觸發補扣
@@ -115,6 +118,7 @@ check('擋掉路徑穿越', bad.status === 400, `HTTP ${bad.status}`);
 
 line('\n━━ 6. 清理 ━━');
 // 先把出單刪掉，否則接下來的 /api/today 會再補扣一次
+if (ydayOrder && ydayOrder.id) await api('/api/today/cases/' + ydayOrder.id, 'DELETE').catch(() => {});
 const t = await api('/api/today');
 for (const p of t.products) {
   for (const c of [...(p.cases || []), ...(p.future_cases || [])]) {

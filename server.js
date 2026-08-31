@@ -212,6 +212,31 @@ try {
   // 加菜跟餐盒一起買、但不參與分食計算
   "ALTER TABLE meal_items ADD COLUMN item_type TEXT DEFAULT '餐盒'",
   "INSERT OR IGNORE INTO settings (key,value) VALUES ('share_ratios','1:1,2:1,3:2')",
+  // 水要記在配方裡（備料得知道每杯加多少），但不必盤點也不用採購。
+  // 沒有這個旗標的話，採購清單每次都會叫人去買 3850ml 的水
+  "ALTER TABLE ingredients ADD COLUMN track_stock INTEGER DEFAULT 1",
+  "UPDATE ingredients SET track_stock=0 WHERE name='水'",
+  // 蔬果方案：方案一／二只差在蔬果，機能配料是每個人自己的。
+  // 把會輪替的那部分抽出來獨立存放，處方只要指向它 ——
+  // 否則每多一個人用方案就要多維護兩張處方，蛋白粉要改兩次
+  `CREATE TABLE IF NOT EXISTS produce_plans (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     group_code TEXT NOT NULL DEFAULT '主方案',
+     code TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
+     rotation_index INTEGER DEFAULT 0, active INTEGER DEFAULT 1)`,
+  `CREATE TABLE IF NOT EXISTS produce_plan_items (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     plan_id INTEGER NOT NULL, ingredient_id INTEGER NOT NULL,
+     qty_per_cup REAL NOT NULL DEFAULT 0, prep TEXT DEFAULT '', prep_stage TEXT DEFAULT '',
+     UNIQUE(plan_id, ingredient_id),
+     FOREIGN KEY (plan_id) REFERENCES produce_plans(id))`,
+  // 空字串 = 不用方案，維持自己原本的配方（其他個案就是這樣，結構上碰不到）
+  "ALTER TABLE prescriptions ADD COLUMN produce_plan_group TEXT DEFAULT ''",
+  // 突發外帶要能吸收：3~5 杯的原料。比例在小週會不夠，所以另外設一個絕對杯數
+  "INSERT OR IGNORE INTO settings (key,value) VALUES ('buffer_pct','20')",
+  "INSERT OR IGNORE INTO settings (key,value) VALUES ('buffer_cups','5')",
+  // 盤點的人只有這幾天上班（0=日 1=一 … 6=六）。備料區間依這個算，不是固定一週
+  "INSERT OR IGNORE INTO settings (key,value) VALUES ('stocktake_dows','1,2,4')",
   // 雙週輪替：同一個 rotation_group 裡的處方會依週期自動換手，不必有人記得每兩週去切換
   "ALTER TABLE prescriptions ADD COLUMN rotation_group TEXT DEFAULT ''",
   "ALTER TABLE prescriptions ADD COLUMN rotation_index INTEGER DEFAULT 0",
@@ -224,11 +249,14 @@ try {
      date TEXT PRIMARY KEY, state TEXT NOT NULL DEFAULT '{}',
      updated_at TEXT DEFAULT (datetime('now','localtime')), updated_by TEXT DEFAULT '')`,
 ].forEach(sql => { try { db.exec(sql); } catch(e) {} });
-// 只有在還沒有任何輪替員工處方時，才把 EMP-00 當員工處方。
-// 新配方上線後 EMP-00 退役，這行不能再把它拉回來
+// 全新安裝時要有一張員工處方可用，所以先讓 EMP-00 頂著；
+// 之後 installFormulaSets() 會建 EMP-01 並讓它接手。
+// 條件必須是「有沒有啟用中的員工處方」——
+// 一度寫成「有沒有 rotation_group='EMP' 的處方」，輪替移到方案層之後
+// 那個條件永遠成立，每次啟動都把已退役的 EMP-00 重新標成員工處方
 try {
-  const hasRot = db.prepare("SELECT 1 FROM prescriptions WHERE rotation_group='EMP' AND active=1").get();
-  if (!hasRot) db.exec("UPDATE prescriptions SET is_staff_rx=1 WHERE code='EMP-00'");
+  const hasStaff = db.prepare('SELECT 1 FROM prescriptions WHERE is_staff_rx=1 AND active=1').get();
+  if (!hasStaff) db.exec("UPDATE prescriptions SET is_staff_rx=1 WHERE code='EMP-00'");
 } catch (e) { db.exec("UPDATE prescriptions SET is_staff_rx=1 WHERE code='EMP-00'"); }
 db.exec("UPDATE prescriptions SET product_id=1 WHERE product_id IS NULL");
 
@@ -457,6 +485,77 @@ function updateFormulaB2026() {
   console.log('第二組配方已換成櫻桃蘿蔔與萵苣；阿北店家與熱量已補上');
 }
 
+// 蔬果方案上線：把 EMP-01／EMP-02 的蔬果搬進「方案一／方案二」，
+// 處方只留機能配料。搬完之後兩張員工處方的內容完全一樣，所以只留一張，
+// 輪替整個移到方案層 —— 員工、AW 以後共用同一組蔬果，各留各的粉與油。
+function installProducePlans() {
+  if (db.prepare("SELECT 1 FROM settings WHERE key='produce_plans_2026_09'").get()) return;
+  const PRODUCE = new Set(['蔬菜', '水果']);
+
+  const mkPlan = (code, name, idx) => {
+    db.prepare("INSERT OR IGNORE INTO produce_plans (group_code,code,name,rotation_index) VALUES ('主方案',?,?,?)")
+      .run(code, name, idx);
+    return db.prepare('SELECT id FROM produce_plans WHERE code=?').get(code);
+  };
+
+  // 把某張處方的蔬果搬進方案，處方那邊刪掉
+  const moveProduce = (rxCode, planId) => {
+    const rx = db.prepare('SELECT id FROM prescriptions WHERE code=?').get(rxCode);
+    if (!rx) return 0;
+    const rows = db.prepare(
+      `SELECT pi.ingredient_id, pi.qty_per_cup, COALESCE(pi.prep,'') prep,
+              COALESCE(pi.prep_stage,'') prep_stage, i.category
+         FROM prescription_ingredients pi JOIN ingredients i ON i.id=pi.ingredient_id
+        WHERE pi.prescription_id=? AND pi.qty_per_cup>0`
+    ).all(rx.id).filter(r => PRODUCE.has(r.category));
+    const ins = db.prepare(
+      `INSERT OR IGNORE INTO produce_plan_items (plan_id,ingredient_id,qty_per_cup,prep,prep_stage)
+       VALUES (?,?,?,?,?)`);
+    rows.forEach(r => {
+      ins.run(planId, r.ingredient_id, r.qty_per_cup, r.prep, r.prep_stage);
+      db.prepare('DELETE FROM prescription_ingredients WHERE prescription_id=? AND ingredient_id=?')
+        .run(rx.id, r.ingredient_id);
+    });
+    return rows.length;
+  };
+
+  tx(() => {
+    const pa = mkPlan('PLAN-A', '方案一', 0);
+    const pb = mkPlan('PLAN-B', '方案二', 1);
+    const nA = moveProduce('EMP-01', pa.id);
+    const nB = moveProduce('EMP-02', pb.id);
+
+    // 員工只留一張處方（EMP-01），輪替移到方案層
+    db.prepare("UPDATE prescriptions SET name='員工配方', rotation_group='', rotation_index=0, produce_plan_group='主方案' WHERE code='EMP-01'").run();
+    db.prepare("UPDATE prescriptions SET active=0, is_staff_rx=0, rotation_group='' WHERE code='EMP-02'").run();
+
+    // AW 也走方案：自己的蔬果拿掉（份量與方案不同，以方案為準），
+    // 保健品、粉類、油全部保留不動
+    const aw = db.prepare("SELECT id FROM prescriptions WHERE code='RX-01'").get();
+    if (aw) {
+      db.prepare(
+        `DELETE FROM prescription_ingredients
+          WHERE prescription_id=? AND ingredient_id IN
+                (SELECT id FROM ingredients WHERE category IN ('蔬菜','水果'))`
+      ).run(aw.id);
+      db.prepare("UPDATE prescriptions SET produce_plan_group='主方案' WHERE id=?").run(aw.id);
+    }
+
+    // RX-08／RX-09 原本是為了同一件事各建一張，現在方案接手了，只留一張
+    db.prepare(
+      `DELETE FROM prescription_ingredients
+        WHERE prescription_id=(SELECT id FROM prescriptions WHERE code='RX-08')
+          AND ingredient_id IN (SELECT id FROM ingredients WHERE category IN ('蔬菜','水果'))`
+    ).run();
+    db.prepare("UPDATE prescriptions SET name='輪替配方', rotation_group='', produce_plan_group='主方案' WHERE code='RX-08'").run();
+    db.prepare("UPDATE prescriptions SET active=0, rotation_group='' WHERE code='RX-09'").run();
+
+    db.prepare("INSERT OR REPLACE INTO settings (key,value) VALUES ('produce_plans_2026_09',?)")
+      .run(new Date().toISOString().slice(0, 19).replace('T', ' '));
+    console.log(`蔬果方案已建立：方案一 ${nA} 樣、方案二 ${nB} 樣；員工與 AW 已改為引用方案`);
+  });
+}
+
 function installAbeiSet() {
   if (db.prepare("SELECT 1 FROM settings WHERE key='abei_set_2026_09'").get()) return;
   tx(() => {
@@ -550,6 +649,13 @@ function installFormulaSets() {
   console.log('新配方已建立：EMP-01/EMP-02（員工）、RX-08/RX-09（個案），EMP-00 與 RX-07 已退役');
 }
 installFormulaSets();
+// 必須在上面全部跑完之後：這時候 EMP-01/02、RX-01、RX-08 都已經存在，
+// 蔬果才有東西可以搬
+installProducePlans();
+// 修掉上面那個判斷寫錯時留下的狀態：已停用的處方不該還掛著員工旗標
+try {
+  db.exec('UPDATE prescriptions SET is_staff_rx=0 WHERE active=0 AND is_staff_rx=1');
+} catch (e) {}
 
 // 一張餐盒單要買幾盒。qty 是幾人份，share_people:share_boxes 是選單選的分法。
 // 只在這裡算一次 —— 採購單、成本、彙總都讀這個，不各自算一份
@@ -578,20 +684,72 @@ function rotationSetting(key, dflt) {
   } catch (e) { return dflt; }
 }
 
-// 某個輪替組在指定日期該用的處方。組員少於 2 張就直接回傳唯一那張
-function activeRxInGroup(group, date) {
-  const members = db.prepare(
-    "SELECT id, code, rotation_index FROM prescriptions WHERE rotation_group=? AND active=1 ORDER BY rotation_index"
-  ).all(group);
+// 輪替只算一次：給一組成員和日期，回傳當期該用的那一個。
+// 處方輪替與蔬果方案輪替共用這套規則，改週期只要改設定
+function rotationPick(members, date) {
   if (!members.length) return null;
   if (members.length === 1) return members[0];
-  const weeks = Number(rotationSetting('rotation_weeks', '2')) || 2;
+  const weeks  = Number(rotationSetting('rotation_weeks', '2')) || 2;
   const anchor = rotationSetting('rotation_anchor', '2026-08-31');
   const ms = Date.parse(date + 'T00:00:00') - Date.parse(anchor + 'T00:00:00');
   const cycle = Math.floor(ms / (7 * 86400000 * weeks));
-  // 起算日之前是負數，取正的餘數才不會落到組員範圍外
+  // 起算日之前是負數，取正的餘數才不會落到成員範圍外
   const idx = ((cycle % members.length) + members.length) % members.length;
   return members.find(m => m.rotation_index === idx) || members[0];
+}
+
+function activeRxInGroup(group, date) {
+  return rotationPick(db.prepare(
+    "SELECT id, code, rotation_index FROM prescriptions WHERE rotation_group=? AND active=1 ORDER BY rotation_index"
+  ).all(group), date);
+}
+
+// 某個方案組在指定日期該用的蔬果方案
+function activePlanFor(group, date) {
+  if (!group) return null;
+  return rotationPick(db.prepare(
+    'SELECT id, code, name, rotation_index FROM produce_plans WHERE group_code=? AND active=1 ORDER BY rotation_index'
+  ).all(group), date || today());
+}
+
+// ★ 有效配方 = 這個人自己的用料 ＋ 當期蔬果方案。
+// 六個地方原本各自 SELECT prescription_ingredients，現在一律走這裡 ——
+// 少接一個地方，那裡算出來的杯數就會跟其他人不一樣
+const EFF_COLS = `pi.ingredient_id, pi.qty_per_cup, COALESCE(pi.prep,'') prep,
+       COALESCE(pi.prep_stage,'') prep_stage, i.name, i.unit, i.category,
+       COALESCE(i.sort_order,0) sort_order, i.id iid,
+       COALESCE(i.kcal_per_unit,0) kcal_per_unit, COALESCE(i.protein_per_unit,0) protein_per_unit`;
+
+function effectiveItems(rxId, date) {
+  const own = db.prepare(
+    `SELECT ${EFF_COLS} FROM prescription_ingredients pi
+     JOIN ingredients i ON i.id=pi.ingredient_id
+     WHERE pi.prescription_id=? AND pi.qty_per_cup>0`
+  ).all(rxId);
+
+  const rx = db.prepare('SELECT produce_plan_group FROM prescriptions WHERE id=?').get(rxId);
+  const plan = rx && activePlanFor(rx.produce_plan_group, date);
+  if (!plan) return own.sort(cmpItem);
+
+  const planItems = db.prepare(
+    `SELECT ppi.ingredient_id, ppi.qty_per_cup, COALESCE(ppi.prep,'') prep,
+            COALESCE(ppi.prep_stage,'') prep_stage, i.name, i.unit, i.category,
+            COALESCE(i.sort_order,0) sort_order, i.id iid,
+            COALESCE(i.kcal_per_unit,0) kcal_per_unit, COALESCE(i.protein_per_unit,0) protein_per_unit
+       FROM produce_plan_items ppi JOIN ingredients i ON i.id=ppi.ingredient_id
+      WHERE ppi.plan_id=? AND ppi.qty_per_cup>0`
+  ).all(plan.id);
+
+  // 方案先鋪底，個人自己寫的蓋過去 —— 個別微調不會被方案洗掉
+  const merged = new Map();
+  planItems.forEach(r => merged.set(r.ingredient_id, r));
+  own.forEach(r => merged.set(r.ingredient_id, r));
+  return [...merged.values()].sort(cmpItem);
+}
+
+function cmpItem(a, b) {
+  return (a.sort_order - b.sort_order) || String(a.category).localeCompare(String(b.category))
+      || String(a.name).localeCompare(String(b.name));
 }
 
 // 員工處方只在這裡決定一次。四個地方原本各自 SELECT ... LIMIT 1，
@@ -1331,14 +1489,11 @@ app.put('/api/products/:id', (req, res) => {
 // ════════════════════════════════════════════════════════
 
 // powderMultiplier: 1.0 袋裝 / 1.1 罐裝（多備10%防溢）
-function buildPrepAndPowder(rxId, multiplier, unit, powderMultiplier) {
+function buildPrepAndPowder(rxId, multiplier, unit, powderMultiplier, date) {
   powderMultiplier = powderMultiplier || 1.0;
-  const allItems = db.prepare(
-    `SELECT pi.qty_per_cup, COALESCE(pi.prep,'') prep_note, i.name, i.unit, i.category
-     FROM prescription_ingredients pi
-     JOIN ingredients i ON i.id=pi.ingredient_id
-     WHERE pi.prescription_id=? AND pi.qty_per_cup>0 ORDER BY i.sort_order, i.category, i.name`
-  ).all(rxId);
+  const allItems = effectiveItems(rxId, date)
+    .map(r => ({ qty_per_cup: r.qty_per_cup, prep_note: r.prep, name: r.name,
+                 unit: r.unit, category: r.category }));
   // prep = 鮮食（蔬菜/水果/油/水/其他）。prep_note 是處理方式，備料時要看得到
   const freshCats = new Set(['蔬菜', '水果', '油水', '油', '水', '其他']);
   const prep = allItems.filter(r => freshCats.has(r.category)).map(r => ({
@@ -1454,7 +1609,7 @@ app.get('/api/today', async (req, res) => {
 
     let staffPrep = [], staffPowder = { per_serving: 0, items: [], batches: [] };
     if (staffRx && totalStaffCups > 0) {
-      const { prep, powder } = buildPrepAndPowder(staffRx.id, totalStaffCups, prod.unit);
+      const { prep, powder } = buildPrepAndPowder(staffRx.id, totalStaffCups, prod.unit, 1.0, date);
       staffPrep = prep;
       const powderBatches = batches.map(b => ({
         label: `${b.size}${prod.unit}批 ×${b.count}`,
@@ -1466,7 +1621,7 @@ app.get('/api/today', async (req, res) => {
 
     const casesWithPrep = cases.map(c => {
       const pm = (c.powder_type === '罐裝' || c.powder_type === '全配方') ? 1.1 : 1.0;
-      const { prep, powder, supplements } = buildPrepAndPowder(c.prescription_id, c.cups, prod.unit, pm);
+      const { prep, powder, supplements } = buildPrepAndPowder(c.prescription_id, c.cups, prod.unit, pm, date);
       return { ...c, prep, powder, supplements };
     });
 
@@ -1480,7 +1635,8 @@ app.get('/api/today', async (req, res) => {
     ).all(date, prod.id);
     const futureCasesWithPrep = futureCases.map(c => {
       const pm = (c.powder_type === '罐裝' || c.powder_type === '全配方') ? 1.1 : 1.0;
-      const { prep, powder, supplements } = buildPrepAndPowder(c.prescription_id, c.cups, prod.unit, pm);
+      // 預約出單可能落在下一個方案期，用那一筆自己的日期去查方案
+      const { prep, powder, supplements } = buildPrepAndPowder(c.prescription_id, c.cups, prod.unit, pm, c.date);
       return { ...c, prep, powder, supplements };
     });
 
@@ -1661,6 +1817,24 @@ app.delete('/api/prescriptions/:id', (req, res) => {
 
 // 取得處方食材
 // 某個輪替組在某一天該用哪一張處方。畫面和測試都問這裡，不各自算一次
+// 某一天用哪個蔬果方案，以及那個方案的內容。畫面與測試都問這裡
+app.get('/api/rotation/plan', (req, res) => {
+  const date = req.query.date || today();
+  const group = req.query.group || '主方案';
+  const plan = activePlanFor(group, date);
+  if (!plan) return res.json({ date, group, plan: null, items: [] });
+  const items = db.prepare(
+    `SELECT i.name, i.category, ppi.qty_per_cup, COALESCE(ppi.prep,'') prep,
+            COALESCE(ppi.prep_stage,'') prep_stage
+       FROM produce_plan_items ppi JOIN ingredients i ON i.id=ppi.ingredient_id
+      WHERE ppi.plan_id=? ORDER BY i.category, i.name`
+  ).all(plan.id);
+  res.json({ date, group, plan: { code: plan.code, name: plan.name, rotation_index: plan.rotation_index },
+             weeks: Number(rotationSetting('rotation_weeks','2')),
+             anchor: rotationSetting('rotation_anchor','2026-08-31'),
+             items });
+});
+
 app.get('/api/rotation/active', (req, res) => {
   const group = req.query.group || 'EMP';
   const date  = req.query.date  || today();
@@ -1801,14 +1975,10 @@ app.get('/api/inventory/:id/purchases', (req, res) => {
 
 // 出餐扣庫存
 // 依處方扣庫存，並留下一筆消耗紀錄。sign = -1 扣、+1 還原
-function applyConsumption(rxId, cups, powderType, sign) {
+function applyConsumption(rxId, cups, powderType, sign, date) {
   const pm = (powderType === '罐裝' || powderType === '全配方') ? 1.1 : 1.0;
   const freshCats = new Set(['蔬菜', '水果', '油水', '油', '水', '其他']);
-  db.prepare(
-    `SELECT pi.ingredient_id, pi.qty_per_cup, i.category
-     FROM prescription_ingredients pi JOIN ingredients i ON i.id=pi.ingredient_id
-     WHERE pi.prescription_id=? AND pi.qty_per_cup>0`
-  ).all(rxId).forEach(r => {
+  effectiveItems(rxId, date).forEach(r => {
     const mult   = freshCats.has(r.category) ? 1.0 : pm;
     const amount = Math.round(r.qty_per_cup * cups * mult * 100) / 100 * sign;
     db.prepare(
@@ -1819,7 +1989,7 @@ function applyConsumption(rxId, cups, powderType, sign) {
 }
 
 function recordConsumption({ date, rxId, cups, powderType, source, note, userId }) {
-  applyConsumption(rxId, cups, powderType, -1);
+  applyConsumption(rxId, cups, powderType, -1, date);
   db.prepare(
     `INSERT INTO consumption_log (date,prescription_id,cups,powder_type,source,note,user_id)
      VALUES (?,?,?,?,?,?,?)`
@@ -1978,13 +2148,215 @@ app.post('/api/consumption/:id/reverse', (req, res) => {
   const row = db.prepare("SELECT * FROM consumption_log WHERE id=? AND COALESCE(reversed_at,'')=''").get(req.params.id);
   if (!row) return res.status(404).json({ error: '找不到這筆，或已經還原過' });
   tx(() => {
-    applyConsumption(row.prescription_id, row.cups, row.powder_type, +1);
+    // 還原一定要用當初那一筆的日期 —— 用今天的話會加回另一個方案的蔬果
+    applyConsumption(row.prescription_id, row.cups, row.powder_type, +1, row.date);
     db.prepare("UPDATE consumption_log SET reversed_at=datetime('now','localtime') WHERE id=?").run(row.id);
   });
   res.json({ ok: true });
 });
 
 // 庫存充足性檢查：依星期幾遞減的本週剩餘需求 + 安全緩衝 7 杯
+// ── 逐日庫存預測 ────────────────────────────────────────────
+// 原本的試算是「今天的配方 × 這週剩幾天」，打成一坨。那有兩個問題：
+//   1. 兩週後會換蔬果方案，換組要用到的東西現在完全不會被算到，
+//      也不會有任何警告 —— 換組當天早上才發現就來不及叫貨
+//   2. 備料的人問的不是「夠不夠」，是「撐到哪一天」
+// 所以改成逐日展開：每一天各自問「那天用哪個方案、那天有誰要喝」。
+
+function stocktakeDows() {
+  return String(rotationSetting('stocktake_dows', '1,2,4'))
+    .split(',').map(x => Number(x.trim())).filter(x => x >= 0 && x <= 6);
+}
+
+const addDays = (d, n) => new Date(Date.parse(d + 'T00:00:00Z') + n * 86400000).toISOString().slice(0, 10);
+const dowOf   = d => new Date(d + 'T00:00:00').getDay();
+
+// 下一個盤點日（不含今天）。盤點的人不是每天上班，備料區間要照他的班表算
+function nextStocktakeDay(from) {
+  const dows = stocktakeDows();
+  if (!dows.length) return addDays(from, 7);
+  for (let i = 1; i <= 14; i++) {
+    const d = addDays(from, i);
+    if (dows.includes(dowOf(d))) return d;
+  }
+  return addDays(from, 7);
+}
+
+// 某一天各張處方要幾杯
+function cupsOnDate(date) {
+  const out = [];   // { rxId, cups, powderMult, why }
+  const dow = dowOf(date);
+
+  // 員工：供應日才有，當天有出席紀錄就用實到人數，否則用名冊
+  if (isStaffMealDay(dow)) {
+    const rx = staffRxFor(date);
+    if (rx) {
+      const att = db.prepare('SELECT COUNT(*) c FROM staff_attendance WHERE date=? AND attending=1').get(date).c;
+      const cups = att > 0 ? att : rosterCount();
+      if (cups > 0) out.push({ rxId: rx.id, cups, powderMult: 1.0, why: '員工' });
+    }
+  }
+
+  // 每日供應的處方（例如 AW），週末不出
+  if (dow >= 1 && dow <= 5) {
+    db.prepare(
+      `SELECT id, name, COALESCE(daily_cups,0) daily_cups FROM prescriptions
+        WHERE active=1 AND COALESCE(daily_cups,0) > 0`
+    ).all().forEach(rx => out.push({ rxId: rx.id, cups: rx.daily_cups, powderMult: 1.0, why: rx.name }));
+  }
+
+  // 已排的個案出單（排除上面已經算過的員工與每日供應）
+  db.prepare(
+    `SELECT co.prescription_id, co.cups, co.powder_type, p.name
+       FROM case_orders co JOIN prescriptions p ON p.id=co.prescription_id
+      WHERE co.date=? AND p.is_staff_rx=0 AND COALESCE(p.daily_cups,0)=0`
+  ).all(date).forEach(c => {
+    const pm = (c.powder_type === '罐裝' || c.powder_type === '全配方') ? 1.1 : 1.0;
+    out.push({ rxId: c.prescription_id, cups: c.cups, powderMult: pm, why: c.name });
+  });
+
+  return out;
+}
+
+const FRESH_CATS = new Set(['蔬菜', '水果', '油水', '油', '水', '其他']);
+
+// 某一天的食材需求（已套用當天的蔬果方案）
+function needsOnDate(date) {
+  const need = {};
+  cupsOnDate(date).forEach(({ rxId, cups, powderMult }) => {
+    effectiveItems(rxId, date).forEach(r => {
+      const mult = FRESH_CATS.has(r.category) ? 1.0 : powderMult;
+      need[r.ingredient_id] = (need[r.ingredient_id] || 0) + r.qty_per_cup * cups * mult;
+    });
+  });
+  return need;
+}
+
+function buildForecast(daysAhead) {
+  const t       = today();
+  const horizon = Math.min(Math.max(Number(daysAhead || 21), 7), 60);
+  const bufPct  = Number(rotationSetting('buffer_pct', '20')) || 0;
+  const bufCups = Number(rotationSetting('buffer_cups', '5')) || 0;
+
+  const stock = {};
+  db.prepare('SELECT ingredient_id, qty FROM inventory').all().forEach(r => { stock[r.ingredient_id] = r.qty; });
+  const ingMap = {};
+  db.prepare(
+    'SELECT id, name, unit, category, safety_stock FROM ingredients WHERE active=1 AND COALESCE(track_stock,1)=1'
+  ).all().forEach(i => { ingMap[i.id] = i; });
+
+  // 備料區間：今天到下一個盤點日之前。週三、週五沒人盤點，
+  // 所以再加一天當盲區緩衝 —— 那兩天發現不夠也沒人補得了
+  const nextST   = nextStocktakeDay(t);
+  const windowTo = addDays(nextST, 0);
+  const windowDays = Math.round((Date.parse(windowTo + 'T00:00:00Z') - Date.parse(t + 'T00:00:00Z')) / 86400000);
+
+  // 突發外帶：3~5 杯的原料。比例在小週會不夠，所以取「比例」與「絕對杯數」的大者
+  const staffRx = staffRxFor(t);
+  const bufferOne = {};
+  if (staffRx && bufCups > 0) {
+    effectiveItems(staffRx.id, t).forEach(r => { bufferOne[r.ingredient_id] = r.qty_per_cup * bufCups; });
+  }
+
+  const days = [];
+  const cum  = {};            // 累計需求
+  const windowNeed = {};      // 備料區間內的需求
+  const firstNeed  = {};      // 每樣食材第一次被用到的日期
+  const runsOut    = {};
+
+  for (let i = 0; i < horizon; i++) {
+    const date = addDays(t, i);
+    const plan = activePlanFor('主方案', date);
+    const n    = needsOnDate(date);
+    const cups = cupsOnDate(date).reduce((a, b) => a + b.cups, 0);
+    days.push({ date, dow: dowOf(date), plan_code: plan ? plan.code : null,
+                plan_name: plan ? plan.name : null,
+                is_staff_meal_day: isStaffMealDay(dowOf(date)), cups,
+                is_stocktake_day: stocktakeDows().includes(dowOf(date)) });
+
+    Object.entries(n).forEach(([id, q]) => {
+      cum[id] = (cum[id] || 0) + q;
+      if (!firstNeed[id]) firstNeed[id] = date;
+      if (date <= windowTo) windowNeed[id] = (windowNeed[id] || 0) + q;
+      if (!runsOut[id] && cum[id] > (stock[id] || 0)) runsOut[id] = date;
+    });
+  }
+
+  const ingredients = Object.keys(ingMap).filter(id => cum[id] || stock[id]).map(id => {
+    const ing  = ingMap[id];
+    const have = Math.round((stock[id] || 0) * 10) / 10;
+    const win  = Math.round((windowNeed[id] || 0) * 10) / 10;
+    // 緩衝：比例與絕對杯數取大者
+    const buf  = Math.round(Math.max(win * bufPct / 100, bufferOne[id] || 0) * 10) / 10;
+    const target = Math.round((win + buf) * 10) / 10;
+    return {
+      id: Number(id), name: ing.name, unit: ing.unit, category: ing.category,
+      stock: have,
+      need_window: win, buffer: buf, need_with_buffer: target,
+      buy: Math.max(0, Math.round((target - have) * 10) / 10),
+      need_horizon: Math.round((cum[id] || 0) * 10) / 10,
+      runs_out_on: runsOut[id] || null,
+      first_needed_on: firstNeed[id] || null,
+      below_safety: ing.safety_stock > 0 && have < ing.safety_stock
+    };
+  }).sort((a, b) => (b.buy - a.buy) || String(a.name).localeCompare(String(b.name)));
+
+  // 換方案預警：下一次換組是哪天，屆時要用到但現在幾乎沒有的東西。
+  // 這是最容易開天窗的地方 —— 方案一期間，方案二的蔬果完全不會被碰到
+  const todayPlan = activePlanFor('主方案', t);
+  const switchDay = days.find(d => todayPlan && d.plan_code && d.plan_code !== todayPlan.code);
+  let switchWarning = null;
+  if (switchDay) {
+    const n = needsOnDate(switchDay.date);
+    const missing = Object.entries(n)
+      .filter(([id, q]) => (stock[id] || 0) < q && ingMap[id])
+      .map(([id, q]) => ({ name: ingMap[id].name, need: Math.round(q * 10) / 10, stock: Math.round((stock[id] || 0) * 10) / 10 }))
+      .sort((a, b) => (b.need - b.stock) - (a.need - a.stock));
+    switchWarning = { date: switchDay.date, from: todayPlan.name, to: switchDay.plan_name,
+                      days_ahead: Math.round((Date.parse(switchDay.date + 'T00:00:00Z') - Date.parse(t + 'T00:00:00Z')) / 86400000),
+                      missing };
+  }
+
+  return {
+    date: t, horizon_days: horizon,
+    plan_today: todayPlan ? { code: todayPlan.code, name: todayPlan.name } : null,
+    stocktake_dows: stocktakeDows(),
+    prep_window: { from: t, to: windowTo, days: windowDays,
+                   note: `到 ${windowTo}（下一個盤點日）之前要撐住` },
+    buffer: { pct: bufPct, cups: bufCups },
+    days, ingredients, switch_warning: switchWarning
+  };
+}
+
+app.get('/api/inventory/forecast', (req, res) => res.json(buildForecast(req.query.days)));
+
+// 今天要盤哪幾樣。不要每次盤 48 樣 —— 盤太多就會開始亂填。
+// 只盤這個備料區間會用到的、快到安全量的、以及上次差異大的
+app.get('/api/stocktake/shortlist', (req, res) => {
+  const t = today();
+  const fc = buildForecast(21);   // 和預測同一份計算，不各自算一次
+
+  const lastVar = {};
+  db.prepare(
+    `SELECT si.ingredient_id, si.variance FROM stocktake_items si
+      JOIN stocktakes s ON s.id=si.stocktake_id
+      WHERE s.id=(SELECT MAX(id) FROM stocktakes)`
+  ).all().forEach(r => { lastVar[r.ingredient_id] = r.variance; });
+
+  const list = (fc.ingredients || []).map(i => {
+    const reasons = [];
+    if (i.need_window > 0)                 reasons.push('這批會用到');
+    if (i.below_safety)                    reasons.push('低於安全量');
+    if (i.buy > 0)                         reasons.push('可能不夠');
+    if (Math.abs(lastVar[i.id] || 0) > 20) reasons.push('上次差異大');
+    return { ...i, reasons, last_variance: lastVar[i.id] ?? null };
+  }).filter(i => i.reasons.length)
+    .sort((a, b) => b.reasons.length - a.reasons.length || b.buy - a.buy);
+
+  res.json({ date: t, is_stocktake_day: stocktakeDows().includes(dowOf(t)),
+             stocktake_dows: stocktakeDows(), count: list.length, items: list });
+});
+
 app.get('/api/inventory/check', (req, res) => {
   const t = today();
   // 本週剩餘到週日
@@ -2002,14 +2374,10 @@ app.get('/api/inventory/check', (req, res) => {
 
   // 累計配方需求
   const needs = {};
-  function addRxNeeds(rxId, cups, powderMult) {
+  function addRxNeeds(rxId, cups, powderMult, forDate) {
     if (cups <= 0) return;
     powderMult = powderMult || 1.0;
-    db.prepare(
-      `SELECT pi.ingredient_id, pi.qty_per_cup, i.category
-       FROM prescription_ingredients pi JOIN ingredients i ON i.id=pi.ingredient_id
-       WHERE pi.prescription_id=? AND pi.qty_per_cup>0`
-    ).all(rxId).forEach(r => {
+    effectiveItems(rxId, forDate).forEach(r => {
       const freshCats = new Set(['蔬菜','水果','油水','油','水','其他']);
       const mult = freshCats.has(r.category) ? 1.0 : powderMult;
       needs[r.ingredient_id] = (needs[r.ingredient_id] || 0) + r.qty_per_cup * cups * mult;
@@ -2129,11 +2497,7 @@ app.get('/api/costs', (req, res) => {
   ).all();
 
   const prescriptions = rxs.map(rx => {
-    const items = db.prepare(
-      `SELECT pi.qty_per_cup, i.name, i.unit, i.id as iid FROM prescription_ingredients pi
-       JOIN ingredients i ON i.id=pi.ingredient_id
-       WHERE pi.prescription_id=? AND pi.qty_per_cup>0`
-    ).all(rx.id);
+    const items = effectiveItems(rx.id);
 
     let ingCost = 0;
     const breakdown = items.map(it => {
@@ -2493,14 +2857,7 @@ app.get('/api/stocktakes', (req, res) => {
 // 精力湯營養：由處方即時算出。粉類的 1.1 倍與 buildPrepAndPowder 一致
 function calcTonicNutrition(rxId, powderMultiplier) {
   const pm = powderMultiplier || 1.0;
-  const rows = db.prepare(
-    `SELECT pi.qty_per_cup, i.name, i.unit, i.category,
-            COALESCE(i.kcal_per_unit,0) kcal_per_unit,
-            COALESCE(i.protein_per_unit,0) protein_per_unit
-     FROM prescription_ingredients pi JOIN ingredients i ON i.id=pi.ingredient_id
-     WHERE pi.prescription_id=? AND pi.qty_per_cup>0
-     ORDER BY i.sort_order, i.name`
-  ).all(rxId);
+  const rows = effectiveItems(rxId);
 
   let kcal = 0, protein = 0;
   const breakdown = rows.map(r => {
