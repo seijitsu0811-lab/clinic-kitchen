@@ -53,7 +53,10 @@ check('測試處方與起始庫存就緒（燕麥 10g/杯）', startQty === 500,
       `燕麥 ${origQty}g → 起始 ${startQty}g`);
 
 line('\n━━ 1. 扣庫存會留下紀錄 ━━');
-await api('/api/inventory/consume', 'POST', { prescription_id: rx.id, cups: 2, date: yday });
+// 記住這一筆。手動扣的紀錄如果不還原，下一輪跑的時候系統會以為昨天
+// 早就扣超過應扣的量，於是沒有缺口可補，補扣那組就再也測不到東西
+const manualLog = await api('/api/inventory/consume', 'POST',
+  { prescription_id: rx.id, cups: 2, date: yday });
 check('庫存有扣', (await qtyOf('燕麥')) === Math.round((startQty - 20) * 10) / 10,
       `${startQty} → ${await qtyOf('燕麥')}`);
 
@@ -70,9 +73,24 @@ const before = await qtyOf('燕麥');
 await api('/api/today');           // 觸發補扣
 const afterSettle = await qtyOf('燕麥');
 const settled = await api('/api/consumption/auto?days=3');
-check('只補差額，不是整份重扣',
-      settled.every(s => s.cups > 0),
-      settled.length ? settled.map(s => `${s.date} ${s.cups}杯`).join('、') : '（昨天沒有應出餐量，未觸發）');
+// 只看這張測試處方在昨天的補扣，不要把環境裡別的補扣算進來
+const mine = settled.filter(s => s.date === yday && s.prescription_id === rx.id);
+
+// `[].every()` 恆真 —— 補扣沒觸發時這一條會假通過。
+// 先確認真的有補扣，這種「不會失敗的測試」比沒有測試更糟
+check('昨天的缺口確實被補扣了', mine.length > 0,
+      mine.map(s => `${s.date} ${s.cups}杯`).join('、') || '★ 完全沒有觸發補扣');
+
+// 昨天掛 5 杯、已經手動扣掉 2 杯，所以只該補 3 杯。
+// 補成 5 杯就是「整份重扣」，那會讓庫存愈補愈少
+const total = mine.reduce((s, r) => s + r.cups, 0);
+check('補的是差額 3 杯，不是整份 5 杯', total === 3,
+      `實際補 ${total} 杯（應出 5、已扣 2）`);
+
+// 扣的量也要對得上：3 杯 × 每杯 10g 燕麥
+check('庫存少掉的量與補扣杯數一致',
+      Math.abs((before - afterSettle) - 30) < 0.05,
+      `${before} → ${afterSettle}（少 ${Math.round((before - afterSettle) * 10) / 10}g，應為 3×10）`);
 
 const secondPass = await qtyOf('燕麥');
 await api('/api/today');           // 再打一次
@@ -80,8 +98,8 @@ check('重複觸發不會重複扣', (await qtyOf('燕麥')) === secondPass,
       `${secondPass} → ${await qtyOf('燕麥')}`);
 
 line('\n━━ 3. 還原自動補扣 ━━');
-if (settled.length) {
-  const target = settled[0];
+if (mine.length) {
+  const target = mine[0];
   const beforeRev = await qtyOf('燕麥');
   await api(`/api/consumption/${target.id}/reverse`, 'POST');
   const afterRev = await qtyOf('燕麥');
@@ -119,6 +137,7 @@ check('擋掉路徑穿越', bad.status === 400, `HTTP ${bad.status}`);
 line('\n━━ 6. 清理 ━━');
 // 先把出單刪掉，否則接下來的 /api/today 會再補扣一次
 if (ydayOrder && ydayOrder.id) await api('/api/today/cases/' + ydayOrder.id, 'DELETE').catch(() => {});
+if (manualLog && manualLog.id) await api('/api/consumption/' + manualLog.id + '/reverse', 'POST').catch(() => {});
 const t = await api('/api/today');
 for (const p of t.products) {
   for (const c of [...(p.cases || []), ...(p.future_cases || [])]) {

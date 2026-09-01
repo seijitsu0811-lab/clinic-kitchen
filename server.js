@@ -1109,6 +1109,25 @@ app.use('/api', (req, res, next) => {
   next();
 });
 
+// 每一個會改資料的請求都記一筆。放在這裡是因為 app.use() 只對之後註冊的
+// 路由生效 —— 放到檔案後段就會漏掉前面所有端點。
+// 依賴的常數與函式定義在下方，但這個 callback 是每次請求才執行，屆時都已就緒
+app.use((req, res, next) => {
+  if (req.method === 'GET' || LOG_SKIP.some(p => req.path.startsWith(p))) return next();
+  res.on('finish', () => {
+    // 失敗的請求不記 —— 什麼都沒改，記了只是雜訊
+    if (res.statusCode >= 400) return;
+    try {
+      db.prepare('INSERT INTO user_logs (user_id,action,detail) VALUES (?,?,?)').run(
+        req.kitchenUser ? req.kitchenUser.id : null,
+        logActionName(req.path, req.method),
+        logDetail(req.body)
+      );
+    } catch (e) { /* 記錄失敗不能影響本來的操作 */ }
+  });
+  next();
+});
+
 // ── Healthcheck ───────────────────────────────────────────
 app.get('/health', (req, res) => res.send('ok'));
 
@@ -1616,6 +1635,63 @@ app.post('/api/users', (req, res) => {
   }
 });
 
+// ── 操作紀錄 ──────────────────────────────────────────────
+// 原本的設計是「前端呼叫 /api/log」，結果沒有人呼叫過，線上累積 0 筆。
+// 靠每個新功能記得自己去記一筆，注定會漏 —— 改成伺服器自動記：
+// 它本來就知道是誰在呼叫、動了哪個端點、送了什麼。
+//
+// 只記會改變資料的請求（非 GET），而且只記成功的。
+const LOG_SKIP = [
+  '/api/today/state',      // 每次勾選都會存，400ms 一次，記了會把紀錄淹掉
+  '/api/log'               // 這條本身就是寫紀錄
+];
+// 密碼一律不進紀錄
+const LOG_REDACT = new Set(['password', 'new_password', 'pw', 'token',
+                            'FIREBASE_SERVICE_ACCOUNT_JSON']);
+
+// 把路徑翻成看得懂的動作名稱。查紀錄的人不該需要看得懂 REST
+const LOG_NAMES = [
+  [/^\/api\/prescriptions\/\d+\/ingredients$/, '修改配方用料'],
+  [/^\/api\/prescriptions\/\d+\/duplicate$/,   '複製處方'],
+  [/^\/api\/prescriptions\/\d+$/,               m => m === 'DELETE' ? '停用處方' : '修改處方'],
+  [/^\/api\/prescriptions$/,                     '新增處方'],
+  [/^\/api\/today\/cases\/\d+$/,               m => m === 'DELETE' ? '刪除出單' : '修改出單'],
+  [/^\/api\/today\/cases$/,                      '新增出單'],
+  [/^\/api\/today\/attendance\/\d+$/,          '改出席'],
+  [/^\/api\/inventory\/purchase$/,               '進貨'],
+  [/^\/api\/inventory\/consume$/,                '扣庫存'],
+  [/^\/api\/inventory\/\d+$/,                   '調整庫存'],
+  [/^\/api\/stocktake$/,                          '盤點'],
+  [/^\/api\/consumption\/\d+\/reverse$/,       '還原補扣'],
+  [/^\/api\/rotation\/plan\/override$/,         '手動指定蔬果方案'],
+  [/^\/api\/rotation\/plan\/override\/\d+$/,  '取消方案指定'],
+  [/^\/api\/settings$/,                           '改設定'],
+  [/^\/api\/ingredients\/\d+$/,                 m => m === 'DELETE' ? '停用食材' : '修改食材'],
+  [/^\/api\/ingredients$/,                        '新增食材'],
+  [/^\/api\/meals\/orders\/\d+$/,              m => m === 'DELETE' ? '刪除餐盒單' : '修改餐盒單'],
+  [/^\/api\/meals\/orders$/,                     '新增餐盒單']
+];
+
+function logActionName(path, method) {
+  for (const [re, name] of LOG_NAMES) {
+    if (re.test(path)) return typeof name === 'function' ? name(method) : name;
+  }
+  return method + ' ' + path;
+}
+
+function logDetail(body) {
+  if (!body || typeof body !== 'object') return '';
+  const pick = {};
+  Object.entries(body).forEach(([k, v]) => {
+    if (LOG_REDACT.has(k)) { pick[k] = '***'; return; }
+    if (v === null || v === undefined || v === '') return;
+    if (typeof v === 'object') { pick[k] = Array.isArray(v) ? `${v.length} 項` : '…'; return; }
+    pick[k] = v;
+  });
+  const s = JSON.stringify(pick);
+  return s.length > 400 ? s.slice(0, 400) + '…' : s;
+}
+
 app.post('/api/log', (req, res) => {
   const { user_id, action, detail } = req.body;
   db.prepare('INSERT INTO user_logs (user_id,action,detail) VALUES (?,?,?)')
@@ -1624,12 +1700,16 @@ app.post('/api/log', (req, res) => {
 });
 
 app.get('/api/logs', (req, res) => {
+  const limit  = Math.min(Math.max(Number(req.query.limit || 100), 1), 500);
+  const q      = String(req.query.q || '').trim();
   const rows = db.prepare(
     `SELECT l.*, u.name as user_name FROM user_logs l
-     LEFT JOIN users u ON u.id=l.user_id
-     ORDER BY l.ts DESC LIMIT 100`
-  ).all();
-  res.json(rows);
+      LEFT JOIN users u ON u.id=l.user_id
+      WHERE (? = '' OR l.action LIKE '%' || ? || '%' OR COALESCE(u.name,'') LIKE '%' || ? || '%')
+      ORDER BY l.ts DESC, l.id DESC LIMIT ?`
+  ).all(q, q, q, limit);
+  const total = db.prepare('SELECT COUNT(*) c FROM user_logs').get().c;
+  res.json({ total, count: rows.length, rows });
 });
 
 // ════════════════════════════════════════════════════════
@@ -2288,22 +2368,24 @@ function applyConsumption(rxId, cups, powderType, sign, date) {
 
 function recordConsumption({ date, rxId, cups, powderType, source, note, userId }) {
   applyConsumption(rxId, cups, powderType, -1, date);
-  db.prepare(
+  const r = db.prepare(
     `INSERT INTO consumption_log (date,prescription_id,cups,powder_type,source,note,user_id)
      VALUES (?,?,?,?,?,?,?)`
   ).run(date, rxId, cups, powderType || '', source || 'manual', note || '', userId || null);
+  return r.lastInsertRowid;
 }
 
 app.post('/api/inventory/consume', (req, res) => {
   const { prescription_id, cups, powder_type, date } = req.body;
   if (!prescription_id || !cups || cups <= 0) return res.status(400).json({ error: 'invalid' });
+  let logId;
   tx(() => {
-    recordConsumption({
+    logId = recordConsumption({
       date: date || today(), rxId: prescription_id, cups,
       powderType: powder_type, source: 'manual', userId: req.kitchenUser.id
     });
   });
-  res.json({ ok: true });
+  res.json({ ok: true, id: logId });
 });
 
 // ── 隔日自動補扣 ──────────────────────────────────────────

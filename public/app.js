@@ -2824,7 +2824,36 @@ const App = (() => {
     });
     _renderLaborPreview();
     _renderBackups();
+    _renderLogs();
     openModal('modalSettings');
+  }
+
+  // 操作紀錄。原本的設計要前端主動呼叫 /api/log，結果沒人呼叫過、線上 0 筆；
+  // 現在是伺服器每次改資料就自己記一筆，這裡只負責顯示
+  let _logTimer = null;
+  async function _renderLogs(q) {
+    const el = document.getElementById('logList');
+    if (!el) return;
+    try {
+      const r = await api('/api/logs?limit=100' + (q ? '&q=' + encodeURIComponent(q) : ''));
+      document.getElementById('logTotal').textContent = `共 ${r.total} 筆`;
+      el.innerHTML = r.rows.length ? r.rows.map(x => `
+        <div class="log-row">
+          <span class="log-when">${esc((x.ts || '').slice(5, 16))}</span>
+          <span class="log-who">${esc(x.user_name || '—')}</span>
+          <span class="log-what">${esc(x.action)}</span>
+          <span class="log-detail" title="${esc(x.detail || '')}">${esc(x.detail || '')}</span>
+        </div>`).join('')
+        : '<div class="log-empty">沒有符合的紀錄</div>';
+    } catch (e) {
+      el.innerHTML = '<div class="log-empty">載不到操作紀錄</div>';
+    }
+  }
+
+  function searchLogs() {
+    clearTimeout(_logTimer);
+    const q = document.getElementById('logSearch').value.trim();
+    _logTimer = setTimeout(() => _renderLogs(q), 250);
   }
 
   async function _renderBackups() {
@@ -3724,7 +3753,7 @@ const App = (() => {
     toggleLeaveRestore,
     loadMeals, switchMealTab, switchMealView, advanceMealStatus, goBuyMeals,
     openAddMealOrder, openEditMealOrder, saveMealOrder, deleteMealOrder, updateBoxHint,
-    toggleForecastAll, toggleSwitchAll, setPlanOverride, clearPlanOverride,
+    toggleForecastAll, toggleSwitchAll, setPlanOverride, clearPlanOverride, searchLogs,
     openVendorPurchase, saveMealPurchase,
     openEditMealItem, saveMealItem,
     openEditNutritionCard, saveNutritionCard, reviewCard, openPrintCards,

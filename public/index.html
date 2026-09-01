@@ -818,6 +818,26 @@
       background: none; border: none; color: var(--primary); font-size: 14px; font-weight: 700;
       cursor: pointer; padding: 10px 4px; min-height: 44px;
     }
+    /* 操作紀錄 */
+    .log-total { font-size: 12px; color: var(--text3); }
+    .log-search {
+      font-size: 13px; padding: 6px 10px; border-radius: 8px;
+      border: 1px solid var(--border); background: var(--bg); color: var(--text);
+      width: 150px; min-height: 44px;
+    }
+    .log-list { font-size: 12px; max-height: 220px; overflow-y: auto; }
+    .log-row {
+      display: flex; gap: 8px; padding: 7px 0; border-top: 1px solid var(--border);
+      align-items: baseline;
+    }
+    .log-row:first-child { border-top: 0; }
+    .log-when { color: var(--text3); white-space: nowrap; font-variant-numeric: tabular-nums; }
+    .log-who  { font-weight: 700; white-space: nowrap; min-width: 48px; }
+    .log-what { font-weight: 700; white-space: nowrap; }
+    .log-detail {
+      color: var(--text2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;
+    }
+    .log-empty { color: var(--text3); padding: 14px 0; }
     .sync-down {
       background: rgba(239,68,68,.08); border: 1px solid rgba(239,68,68,.35);
       border-radius: var(--radius-md); padding: 12px 14px; margin-bottom: 10px;
@@ -3046,6 +3066,15 @@
         系統每天自動留一份，保留最近 14 天。點檔名可以下載到本機保存一份離線副本。
       </div>
       <div id="backupList" style="font-size:12px;max-height:150px;overflow-y:auto"></div>
+    </div>
+    <div style="border-top:1px solid var(--border);margin-top:6px;padding-top:14px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+        <strong style="font-size:14px">操作紀錄</strong>
+        <span id="logTotal" class="log-total"></span>
+        <input id="logSearch" class="log-search" placeholder="搜尋動作或人員"
+               oninput="App.searchLogs()" style="margin-left:auto">
+      </div>
+      <div id="logList" class="log-list"></div>
     </div>
     <div class="modal-actions">
       <button class="btn btn-ghost" onclick="App.closeModal('modalSettings')">取消</button>
