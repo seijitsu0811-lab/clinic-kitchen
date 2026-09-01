@@ -863,6 +863,25 @@
       color: var(--text2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;
     }
     .log-empty { color: var(--text3); padding: 14px 0; }
+    /* 今天的料不齊 —— 今日頁最上面，比什麼都急 */
+    .today-short {
+      background: rgba(239,68,68,.08); border: 1px solid rgba(239,68,68,.35);
+      border-left: 5px solid var(--red);
+      border-radius: var(--radius-md); padding: 14px 16px; margin-bottom: 10px;
+    }
+    .ts-head { font-size: 16px; font-weight: 800; color: var(--red); }
+    .ts-sub { font-size: 14px; color: var(--text2); margin-top: 4px; }
+    .ts-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+    .ts-chip {
+      font-size: 13px; font-weight: 700; padding: 6px 10px; border-radius: 999px;
+      background: rgba(239,68,68,.10); border: 1px solid rgba(239,68,68,.3); color: var(--red);
+    }
+    .ts-chip.more { background: var(--bg); border-color: var(--border); color: var(--text2); }
+    .ts-go {
+      display: inline-flex; align-items: center; margin-top: 12px;
+      min-height: 44px; padding: 0 16px; border-radius: 10px;
+      background: var(--red); color: #fff; font-size: 14px; font-weight: 700; text-decoration: none;
+    }
     .sync-down {
       background: rgba(239,68,68,.08); border: 1px solid rgba(239,68,68,.35);
       border-radius: var(--radius-md); padding: 12px 14px; margin-bottom: 10px;
@@ -2552,6 +2571,7 @@
     <!-- 順序＝急迫性。買便當有截止時間，排最前面；
          自動補扣是過去幾天的帳務更正，排在它後面，而且只佔一行 -->
     <div id="todayMealAlert"></div>
+    <div id="todayShortage"></div>
     <div id="apptSyncWarn"></div>
     <div id="autoSettleAlert"></div>
     <div class="section-head">

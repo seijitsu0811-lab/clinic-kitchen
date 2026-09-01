@@ -266,6 +266,7 @@ const App = (() => {
     document.getElementById('productSections').innerHTML = d.products.map(prod => renderProductSection(prod, d.attending_count)).join('');
 
     renderTodayMeals(d.meals);
+    renderTodayShortage(d);
     renderApptSyncWarning(d);
     renderAutoSettle();
 
@@ -3271,6 +3272,30 @@ const App = (() => {
   // 讀不到預約時要講出來。「今天沒有預約」和「連不上預約系統」看起來一樣，
   // 但意思完全不同 —— 實際發生過：權限被改成 401 之後什麼都沒帶進來，
   // 大家以為是自己忘了 key，默默改成全部手動建單
+  // 今天的料齊不齊。這個判斷本來只出現在庫存頁，
+  // 但廚務同事早上打開的是今日頁 —— 講在他們看不到的地方等於沒講
+  async function renderTodayShortage(d) {
+    const el = document.getElementById('todayShortage');
+    if (!el) return;
+    let f;
+    try { f = await api('/api/inventory/forecast?days=7'); }
+    catch (e) { el.innerHTML = ''; return; }
+
+    const day = (f.days || []).find(x => x.date === d.date);
+    if (!day || day.cups === 0 || day.feasible) { el.innerHTML = ''; return; }
+
+    const top = day.short.slice(0, 5);
+    el.innerHTML = `<div class="today-short">
+      <div class="ts-head">⚠ 今天的料不齊　<b>${day.short.length} 樣不夠</b></div>
+      <div class="ts-sub">${esc(day.plan_name || '')} ${day.cups} 杯做不完整。缺：</div>
+      <div class="ts-chips">
+        ${top.map(x => `<span class="ts-chip">${esc(x.name)} 缺 ${x.gap}${esc(x.unit)}</span>`).join('')}
+        ${day.short.length > 5 ? `<span class="ts-chip more">…另 ${day.short.length - 5} 樣</span>` : ''}
+      </div>
+      <a class="ts-go" href="/market.html">🛒 去採購</a>
+    </div>`;
+  }
+
   function renderApptSyncWarning(d) {
     const el = document.getElementById('apptSyncWarn');
     if (!el) return;
