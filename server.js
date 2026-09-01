@@ -216,6 +216,10 @@ try {
   // 沒有這個旗標的話，採購清單每次都會叫人去買 3850ml 的水
   "ALTER TABLE ingredients ADD COLUMN track_stock INTEGER DEFAULT 1",
   "UPDATE ingredients SET track_stock=0 WHERE name='水'",
+  "INSERT OR IGNORE INTO settings (key,value) VALUES ('staff_meal_dows','2,4')",
+  // 有些人喝得不固定（沒有排定的日子，但一週大概幾杯）。
+  // daily_cups 是「每個工作日幾杯」，對這種人算出來會失真
+  "ALTER TABLE prescriptions ADD COLUMN weekly_cups REAL DEFAULT 0",
   // 蔬果方案：方案一／二只差在蔬果，機能配料是每個人自己的。
   // 把會輪替的那部分抽出來獨立存放，處方只要指向它 ——
   // 否則每多一個人用方案就要多維護兩張處方，蛋白粉要改兩次
@@ -652,6 +656,25 @@ installFormulaSets();
 // 必須在上面全部跑完之後：這時候 EMP-01/02、RX-01、RX-08 都已經存在，
 // 蔬果才有東西可以搬
 installProducePlans();
+
+// 樂芙的雞胸改成雞腿。熱量與蛋白質原本是店家公告的「雞胸」數字，
+// 換成雞腿之後那些數字就不對了 —— 標回待確認，不要拿舊數字充新品項
+try {
+  if (!db.prepare("SELECT 1 FROM settings WHERE key='lefu_chicken_thigh_2026_09'").get()) {
+    const it = db.prepare("SELECT id FROM meal_items WHERE code='SET-L1-CHICK'").get();
+    if (it) {
+      db.prepare(
+        `UPDATE meal_items SET display_name='水嫩舒肥鮮雞腿', vendor_item_name='水嫩雞腿肉',
+                 kcal=0, protein_g=0, kcal_single=0, protein_g_single=0,
+                 kcal_source='待確認', nutrition_as_of=''
+          WHERE id=?`
+      ).run(it.id);
+      console.log('樂芙雞胸已改為雞腿；熱量標回待確認');
+    }
+    db.prepare("INSERT OR REPLACE INTO settings (key,value) VALUES ('lefu_chicken_thigh_2026_09',?)")
+      .run(new Date().toISOString().slice(0, 19).replace('T', ' '));
+  }
+} catch (e) {}
 // 修掉上面那個判斷寫錯時留下的狀態：已停用的處方不該還掛著員工旗標
 try {
   db.exec('UPDATE prescriptions SET is_staff_rx=0 WHERE active=0 AND is_staff_rx=1');
@@ -1060,12 +1083,19 @@ function normName(s) {
 // 0=日 1=一 2=二 3=三 4=四 5=五 6=六
 // 只在這裡定義一次：出席預設、庫存試算、SOP 說明全部讀這個常數。
 // 之前出席邏輯和庫存試算各寫一份 [2,4,5]，改一邊就會不一致。
-const STAFF_MEAL_DOWS = [2, 4];   // 週二、週四
 const DOW_LABEL = ['日', '一', '二', '三', '四', '五', '六'];
 
-function isStaffMealDay(dow) { return STAFF_MEAL_DOWS.includes(dow); }
+// 員工供應日。原本是寫死的常數，但這件事會改（可能變成每週 2~3 天），
+// 改成設定就不用動程式。仍然只定義一次 —— 要用就從這裡讀，不要各自寫一份
+function staffMealDows() {
+  const raw = rotationSetting('staff_meal_dows', '2,4');
+  const list = String(raw).split(',').map(x => Number(String(x).trim()))
+    .filter(x => Number.isInteger(x) && x >= 0 && x <= 6);
+  return list.length ? list : [2, 4];
+}
+function isStaffMealDay(dow) { return staffMealDows().includes(dow); }
 function staffMealDaysLabel() {
-  return STAFF_MEAL_DOWS.map(d => '週' + DOW_LABEL[d]).join('、');
+  return staffMealDows().map(d => '週' + DOW_LABEL[d]).join('、');
 }
 // 在編人數（庫存試算用）。之前寫死 9 人，離職或新進都不會反映
 function rosterCount() {
@@ -1669,7 +1699,7 @@ app.get('/api/today', async (req, res) => {
     date, staff, attending_count: attendingCount, products: productData,
     leaves: leavesToday, is_meal_day: isMealDay, meals: buildMealDay(date),
     // 供應日只在伺服器定義一次，SOP 說明文字也讀這個，不再各寫一份
-    staff_meal_dows:  STAFF_MEAL_DOWS,
+    staff_meal_dows:  staffMealDows(),
     staff_meal_label: staffMealDaysLabel(),
     roster_count:     rosterCount(),
     auto_settled:     autoSettled,   // 這次載入補扣了哪幾天
@@ -1797,15 +1827,16 @@ app.post('/api/prescriptions', (req, res) => {
 
 app.put('/api/prescriptions/:id', (req, res) => {
   const { product_id, name, formula_type, contraindications, timing, is_staff_rx, active,
-          daily_cups, buffer_cups } = req.body;
-  const cur = db.prepare('SELECT daily_cups, buffer_cups FROM prescriptions WHERE id=?').get(req.params.id) || {};
+          daily_cups, buffer_cups, weekly_cups } = req.body;
+  const cur = db.prepare('SELECT daily_cups, buffer_cups, weekly_cups FROM prescriptions WHERE id=?').get(req.params.id) || {};
   db.prepare(
     `UPDATE prescriptions SET product_id=?,name=?,formula_type=?,contraindications=?,timing=?,
-            is_staff_rx=?,active=?,daily_cups=?,buffer_cups=? WHERE id=?`
+            is_staff_rx=?,active=?,daily_cups=?,buffer_cups=?,weekly_cups=? WHERE id=?`
   ).run(product_id||1, name, formula_type, contraindications||'', timing, is_staff_rx?1:0,
         active===undefined?1:active,
         daily_cups  === undefined ? (cur.daily_cups  || 0) : (Number(daily_cups)  || 0),
         buffer_cups === undefined ? (cur.buffer_cups || 0) : (Number(buffer_cups) || 0),
+        weekly_cups === undefined ? (cur.weekly_cups || 0) : (Number(weekly_cups) || 0),
         req.params.id);
   res.json({ ok: true });
 });
@@ -2197,12 +2228,20 @@ function cupsOnDate(date) {
     }
   }
 
-  // 每日供應的處方（例如 AW），週末不出
+  // 固定每日供應的處方，週末不出
   if (dow >= 1 && dow <= 5) {
     db.prepare(
       `SELECT id, name, COALESCE(daily_cups,0) daily_cups FROM prescriptions
         WHERE active=1 AND COALESCE(daily_cups,0) > 0`
     ).all().forEach(rx => out.push({ rxId: rx.id, cups: rx.daily_cups, powderMult: 1.0, why: rx.name }));
+
+    // 喝得不固定的（例如一週約 6 杯、沒有排定日子）：把週量平均攤到 5 個工作日。
+    // 攤平只是為了讓備料量抓得住，不代表那天真的會喝那麼多
+    db.prepare(
+      `SELECT id, name, COALESCE(weekly_cups,0) weekly_cups FROM prescriptions
+        WHERE active=1 AND COALESCE(weekly_cups,0) > 0 AND COALESCE(daily_cups,0) = 0`
+    ).all().forEach(rx => out.push({ rxId: rx.id, cups: rx.weekly_cups / 5, powderMult: 1.0,
+                                     why: rx.name + '（每週 ' + rx.weekly_cups + ' 杯攤平）' }));
   }
 
   // 已排的個案出單（排除上面已經算過的員工與每日供應）
@@ -2406,7 +2445,7 @@ app.get('/api/inventory/check', (req, res) => {
   // 2. 員工本週剩餘餐次 × 在編人數
   //    人數改為讀實際名冊，不再寫死 9 人（離職或新進都會反映）；
   //    今天如果就是供應日，用今天實際的出席人數，休假的不算進採購量
-  const empDays  = (dow === 0 || dow === 6) ? 0 : STAFF_MEAL_DOWS.filter(d => d >= dow).length;
+  const empDays  = (dow === 0 || dow === 6) ? 0 : staffMealDows().filter(d => d >= dow).length;
   const roster   = rosterCount();
   const todayAtt = db.prepare(
     'SELECT COUNT(*) c FROM staff_attendance WHERE date=? AND attending=1'
@@ -2469,7 +2508,7 @@ app.get('/api/inventory/check', (req, res) => {
       bufferCups: dailySupply.reduce((s, r) => s + r.buffer_cups, 0),
       daily_supply: dailySupply,          // 每日固定供應的處方（設定驅動）
       emp_days: empDays, roster, today_attending: todayAtt,
-      meal_dows: STAFF_MEAL_DOWS, meal_label: staffMealDaysLabel()
+      meal_dows: staffMealDows(), meal_label: staffMealDaysLabel()
     }
   });
 });

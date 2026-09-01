@@ -38,8 +38,14 @@ check('全配方粉類 ×1.1 生效', rx06full.kcal > rx06bag.kcal,
 line('\n━━ 2. 建立出單（兩種採購模式）━━');
 const o1 = await api('/api/meals/orders', 'POST',
   { meal_item_id: 1, qty: 2, meal_time: '1200', patient_name: '測試甲', purchase_mode: '餐盒' });
+// 挑一款單點價與單點熱量都有數字的。品項的營養資料可能被標回待確認
+// （換了主菜就會這樣），寫死 id 會挑到沒有數字的那一款
+const menuNow = await api('/api/meals/menu');
+const singleItem = menuNow.series.flatMap(s => s.items)
+  .find(i => i.price_single > 0 && i.kcal_single > 0);
+if (!singleItem) { line('  ✗ 菜單上沒有任何一款單點資料齊全，無法驗證'); process.exit(1); }
 const o2 = await api('/api/meals/orders', 'POST',
-  { meal_item_id: 2, qty: 1, meal_time: '1330', patient_name: '測試乙', purchase_mode: '單點' });
+  { meal_item_id: singleItem.id, qty: 1, meal_time: '1330', patient_name: '測試乙', purchase_mode: '單點' });
 const o3 = await api('/api/meals/orders', 'POST',
   { meal_item_id: 8, qty: 1, meal_time: '1330', patient_name: '測試丙', purchase_mode: '餐盒' });
 check('三筆出單建立成功', !!(o1.id && o2.id && o3.id), `id ${o1.id}, ${o2.id}, ${o3.id}`);
@@ -47,9 +53,14 @@ check('三筆出單建立成功', !!(o1.id && o2.id && o3.id), `id ${o1.id}, ${o
 const day = await api('/api/meals/today');
 const mine = day.orders.filter(o => String(o.patient_name).startsWith('測試'));
 const single = mine.find(o => o.id === o2.id);
+// 跟品項自己的單點欄位比，不要寫死數字 —— 換主菜或改價就會假失敗，
+// 而且真正要驗的是「有沒有套用單點欄位而不是餐盒欄位」
 check('單點模式套用單點價與單點熱量',
-      single.purchase_mode === '單點' && single.price === 70 && single.kcal === 180,
-      `${single.display_name} ${money(single.price)} / ${single.kcal} kcal`);
+      single.purchase_mode === '單點'
+      && single.price === singleItem.price_single
+      && single.kcal  === singleItem.kcal_single
+      && single.price !== singleItem.price_box,
+      `${single.display_name} ${money(single.price)} / ${single.kcal} kcal（單點 ${money(singleItem.price_single)}、餐盒 ${money(singleItem.price_box)}）`);
 
 line('\n━━ 3. 依店家分組的採購清單 ━━');
 day.purchase_lists.forEach(g => {
