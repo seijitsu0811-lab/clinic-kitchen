@@ -1559,6 +1559,7 @@ const App = (() => {
                 ${costHtml}
               </div>
               <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end">
+                <button class="btn btn-ghost btn-sm" onclick="App.duplicateRx(${rx.id},'${esc(rx.code)}','${esc(rx.name)}')">複製</button>
                 <button class="btn btn-ghost btn-sm" onclick="App.openEditRx(${rx.id})">編輯資訊</button>
                 <button class="btn btn-primary btn-sm" onclick="App.openEditRxIngredients(${rx.id},'${esc(rx.name)}')">編輯配方</button>
               </div>
@@ -1592,6 +1593,26 @@ const App = (() => {
     const delBtn = document.getElementById('rxDelBtn');
     if (delBtn) delBtn.style.display = 'none';
     openModal('modalRx');
+  }
+
+  // 很多個案的內用配方跟員工／AW 幾乎一樣，只差益生菌那幾樣。
+  // 從頭建要填二十幾行，複製再微調快得多
+  async function duplicateRx(id, srcCode, srcName) {
+    const code = prompt(`複製「${srcName}」（${srcCode}）\n\n新處方的代號：`, '');
+    if (!code || !code.trim()) return;
+    const name = prompt('新處方的名稱（個案姓名）：', srcName + ' 複本');
+    if (name === null) return;
+    try {
+      const r = await api(`/api/prescriptions/${id}/duplicate`, 'POST',
+                          { code: code.trim(), name: (name || '').trim() });
+      await loadRx();
+      // 複製出來的是獨立的一份，之後改來源不會跟著變 —— 這點要講清楚，
+      // 否則有人會以為改了員工配方，複製出去的那幾張也會跟著改
+      alert(`已建立 ${r.code}「${r.name}」，複製了 ${r.copied_items} 項用料。\n` +
+            (r.produce_plan_group ? '蔬果方案跟著沿用，會隨輪替自動換。\n' : '') +
+            '這是獨立的一份：之後改 ' + r.from_code + ' 不會連帶改到它。');
+      openEditRxIngredients(r.id, r.name);
+    } catch (e) { alert(e.message); }
   }
 
   async function openEditRx(id) {
@@ -3625,7 +3646,7 @@ const App = (() => {
     batchDragStart, batchDragEnd, batchDrop, batchDropDelete, editBatchTime, addBatch, removeBatch,
     schDragStart, schDragOver, schDragLeave, schDrop,
     deleteCase, openAddCase, openEditCase, addCase,
-    loadRx, openAddRx, openEditRx, saveRx, deleteRx,
+    loadRx, openAddRx, openEditRx, saveRx, deleteRx, duplicateRx,
     openEditRxIngredients, saveRxIngredients,
     loadInventory, openEditInv, saveInventory, togglePurchaseHistory,
     openAddIngredient, addIngredient, openPurchase, savePurchase,

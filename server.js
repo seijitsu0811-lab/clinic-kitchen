@@ -657,6 +657,34 @@ installFormulaSets();
 // 蔬果才有東西可以搬
 installProducePlans();
 
+// 樂芙的雞胸換成去骨烤雞腿。菜單上兩款都在、價格與熱量都不同 ——
+// 一度被當成「改名」處理是錯的，那是換一款點。數字取自 2026-04-07 版菜單。
+// 只換這一款，其餘不動（其他品項的資料沒拿到就不要臆測）
+function switchLefuToThigh() {
+  if (db.prepare("SELECT 1 FROM settings WHERE key='lefu_thigh_2026_04'").get()) return;
+  tx(() => {
+    db.prepare(
+      `UPDATE meal_items
+          SET display_name='去骨烤雞腿餐盒', vendor_item_name='去骨烤雞腿',
+              kcal=674, protein_g=48, kcal_single=0, protein_g_single=0,
+              price_box=170, price_single=90,
+              kcal_source='店家公告', nutrition_as_of='2026-04-07'
+        WHERE code='SET-L1-CHICK'`
+    ).run();
+    // 採購的人需要這些：地址、營業時間、公休日、外送門檻。
+    // 週六日公休沒寫的話，有人會白跑一趟
+    db.prepare(
+      `UPDATE vendors SET branch='南京龍江店', phone='02-2508-2882',
+              order_note='台北市中山區南京東路三段109巷12號｜週一至週五（六日與國定假日休息）｜11:00-14:00、16:30-19:30｜LINE @enjoylovefood2｜3公里內滿 650 元免運'
+        WHERE name LIKE '%樂芙%'`
+    ).run();
+    db.prepare("INSERT OR REPLACE INTO settings (key,value) VALUES ('lefu_thigh_2026_04',?)")
+      .run(new Date().toISOString().slice(0, 19).replace('T', ' '));
+    console.log('樂芙雞胸已換成去骨烤雞腿餐盒（674kcal / 48g / $170）');
+  });
+}
+switchLefuToThigh();
+
 // 樂芙的雞胸改成雞腿。熱量與蛋白質原本是店家公告的「雞胸」數字，
 // 換成雞腿之後那些數字就不對了 —— 標回待確認，不要拿舊數字充新品項
 try {
@@ -1875,6 +1903,57 @@ app.get('/api/rotation/active', (req, res) => {
   res.json({ group, date, ...full,
              weeks: Number(rotationSetting('rotation_weeks', '2')),
              anchor: rotationSetting('rotation_anchor', '2026-08-31') });
+});
+
+// 從既有處方複製一張新的。很多個案的內用配方跟員工／AW 幾乎一樣，
+// 只差益生菌那幾樣 —— 從頭建一張要填二十幾行，複製再微調快得多。
+//
+// 刻意不做成「共用的基礎配方」：那樣改一次全體生效，但多一層、
+// 看一個人的配方要合三層。等到真的有五個以上共用同一套機能配料再說。
+// 代價要講清楚：複製出來的是獨立的一份，之後改來源不會跟著變。
+app.post('/api/prescriptions/:id/duplicate', (req, res) => {
+  const src = db.prepare('SELECT * FROM prescriptions WHERE id=?').get(req.params.id);
+  if (!src) return res.status(404).json({ error: '找不到來源處方' });
+
+  const { code, name, patient_name } = req.body;
+  if (!code || !String(code).trim()) return res.status(400).json({ error: '要給新處方一個代號' });
+  const taken = db.prepare('SELECT code, name, active FROM prescriptions WHERE code=?')
+                  .get(String(code).trim());
+  if (taken) {
+    // 停用的處方仍然佔著代號：歷史出單指向它，不能拿去給別人用，
+    // 否則過去的成本與紀錄會接到錯的人身上
+    return res.status(400).json({
+      error: taken.active
+        ? `代號 ${taken.code} 已經是「${taken.name}」在用`
+        : `代號 ${taken.code} 被已停用的「${taken.name}」佔著（歷史出單還指向它），請換一個`
+    });
+  }
+
+  let newId;
+  tx(() => {
+    const r = db.prepare(
+      `INSERT INTO prescriptions
+         (product_id, code, name, formula_type, contraindications, timing,
+          is_staff_rx, active, daily_cups, buffer_cups, weekly_cups, produce_plan_group)
+       VALUES (?,?,?,?,?,?, 0, 1, 0, 0, 0, ?)`
+    ).run(src.product_id || 1, String(code).trim(),
+          (name || patient_name || (src.name + ' 複本')).trim(),
+          src.formula_type, src.contraindications || '', src.timing || '餐前',
+          // 蔬果方案跟著複製 —— 這正是「跟員工一樣」的那一半
+          src.produce_plan_group || '');
+    newId = r.lastInsertRowid;
+
+    // 只複製這張處方自己的用料。蔬果來自方案，不會也不該被複製成獨立的一份
+    db.prepare(
+      `INSERT INTO prescription_ingredients (prescription_id, ingredient_id, qty_per_cup, prep, prep_stage)
+       SELECT ?, ingredient_id, qty_per_cup, COALESCE(prep,''), COALESCE(prep_stage,'')
+         FROM prescription_ingredients WHERE prescription_id=?`
+    ).run(newId, src.id);
+  });
+
+  const created = db.prepare('SELECT * FROM prescriptions WHERE id=?').get(newId);
+  const n = db.prepare('SELECT COUNT(*) c FROM prescription_ingredients WHERE prescription_id=?').get(newId).c;
+  res.json({ ...created, copied_items: n, from_code: src.code });
 });
 
 app.get('/api/prescriptions/:id/ingredients', (req, res) => {
