@@ -220,6 +220,15 @@ try {
   // 有些人喝得不固定（沒有排定的日子，但一週大概幾杯）。
   // daily_cups 是「每個工作日幾杯」，對這種人算出來會失真
   "ALTER TABLE prescriptions ADD COLUMN weekly_cups REAL DEFAULT 0",
+  // 手動指定某一段期間用哪個方案。現實會偏離排程（食材沒到、想延一週），
+  // 但預設仍然是自動算 —— 需要人定期去按的東西一定會失守
+  `CREATE TABLE IF NOT EXISTS produce_plan_overrides (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     group_code TEXT NOT NULL DEFAULT '主方案',
+     plan_id INTEGER NOT NULL,
+     date_from TEXT NOT NULL, date_to TEXT NOT NULL,
+     note TEXT DEFAULT '', created_by TEXT DEFAULT '',
+     created_at TEXT DEFAULT (datetime('now','localtime')))`,
   // 蔬果方案：方案一／二只差在蔬果，機能配料是每個人自己的。
   // 把會輪替的那部分抽出來獨立存放，處方只要指向它 ——
   // 否則每多一個人用方案就要多維護兩張處方，蛋白粉要改兩次
@@ -755,12 +764,24 @@ function activeRxInGroup(group, date) {
   ).all(group), date);
 }
 
-// 某個方案組在指定日期該用的蔬果方案
+// 某個方案組在指定日期該用的蔬果方案。
+// 手動覆寫優先，沒有覆寫才照日期自動算 —— 兩邊的好處都要：
+// 沒人動的時候它自己是對的，現實偏離排程時又改得動
 function activePlanFor(group, date) {
   if (!group) return null;
+  const d = date || today();
+  try {
+    const ov = db.prepare(
+      `SELECT p.id, p.code, p.name, p.rotation_index, o.id override_id, o.note, o.date_to
+         FROM produce_plan_overrides o JOIN produce_plans p ON p.id=o.plan_id
+        WHERE o.group_code=? AND ? BETWEEN o.date_from AND o.date_to AND p.active=1
+        ORDER BY o.id DESC LIMIT 1`
+    ).get(group, d);
+    if (ov) return { ...ov, is_override: true };
+  } catch (e) { /* 表還沒建起來就走自動 */ }
   return rotationPick(db.prepare(
     'SELECT id, code, name, rotation_index FROM produce_plans WHERE group_code=? AND active=1 ORDER BY rotation_index'
-  ).all(group), date || today());
+  ).all(group), d);
 }
 
 // ★ 有效配方 = 這個人自己的用料 ＋ 當期蔬果方案。
@@ -1877,6 +1898,71 @@ app.delete('/api/prescriptions/:id', (req, res) => {
 // 取得處方食材
 // 某個輪替組在某一天該用哪一張處方。畫面和測試都問這裡，不各自算一次
 // 某一天用哪個蔬果方案，以及那個方案的內容。畫面與測試都問這裡
+// 有哪些方案可以選，以及每一天目前算出來是哪個
+app.get('/api/rotation/plans', (req, res) => {
+  const group = req.query.group || '主方案';
+  const plans = db.prepare(
+    'SELECT id, code, name, rotation_index FROM produce_plans WHERE group_code=? AND active=1 ORDER BY rotation_index'
+  ).all(group);
+  const overrides = db.prepare(
+    `SELECT o.*, p.name plan_name, p.code plan_code FROM produce_plan_overrides o
+       JOIN produce_plans p ON p.id=o.plan_id
+      WHERE o.group_code=? AND o.date_to >= ? ORDER BY o.date_from`
+  ).all(group, today());
+  const cur = activePlanFor(group, today());
+  res.json({ group, plans, overrides, current: cur,
+             is_override: !!(cur && cur.is_override) });
+});
+
+// 手動指定一段期間用哪個方案。預設從今天到下一次自然換組的前一天 ——
+// 這是最常見的情況：「這一期改用另一個」
+app.post('/api/rotation/plan/override', (req, res) => {
+  const group = req.body.group || '主方案';
+  const planId = Number(req.body.plan_id);
+  const plan = db.prepare('SELECT id, name FROM produce_plans WHERE id=? AND active=1').get(planId);
+  if (!plan) return res.status(400).json({ error: '找不到這個方案' });
+
+  const from = req.body.date_from || today();
+  let to = req.body.date_to;
+  if (!to) {
+    // 找出下一次自動會換組的日子，覆寫到那之前
+    const base = activePlanFor(group, from);
+    to = from;
+    for (let i = 1; i <= 60; i++) {
+      const d = new Date(Date.parse(from + 'T00:00:00Z') + i * 86400000).toISOString().slice(0, 10);
+      const auto = rotationPick(db.prepare(
+        'SELECT id, code, name, rotation_index FROM produce_plans WHERE group_code=? AND active=1 ORDER BY rotation_index'
+      ).all(group), d);
+      if (auto && base && auto.code !== base.code) break;
+      to = d;
+    }
+  }
+  const r = db.prepare(
+    `INSERT INTO produce_plan_overrides (group_code,plan_id,date_from,date_to,note,created_by)
+     VALUES (?,?,?,?,?,?)`
+  ).run(group, planId, from, to, req.body.note || '', req.kitchenUser ? req.kitchenUser.name : '');
+
+  // 覆寫只換這一期，輪替時鐘不動。指定的如果剛好跟下一期自然輪到的一樣，
+  // 就會連續兩期同一個方案 —— 讓系統自己講，不要等人吃了四週才發現
+  const nextDay = new Date(Date.parse(to + 'T00:00:00Z') + 86400000).toISOString().slice(0, 10);
+  const nextAuto = rotationPick(db.prepare(
+    'SELECT id, code, name, rotation_index FROM produce_plans WHERE group_code=? AND active=1 ORDER BY rotation_index'
+  ).all(group), nextDay);
+  const warning = (nextAuto && nextAuto.id === planId)
+    ? `下一期（${nextDay} 起）自然也輪到${plan.name}，這樣會連續兩期都是它`
+    : '';
+
+  res.json({ id: r.lastInsertRowid, group, plan: plan.name,
+             date_from: from, date_to: to, next_from: nextDay,
+             next_plan: nextAuto ? nextAuto.name : null, warning });
+});
+
+// 取消覆寫，回到自動
+app.delete('/api/rotation/plan/override/:id', (req, res) => {
+  db.prepare('DELETE FROM produce_plan_overrides WHERE id=?').run(req.params.id);
+  res.json({ ok: true });
+});
+
 app.get('/api/rotation/plan', (req, res) => {
   const date = req.query.date || today();
   const group = req.query.group || '主方案';
@@ -1888,7 +1974,9 @@ app.get('/api/rotation/plan', (req, res) => {
        FROM produce_plan_items ppi JOIN ingredients i ON i.id=ppi.ingredient_id
       WHERE ppi.plan_id=? ORDER BY i.category, i.name`
   ).all(plan.id);
-  res.json({ date, group, plan: { code: plan.code, name: plan.name, rotation_index: plan.rotation_index },
+  res.json({ date, group,
+             plan: { code: plan.code, name: plan.name, rotation_index: plan.rotation_index },
+             is_override: !!plan.is_override, override_note: plan.note || '',
              weeks: Number(rotationSetting('rotation_weeks','2')),
              anchor: rotationSetting('rotation_anchor','2026-08-31'),
              items });
@@ -2360,7 +2448,9 @@ function buildForecast(daysAhead) {
   db.prepare('SELECT ingredient_id, qty FROM inventory').all().forEach(r => { stock[r.ingredient_id] = r.qty; });
   const ingMap = {};
   db.prepare(
-    'SELECT id, name, unit, category, safety_stock FROM ingredients WHERE active=1 AND COALESCE(track_stock,1)=1'
+    `SELECT id, name, unit, category, safety_stock,
+            COALESCE(count_unit,'') count_unit, COALESCE(count_ratio,1) count_ratio
+       FROM ingredients WHERE active=1 AND COALESCE(track_stock,1)=1`
   ).all().forEach(i => { ingMap[i.id] = i; });
 
   // 備料區間：今天到下一個盤點日之前。週三、週五沒人盤點，
@@ -2409,6 +2499,7 @@ function buildForecast(daysAhead) {
     const target = Math.round((win + buf) * 10) / 10;
     return {
       id: Number(id), name: ing.name, unit: ing.unit, category: ing.category,
+      count_unit: ing.count_unit, count_ratio: ing.count_ratio,
       stock: have,
       need_window: win, buffer: buf, need_with_buffer: target,
       buy: Math.max(0, Math.round((target - have) * 10) / 10),

@@ -1853,10 +1853,24 @@ const App = (() => {
 
     // 未來兩週的節奏：哪天有員工餐、哪天要盤點、哪天換方案
     const first = f.days[0] && f.days[0].plan_code;
+    // 方案預設照日期自動算，但現實會偏離排程（食材沒到、想延一週），
+    // 所以留一個手動切換。手動的狀態要標出來，否則沒人知道現在是被改過的
+    let plans = { plans: [], is_override: false };
+    try { plans = await api('/api/rotation/plans'); } catch (e) {}
+    const other = (plans.plans || []).find(p => !f.plan_today || p.code !== f.plan_today.code);
     const daysCard = `
       <div class="fc-card">
         <h3>接下來兩週</h3>
-        <div class="fc-sub">目前是${esc(f.plan_today ? f.plan_today.name : '—')}　橘框＝員工餐日　藍底＝盤點日</div>
+        <div class="fc-sub">
+          目前是 <b>${esc(f.plan_today ? f.plan_today.name : '—')}</b>
+          <span class="fc-mode${plans.is_override ? ' manual' : ''}">${plans.is_override ? '手動指定' : '自動'}</span>
+          　橘框＝員工餐日　藍底＝盤點日
+        </div>
+        <div class="fc-plan-act">
+          ${plans.is_override
+            ? `<button class="fc-more" onclick="App.clearPlanOverride()">改回自動輪替</button>`
+            : (other ? `<button class="fc-more" onclick="App.setPlanOverride(${other.id},'${esc(other.name)}')">這一期改用${esc(other.name)}</button>` : '')}
+        </div>
         <div class="fc-days">
           ${f.days.slice(0, 14).map(d => `
             <div class="fc-day${d.is_staff_meal_day ? ' meal' : ''}${d.is_stocktake_day ? ' st' : ''}${
@@ -1868,6 +1882,25 @@ const App = (() => {
       </div>`;
 
     el.innerHTML = '<div class="fc-wrap">' + switchCard + buyCard + daysCard + '</div>';
+  }
+
+  async function setPlanOverride(planId, name) {
+    if (!confirm(`把這一期改成「${name}」？\n\n影響備料量、採購清單與庫存預測。\n之後可以改回自動。`)) return;
+    try {
+      const r = await api('/api/rotation/plan/override', 'POST', { plan_id: planId });
+      alert(`${r.date_from} 到 ${r.date_to} 改用${r.plan}。\n這段期間過後會自己回到輪替。` +
+            (r.warning ? `\n\n⚠ ${r.warning}。` : ''));
+      renderForecast(); loadInventory();
+    } catch (e) { alert(e.message); }
+  }
+
+  async function clearPlanOverride() {
+    if (!confirm('改回照日期自動輪替？')) return;
+    try {
+      const p = await api('/api/rotation/plans');
+      for (const o of (p.overrides || [])) await api('/api/rotation/plan/override/' + o.id, 'DELETE');
+      renderForecast(); loadInventory();
+    } catch (e) { alert(e.message); }
   }
 
   function toggleForecastAll() { fcShowAll = !fcShowAll; renderForecast(); }
@@ -3666,7 +3699,7 @@ const App = (() => {
     toggleLeaveRestore,
     loadMeals, switchMealTab, switchMealView, advanceMealStatus, goBuyMeals,
     openAddMealOrder, openEditMealOrder, saveMealOrder, deleteMealOrder, updateBoxHint,
-    toggleForecastAll, toggleSwitchAll,
+    toggleForecastAll, toggleSwitchAll, setPlanOverride, clearPlanOverride,
     openVendorPurchase, saveMealPurchase,
     openEditMealItem, saveMealItem,
     openEditNutritionCard, saveNutritionCard, reviewCard, openPrintCards,

@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>食材採購 · 診所廚房</title>
+<style>
+  /* 這一頁是在市場裡單手看的：字大、按鈕大、按類別走。
+     不要把庫存頁那些表格搬過來 —— 那是坐在桌前查證用的 */
+  :root {
+    --bg:#f6f7f9; --card:#fff; --text:#16181d; --text2:#5b6270; --text3:#98a0ad;
+    --border:#e3e6ec; --primary:#2563eb; --green:#16a34a; --orange:#f97316; --red:#ef4444;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#14161a; --card:#1d2026; --text:#f2f4f7; --text2:#a8b0bd; --text3:#6b7482;
+            --border:#2c313a; }
+  }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  body { margin:0; background:var(--bg); color:var(--text);
+         font-family:-apple-system,"Noto Sans TC","Microsoft JhengHei",sans-serif;
+         font-size:16px; line-height:1.55;
+         padding:0 0 calc(24px + env(safe-area-inset-bottom)); }
+  header { position:sticky; top:0; z-index:10; background:var(--card);
+           border-bottom:1px solid var(--border); padding:14px 16px;
+           padding-top:calc(14px + env(safe-area-inset-top));
+           display:flex; align-items:center; gap:12px; }
+  header h1 { font-size:19px; margin:0; font-weight:800; }
+  .sum { margin-left:auto; font-size:15px; font-weight:700; color:var(--text2); }
+  .back { font-size:15px; font-weight:700; color:var(--primary); text-decoration:none;
+          min-height:44px; min-width:56px; display:flex; align-items:center; }
+  main { padding:16px; max-width:640px; margin:0 auto; }
+
+  .win { background:var(--card); border:1px solid var(--border); border-radius:14px;
+         padding:14px 16px; margin-bottom:16px; font-size:15px; color:var(--text2); }
+  .win b { color:var(--text); font-size:17px; }
+
+  .grp { background:var(--card); border:1px solid var(--border); border-radius:14px;
+         padding:16px 18px; margin-bottom:16px; }
+  .grp.done { opacity:.55; }
+  .grp h2 { font-size:19px; font-weight:800; margin:0 0 2px; }
+  .grp .cnt { font-size:15px; color:var(--text2); }
+  .ahead { border-left:5px solid var(--orange); }
+  .ahead h2 { color:var(--orange); }
+  .ahead .why { font-size:15px; color:var(--text2); margin-top:6px; }
+
+  .line { display:flex; align-items:center; gap:14px; padding:14px 0;
+          border-top:1px solid var(--border); }
+  .line:first-of-type { border-top:0; }
+  .line.bought .name, .line.bought .qty { text-decoration:line-through; color:var(--text3); }
+  .qty { font-size:24px; font-weight:800; color:var(--primary); min-width:88px;
+         font-variant-numeric:tabular-nums; }
+  .line.bought .qty { color:var(--text3); }
+  .name { font-size:17px; font-weight:700; }
+  .sub { font-size:14px; color:var(--text2); margin-top:2px; }
+  .out { color:var(--red); font-weight:700; }
+  .tick { margin-left:auto; flex:0 0 auto; font-size:15px; font-weight:800;
+          min-height:44px; min-width:76px; padding:0 16px; border-radius:11px;
+          border:1.5px solid var(--border); background:var(--bg); color:var(--text2);
+          cursor:pointer; }
+  .tick.on { background:var(--green); border-color:var(--green); color:#fff; }
+  .empty { text-align:center; color:var(--text2); padding:48px 16px; font-size:17px; }
+  .foot { font-size:14px; color:var(--text3); text-align:center; padding:8px 16px 0; }
+</style>
+</head>
+<body>
+<header>
+  <a class="back" href="/">‹ 返回</a>
+  <h1>食材採購</h1>
+  <div class="sum" id="sum">載入中…</div>
+</header>
+<main id="main"><div class="empty">載入中…</div></main>
+<div class="foot" id="foot"></div>
+
+<script>
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c =>
+  ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+
+// 勾選只存在這台裝置：它是「我走到哪了」的便條，不是庫存異動。
+// 真正的進貨（含金額）在主畫面登記 —— 在市場裡輸入金額不現實
+const KEY = d => 'market_' + d;
+let picked = new Set(), data = null;
+
+function uid() {
+  try { return JSON.parse(localStorage.getItem('kitchen_user') || '{}').id || 1; }
+  catch (e) { return 1; }
+}
+const api = async p => {
+  const r = await fetch(p, { headers: { 'X-Kitchen-User-Id': String(uid()) } });
+  if (!r.ok) throw new Error(p + ' → ' + r.status);
+  return r.json();
+};
+
+// 市場是按類別逛的，所以按類別分組，不是按缺多少排
+const ORDER = ['蔬菜', '水果', '粉類', '油', '油水', '水', '保健品', '其他'];
+
+// 在市場裡「740g 蘋果」不如「約 4 顆」。沒有換算的就照原單位講
+function amount(i) {
+  if (i.count_unit && i.count_ratio > 1) {
+    const n = Math.ceil(i.buy / i.count_ratio);
+    return { big: n + i.count_unit, sub: '約 ' + i.buy + i.unit };
+  }
+  return { big: i.buy + i.unit, sub: '' };
+}
+
+function render() {
+  const main = document.getElementById('main');
+  if (!data) return;
+  const buy = data.ingredients.filter(i => i.buy > 0);
+  const w = data.switch_warning;
+
+  document.getElementById('sum').textContent =
+    buy.length ? (buy.length - picked.size) + ' 樣待買' : '不用叫貨';
+
+  let html = `<div class="win">
+      這一批要備到 <b>${esc(data.prep_window.to)}</b>（${data.prep_window.days} 天）<br>
+      下一個盤點日之前中間沒人盤點，所以要一次備足。
+    </div>`;
+
+  if (!buy.length && !(w && w.missing.length)) {
+    main.innerHTML = html + '<div class="empty">目前的量都夠，不用叫貨。</div>';
+    return;
+  }
+
+  // 先分好組再畫。同一類的東西在市場裡是同一攤
+  const groups = {};
+  buy.forEach(i => { (groups[i.category] || (groups[i.category] = [])).push(i); });
+
+  ORDER.filter(c => groups[c]).forEach(cat => {
+    const items = groups[cat].sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant'));
+    const doneAll = items.every(i => picked.has(i.id));
+    html += `<section class="grp${doneAll ? ' done' : ''}">
+      <h2>${esc(cat)}</h2>
+      <div class="cnt">${items.length} 樣</div>
+      ${items.map(i => {
+        const a = amount(i);
+        const on = picked.has(i.id);
+        return `<div class="line${on ? ' bought' : ''}">
+          <div class="qty">${esc(a.big)}</div>
+          <div style="flex:1;min-width:0">
+            <div class="name">${esc(i.name)}</div>
+            <div class="sub">${a.sub ? esc(a.sub) + '　' : ''}現有 ${i.stock}${esc(i.unit)}${
+              i.runs_out_on ? `　<span class="out">${esc(i.runs_out_on.slice(5))} 見底</span>` : ''}</div>
+          </div>
+          <button class="tick${on ? ' on' : ''}" onclick="toggle(${i.id})">${on ? '買了 ✓' : '買了'}</button>
+        </div>`;
+      }).join('')}
+    </section>`;
+  });
+
+  // 換方案前要先叫的。這些現在完全不會用到，所以平常不會有缺貨警告 ——
+  // 放最後但獨立一區，不要跟這批的量混在一起被一起勾掉
+  if (w && w.missing.length) {
+    html += `<section class="grp ahead">
+      <h2>⚠ ${esc(w.date.slice(5))} 換${esc(w.to)}</h2>
+      <div class="why">還有 ${w.days_ahead} 天。這些現在用不到，平常不會有缺貨警告，要先叫：</div>
+      ${w.missing.map(m => `<div class="line">
+          <div class="qty">${Math.round(m.need - m.stock)}g</div>
+          <div style="flex:1;min-width:0"><div class="name">${esc(m.name)}</div>
+          <div class="sub">現有 ${m.stock}g</div></div>
+        </div>`).join('')}
+    </section>`;
+  }
+
+  main.innerHTML = html;
+}
+
+function toggle(id) {
+  picked.has(id) ? picked.delete(id) : picked.add(id);
+  try { localStorage.setItem(KEY(data.date), JSON.stringify([...picked])); } catch (e) {}
+  render();
+}
+
+(async () => {
+  try {
+    data = await api('/api/inventory/forecast?days=28');
+    try { picked = new Set(JSON.parse(localStorage.getItem(KEY(data.date)) || '[]')); } catch (e) {}
+    render();
+    document.getElementById('foot').textContent =
+      '勾選只存在這支手機，是「走到哪了」的便條。金額回診所在進貨畫面登記。';
+  } catch (e) {
+    document.getElementById('main').innerHTML =
+      '<div class="empty">載不到採購清單<br><small>' + esc(e.message) + '</small></div>';
+    document.getElementById('sum').textContent = '';
+  }
+})();
+</script>
+</body>
+</html>

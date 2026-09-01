@@ -818,6 +818,14 @@
       background: none; border: none; color: var(--primary); font-size: 14px; font-weight: 700;
       cursor: pointer; padding: 10px 4px; min-height: 44px;
     }
+    .fc-mode {
+      display: inline-block; font-size: 12px; font-weight: 800; padding: 2px 8px;
+      border-radius: 999px; background: var(--bg); color: var(--text3);
+      border: 1px solid var(--border); margin-left: 4px;
+    }
+    .fc-mode.manual { background: rgba(249,115,22,.12); color: var(--orange);
+                      border-color: rgba(249,115,22,.35); }
+    .fc-plan-act { margin-top: 2px; }
     .fc-days { display: flex; gap: 4px; overflow-x: auto; padding: 8px 0 2px; }
     .fc-day {
       flex: 0 0 auto; min-width: 62px; text-align: center; padding: 8px 6px;
@@ -2541,6 +2549,7 @@
       <h2>庫存現況</h2>
       <div style="display:flex;gap:8px">
         <button class="btn btn-ghost btn-sm" onclick="App.openAddIngredient()">＋ 食材</button>
+        <a class="btn btn-ghost btn-sm" href="/market.html" style="text-decoration:none">🛒 採購單</a>
         <button class="btn btn-ghost btn-sm" onclick="App.openStocktake()">📋 盤點</button>
         <button class="btn btn-primary btn-sm" onclick="App.openPurchase()">進貨</button>
       </div>
