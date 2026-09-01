@@ -1958,6 +1958,25 @@ const App = (() => {
     return _fcMd(date) + '（' + diff + ' 天後）';
   }
 
+  async function setPlanOverride(planId, name) {
+    if (!confirm(`把這一期改成「${name}」？\n\n影響備料量、採購清單與庫存預測。\n之後可以改回自動。`)) return;
+    try {
+      const r = await api('/api/rotation/plan/override', 'POST', { plan_id: planId });
+      alert(`${r.date_from} 到 ${r.date_to} 改用${r.plan}。\n這段期間過後會自己回到輪替。` +
+            (r.warning ? `\n\n⚠ ${r.warning}。` : ''));
+      renderForecast(); loadInventory();
+    } catch (e) { alert(e.message); }
+  }
+
+  async function clearPlanOverride() {
+    if (!confirm('改回照日期自動輪替？')) return;
+    try {
+      const p = await api('/api/rotation/plans');
+      for (const o of (p.overrides || [])) await api('/api/rotation/plan/override/' + o.id, 'DELETE');
+      renderForecast(); loadInventory();
+    } catch (e) { alert(e.message); }
+  }
+
   function toggleForecastAll() { fcShowAll = !fcShowAll; renderForecast(); }
   function toggleSwitchAll()   { fcShowAllSwitch = !fcShowAllSwitch; renderForecast(); }
 
@@ -2113,7 +2132,53 @@ const App = (() => {
     document.getElementById('ingStorage').value = '';
   }
 
+  // 採購籃：在市場勾起來的東西。回診所只要補金額，不用一樣一樣重新選
+  async function _renderPurchaseDraft() {
+    const box = document.getElementById('purchaseDraft');
+    if (!box) return;
+    let d;
+    try { d = await api('/api/purchase/draft'); }
+    catch (e) { box.innerHTML = ''; return; }
+    if (!d.rows.length) {
+      box.innerHTML = `<div class="pd-empty">採購籃是空的。
+        在 <a href="/market.html">採購單</a> 勾「買了」，回來這裡就能一次登記金額。</div>`;
+      return;
+    }
+    box.innerHTML = `
+      <div class="pd-head">採購籃　<b>${d.rows.length} 樣</b>　<span>只要填金額</span></div>
+      <div class="pd-list">
+        ${d.rows.map(r => `
+          <div class="pd-row" data-ing="${r.ingredient_id}">
+            <span class="pd-name">${esc(r.name)}</span>
+            <input class="pd-qty" type="number" step="any" min="0" value="${r.qty}"
+                   title="買到多少${esc(r.unit)}">
+            <span class="pd-unit">${esc(r.unit)}</span>
+            <input class="pd-price" type="number" min="0" placeholder="金額" inputmode="numeric">
+          </div>`).join('')}
+      </div>
+      <button class="btn btn-primary" style="width:100%;margin-top:10px"
+              onclick="App.commitPurchaseDraft()">整批登記進貨</button>
+      <div class="pd-note">金額沒填的會留在籃子裡，下次再登記 —— 有時候就是先記一部分，剩下的等發票。</div>`;
+  }
+
+  async function commitPurchaseDraft() {
+    const rows = [...document.querySelectorAll('#purchaseDraft .pd-row')].map(el => ({
+      ingredient_id: Number(el.dataset.ing),
+      qty:         el.querySelector('.pd-qty').value,
+      total_price: el.querySelector('.pd-price').value
+    }));
+    const willSave = rows.filter(r => r.total_price !== '' && Number(r.qty) > 0);
+    if (!willSave.length) return alert('至少要填一樣的金額');
+    try {
+      const r = await api('/api/purchase/commit', 'POST', { lines: rows });
+      await _renderPurchaseDraft();
+      loadInventory();
+      alert(`已登記 ${r.saved} 樣` + (r.skipped ? `，${r.skipped} 樣沒填金額，留在籃子裡。` : '。'));
+    } catch (e) { alert(e.message); }
+  }
+
   async function openPurchase() {
+    _renderPurchaseDraft();
     const items = await api('/api/inventory');
     const sel = document.getElementById('purchaseIng');
     sel.innerHTML = items.map(i => `<option value="${i.id}">${esc(i.name)}（${i.qty}${i.unit}）</option>`).join('');
@@ -3836,7 +3901,7 @@ const App = (() => {
     loadRx, openAddRx, openEditRx, saveRx, deleteRx, duplicateRx, openRxHistory,
     openEditRxIngredients, saveRxIngredients,
     loadInventory, openEditInv, saveInventory, togglePurchaseHistory,
-    openAddIngredient, addIngredient, openPurchase, savePurchase,
+    openAddIngredient, addIngredient, openPurchase, savePurchase, commitPurchaseDraft,
     loadCost, switchCostTab, prevCostMonth, nextCostMonth,
     openSettings, saveSettings,
     openAddUser, addUser,

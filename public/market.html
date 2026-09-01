@@ -53,11 +53,15 @@
   .name { font-size:17px; font-weight:700; }
   .sub { font-size:14px; color:var(--text2); margin-top:2px; }
   .out { color:var(--red); font-weight:700; }
-  .tick { margin-left:auto; flex:0 0 auto; font-size:15px; font-weight:800;
+  .got { width:78px; padding:9px 8px; font-size:16px; font-weight:700; text-align:right;
+          border:1.5px solid var(--primary); border-radius:9px; background:var(--card);
+          color:var(--text); min-height:44px; margin-left:auto; }
+  .tick { flex:0 0 auto; font-size:15px; font-weight:800;
           min-height:44px; min-width:76px; padding:0 16px; border-radius:11px;
           border:1.5px solid var(--border); background:var(--bg); color:var(--text2);
           cursor:pointer; }
   .tick.on { background:var(--green); border-color:var(--green); color:#fff; }
+  .line.bought .got { border-color:var(--green); }
   .empty { text-align:center; color:var(--text2); padding:48px 16px; font-size:17px; }
   .foot { font-size:14px; color:var(--text3); text-align:center; padding:8px 16px 0; }
 </style>
@@ -75,10 +79,12 @@
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c =>
   ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
 
-// 勾選只存在這台裝置：它是「我走到哪了」的便條，不是庫存異動。
-// 真正的進貨（含金額）在主畫面登記 —— 在市場裡輸入金額不現實
+// 勾選要寫回伺服器：回到診所是另一台裝置在登記金額，
+// 存 localStorage 的話那邊就看不到了。localStorage 只當離線備援。
+// 金額不在這裡填 —— 在市場輸入金額不現實，回診所一次補。
 const KEY = d => 'market_' + d;
-let picked = new Set(), data = null;
+let picked = new Map();   // ingredient_id → 實際買到多少
+let data = null;
 
 function uid() {
   try { return JSON.parse(localStorage.getItem('kitchen_user') || '{}').id || 1; }
@@ -141,6 +147,7 @@ function render() {
             <div class="sub">${a.sub ? esc(a.sub) + '　' : ''}現有 ${i.stock}${esc(i.unit)}${
               i.runs_out_on ? `　<span class="out">${esc(i.runs_out_on.slice(5))} 見底</span>` : ''}</div>
           </div>
+          ${on ? `<input class="got" type="number" inputmode="decimal" value="${picked.get(i.id)}" min="0" onchange="setGot(${i.id},this.value)" title="實際買到多少">` : ''}
           <button class="tick${on ? ' on' : ''}" onclick="toggle(${i.id})">${on ? '買了 ✓' : '買了'}</button>
         </div>`;
       }).join('')}
@@ -164,19 +171,51 @@ function render() {
   main.innerHTML = html;
 }
 
-function toggle(id) {
-  picked.has(id) ? picked.delete(id) : picked.add(id);
-  try { localStorage.setItem(KEY(data.date), JSON.stringify([...picked])); } catch (e) {}
+async function toggle(id) {
+  const item = data.ingredients.find(x => x.id === id);
+  if (picked.has(id)) picked.delete(id);
+  else picked.set(id, item ? item.buy : 0);   // 預設帶建議量，買多買少可以改
+  await syncOne(id);
   render();
+}
+
+// 實際買到的量可能跟建議不同（店家只剩 800g、或整包 1kg）。
+// 記實際的，帳面才會對
+async function setGot(id, v) {
+  const n = Number(v);
+  if (!(n >= 0)) return;
+  picked.set(id, n);
+  await syncOne(id);
+  render();
+}
+
+async function syncOne(id) {
+  const body = picked.has(id)
+    ? { date: data.date, ingredient_id: id, qty: picked.get(id) }
+    : { date: data.date, ingredient_id: id, remove: 1 };
+  try {
+    await fetch('/api/purchase/draft', {
+      method: 'PUT',
+      headers: { 'X-Kitchen-User-Id': String(uid()), 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+  } catch (e) { /* 離線時先靠下面的本機備援 */ }
+  try { localStorage.setItem(KEY(data.date), JSON.stringify([...picked])); } catch (e) {}
 }
 
 (async () => {
   try {
     data = await api('/api/inventory/forecast?days=28');
-    try { picked = new Set(JSON.parse(localStorage.getItem(KEY(data.date)) || '[]')); } catch (e) {}
+    // 伺服器優先：別台裝置勾的也要看得到
+    try {
+      const d = await api('/api/purchase/draft?date=' + data.date);
+      picked = new Map(d.rows.map(r => [r.ingredient_id, r.qty]));
+    } catch (e) {
+      try { picked = new Map(JSON.parse(localStorage.getItem(KEY(data.date)) || '[]')); } catch (e2) {}
+    }
     render();
     document.getElementById('foot').textContent =
-      '勾選只存在這支手機，是「走到哪了」的便條。金額回診所在進貨畫面登記。';
+      '勾起來的會進採購籃，回診所開「進貨」就能一次登記金額。';
   } catch (e) {
     document.getElementById('main').innerHTML =
       '<div class="empty">載不到採購清單<br><small>' + esc(e.message) + '</small></div>';

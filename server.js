@@ -220,6 +220,15 @@ try {
   // 有些人喝得不固定（沒有排定的日子，但一週大概幾杯）。
   // daily_cups 是「每個工作日幾杯」，對這種人算出來會失真
   "ALTER TABLE prescriptions ADD COLUMN weekly_cups REAL DEFAULT 0",
+  // 在市場勾的「買到了」要能被診所那台裝置接手登記金額 ——
+  // 存 localStorage 的話，回到診所就看不到了。
+  // 這是「買了什麼、幾份」，金額回診所再補：在市場輸入金額不現實
+  `CREATE TABLE IF NOT EXISTS purchase_draft (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     date TEXT NOT NULL, ingredient_id INTEGER NOT NULL,
+     qty REAL NOT NULL DEFAULT 0, note TEXT DEFAULT '',
+     user_id INTEGER, updated_at TEXT DEFAULT (datetime('now','localtime')),
+     UNIQUE(date, ingredient_id))`,
   // 配方異動留痕。這裡放的是具名個案的醫療配方，改了卻不留任何痕跡 ——
   // 2026-06 那次把「蘋果(去皮)」改名成「蘋果(純皮)」語意整個翻轉，
   // 是靠翻 git log 才查出來的，資料本身什麼都沒有。
@@ -2468,6 +2477,74 @@ app.post('/api/inventory/purchase', (req, res) => {
     ).run(ingredient_id, qty);
   });
   res.json({ ok: true });
+});
+
+// ── 採購籃 ──────────────────────────────────────────────
+// 市場勾一樣 → 進這裡；回診所開進貨 → 從這裡帶出來，只要補金額。
+// 原本進貨是一次一樣，買 13 樣要開 13 次視窗 ——
+// 帳面長期是 0 不是因為懶，是因為登記的成本太高
+app.get('/api/purchase/draft', (req, res) => {
+  const date = req.query.date || today();
+  const rows = db.prepare(
+    `SELECT d.id, d.ingredient_id, d.qty, d.note, d.updated_at,
+            i.name, i.unit, i.category,
+            COALESCE(i.count_unit,'') count_unit, COALESCE(i.count_ratio,1) count_ratio
+       FROM purchase_draft d JOIN ingredients i ON i.id = d.ingredient_id
+      WHERE d.date = ? ORDER BY i.category, i.name`
+  ).all(date);
+  res.json({ date, count: rows.length, rows });
+});
+
+// 勾起來（帶建議量）或取消勾選
+app.put('/api/purchase/draft', (req, res) => {
+  const date = req.body.date || today();
+  const id   = Number(req.body.ingredient_id);
+  if (!id) return res.status(400).json({ error: '缺少食材' });
+  if (req.body.remove) {
+    db.prepare('DELETE FROM purchase_draft WHERE date=? AND ingredient_id=?').run(date, id);
+    return res.json({ ok: true, removed: true });
+  }
+  db.prepare(
+    `INSERT INTO purchase_draft (date,ingredient_id,qty,note,user_id)
+     VALUES (?,?,?,?,?)
+     ON CONFLICT(date,ingredient_id) DO UPDATE SET
+       qty=excluded.qty, note=excluded.note,
+       updated_at=datetime('now','localtime')`
+  ).run(date, id, Number(req.body.qty) || 0, req.body.note || '',
+        req.kitchenUser ? req.kitchenUser.id : null);
+  res.json({ ok: true });
+});
+
+// 整批登記。金額沒填的那幾行留在籃子裡，不要默默丟掉 ——
+// 有時候就是先登記一部分，剩下的等發票
+app.post('/api/purchase/commit', (req, res) => {
+  const date = req.body.date || today();
+  const lines = Array.isArray(req.body.lines) ? req.body.lines : [];
+  if (!lines.length) return res.status(400).json({ error: '沒有要登記的項目' });
+
+  let saved = 0, skipped = 0;
+  tx(() => {
+    lines.forEach(l => {
+      const id = Number(l.ingredient_id), qty = Number(l.qty);
+      const price = Number(l.total_price);
+      // 量或金額沒填就先留著，下次再登記
+      if (!id || !(qty > 0) || !(price >= 0) || l.total_price === '' || l.total_price === null) {
+        skipped++; return;
+      }
+      db.prepare(
+        `INSERT INTO purchase_log (ingredient_id,qty,total_price,purchased_at,user_id,item_type,purpose)
+         VALUES (?,?,?,?,?,?,?)`
+      ).run(id, qty, price, date, req.kitchenUser ? req.kitchenUser.id : null,
+            l.item_type || '食材', l.purpose || '精力湯');
+      db.prepare(
+        `INSERT INTO inventory (ingredient_id,qty,updated_at) VALUES (?,?,datetime('now','localtime'))
+         ON CONFLICT(ingredient_id) DO UPDATE SET qty=qty+excluded.qty, updated_at=excluded.updated_at`
+      ).run(id, qty);
+      db.prepare('DELETE FROM purchase_draft WHERE date=? AND ingredient_id=?').run(date, id);
+      saved++;
+    });
+  });
+  res.json({ ok: true, saved, skipped });
 });
 
 // 食材採購歷史
