@@ -1287,14 +1287,14 @@ async function syncApptOrders() {
   // 廚房沒改過的（sync_source='auto'）就跟著預約更新；改過的只更新 appt_meal_time，
   // 好讓畫面能標出「預約是幾點、這裡是幾點」
   const updAuto = db.prepare(
-    `UPDATE case_orders SET meal_time=?, patient_name=?, notes=?, appt_meal_time=?
+    `UPDATE case_orders SET meal_time=?, patient_name=?, notes=?, appt_meal_time=?, cups=?
      WHERE source_key=? AND COALESCE(sync_source,'auto')='auto'`
   );
   const updApptTime = db.prepare(
     `UPDATE case_orders SET appt_meal_time=? WHERE source_key=?`
   );
 
-  let created = 0, updated = 0, skipped = 0;
+  let created = 0, updated = 0, skipped = 0, adopted = 0;
   const seenByDate = {};   // 這次同步在每一天看到的 source_key，用來找出被取消的預約
 
   Object.keys(appts || {}).forEach(date => {
@@ -1304,9 +1304,16 @@ async function syncApptOrders() {
     seenByDate[date] = new Set();
     list.forEach(a => {
       if (!a || typeof a !== 'object' || !a.id) return;
+      // 預約系統是用「重複列出同一個項目」來表達數量的：
+      // 「內用精力湯、內用精力湯」＝ 兩杯。原本每個項目各跑一次、
+      // 固定建 1 杯，而且 source_key 相同會被 INSERT OR IGNORE 擋掉，
+      // 所以兩杯的預約帶進來只會變成一杯
+      const wanted = {};
       (a.items || []).forEach(item => {
-        const powder = APPT_ITEM_MAP[item];
-        if (!powder) return;
+        const p = APPT_ITEM_MAP[item];
+        if (p) wanted[p] = (wanted[p] || 0) + 1;
+      });
+      Object.entries(wanted).forEach(([powder, cups]) => {
         if (dismissed.has('appt:' + a.id + ':' + powder)) return;
         const name = String(a.name || '').trim();
         const rxId = rxByName[name];
@@ -1322,13 +1329,29 @@ async function syncApptOrders() {
         const mealTime = apptTimeToMeal(a.start);
         const key = 'appt:' + a.id + ':' + powder;
         seenByDate[date].add(key);
-        const r = ins.run(date, rxId || fallbackId, 1, mealTime, powder, name, note, key, mealTime);
+
+        // 廚房可能已經手動建過同一筆（連不上預約的那段期間就是這樣）。
+        // 認領它而不是再建一張 —— 否則一接通就會冒出一堆重複單
+        const manual = db.prepare(
+          `SELECT id FROM case_orders
+            WHERE date=? AND patient_name=? AND powder_type=? AND COALESCE(source_key,'')=''
+            ORDER BY id LIMIT 1`
+        ).get(date, name, powder);
+        if (manual) {
+          db.prepare(
+            "UPDATE case_orders SET source_key=?, appt_meal_time=?, sync_source='manual' WHERE id=?"
+          ).run(key, mealTime, manual.id);
+          adopted++;
+          return;   // 認領過就不再動它的內容，人改過的優先
+        }
+
+        const r = ins.run(date, rxId || fallbackId, cups, mealTime, powder, name, note, key, mealTime);
         if (r.changes) {
           created++;
         } else {
           skipped++;
-          // 已存在：預約若改了時間或備註，沒被廚房改過的要跟著更新
-          const u = updAuto.run(mealTime, name, note, mealTime, key);
+          // 已存在：預約若改了時間、備註或杯數，沒被廚房改過的要跟著更新
+          const u = updAuto.run(mealTime, name, note, mealTime, cups, key);
           if (u.changes) updated++; else updApptTime.run(mealTime, key);
         }
       });
@@ -1351,11 +1374,11 @@ async function syncApptOrders() {
   });
 
   if (created || updated || missing) {
-    console.log(`預約帶入：新建 ${created} 筆、更新 ${updated} 筆、預約已不存在 ${missing} 筆（已存在 ${skipped} 筆）`);
+    console.log(`預約帶入：新建 ${created} 筆、認領既有手動單 ${adopted} 筆、更新 ${updated} 筆、預約已不存在 ${missing} 筆（已存在 ${skipped} 筆）`);
   }
   lastApptSync = { at: new Date().toISOString().slice(0, 19).replace('T', ' '),
-                   ok: true, error: null, created, updated };
-  return { created, skipped };
+                   ok: true, error: null, created, updated, adopted };
+  return { created, skipped, adopted };
 }
 
 // 計算批次：batch_size=3 用 3+2 最佳化，其他用整除
