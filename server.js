@@ -1170,7 +1170,14 @@ async function fetchAppts() {
   const now = Date.now();
   if (_apptCache.data && now - _apptCache.at < 120000) return _apptCache.data;   // 快取 2 分鐘
   const r = await fetch(APPTS_URL, { signal: AbortSignal.timeout(8000) });
+  // 一定要檢查狀態碼。Firebase 的 401 回的是 {"error":"Permission denied"} ——
+  // 那是合法 JSON，直接 .json() 會當成正常資料收下，然後在上面找不到任何日期，
+  // 於是回報「同步成功、0 筆」。權限被關掉了卻沒有人知道
+  if (!r.ok) throw new Error(`預約系統回 HTTP ${r.status}`);
   const j = await r.json();
+  if (j && typeof j === 'object' && j.error && !Array.isArray(j)) {
+    throw new Error('預約系統：' + String(j.error).slice(0, 80));
+  }
   _apptCache = { at: now, data: j || {} };
   return _apptCache.data;
 }
@@ -1181,12 +1188,19 @@ function apptTimeToMeal(t) {
   return m ? String(m[1]).padStart(2, '0') + m[2] : '1330';
 }
 
+// 最近一次同步的結果。讀不到預約時只寫 console 沒有人看得到 ——
+// 實際發生過：預約系統的權限被改掉之後回 401，廚房那邊什麼都沒帶進來，
+// 大家以為是自己忘了 key，默默改成全部手動建單
+let lastApptSync = { at: null, ok: null, error: null, created: 0, updated: 0 };
+
 async function syncApptOrders() {
   let appts;
   try {
     appts = await fetchAppts();
   } catch (err) {
     console.error('讀取預約系統失敗:', err.message);
+    lastApptSync = { at: new Date().toISOString().slice(0, 19).replace('T', ' '),
+                     ok: false, error: err.message, created: 0, updated: 0 };
     return { created: 0, error: err.message };
   }
 
@@ -1198,7 +1212,9 @@ async function syncApptOrders() {
   db.prepare("SELECT id,name FROM prescriptions WHERE active=1 AND is_staff_rx=0").all()
     .forEach(r => { if (r.name) rxByName[String(r.name).trim()] = r.id; });
   // 沒有自己處方的患者，先掛員工標準配方並在備註標明，讓廚房人員確認
-  const emp = db.prepare("SELECT id FROM prescriptions WHERE code='EMP-00'").get();
+  // 用當期的員工處方當後備，不要寫死 EMP-00 —— 那張已經退役，
+  // 掛上去的出單會抓不到配方，備料和扣庫存都會是空的
+  const emp = staffRxFor(today());
   const fallbackId = emp ? emp.id : 1;
 
   // 已被廚房人員刪掉的，不再重建
@@ -1281,6 +1297,8 @@ async function syncApptOrders() {
   if (created || updated || missing) {
     console.log(`預約帶入：新建 ${created} 筆、更新 ${updated} 筆、預約已不存在 ${missing} 筆（已存在 ${skipped} 筆）`);
   }
+  lastApptSync = { at: new Date().toISOString().slice(0, 19).replace('T', ' '),
+                   ok: true, error: null, created, updated };
   return { created, skipped };
 }
 
@@ -1752,6 +1770,9 @@ app.get('/api/today', async (req, res) => {
     staff_meal_label: staffMealDaysLabel(),
     roster_count:     rosterCount(),
     auto_settled:     autoSettled,   // 這次載入補扣了哪幾天
+    // 預約帶入的狀態。讀不到預約時畫面要講出來 ——
+    // 「沒有預約」和「讀不到預約」看起來一模一樣，但意思完全不同
+    appt_sync: lastApptSync,
     day_state: stateRow ? {
       state:      JSON.parse(stateRow.state || '{}'),
       updated_at: stateRow.updated_at,

@@ -818,6 +818,28 @@
       background: none; border: none; color: var(--primary); font-size: 14px; font-weight: 700;
       cursor: pointer; padding: 10px 4px; min-height: 44px;
     }
+    .sync-down {
+      background: rgba(239,68,68,.08); border: 1px solid rgba(239,68,68,.35);
+      border-radius: var(--radius-md); padding: 12px 14px; margin-bottom: 10px;
+      font-size: 14px; color: var(--text);
+    }
+    .sync-down b { color: var(--red); font-size: 15px; display: block; margin-bottom: 4px; }
+    .sync-down .sync-when { color: var(--text3); font-size: 12px; margin-top: 6px; }
+    /* 個案晶片上的編輯入口。用員工配方的個案不會出現在時間軸，這是唯一的編輯路徑 */
+    .case-chip { position: relative; }
+    .chip-edit {
+      position: absolute; top: 4px; right: 4px;
+      width: 30px; height: 30px; border-radius: 8px;
+      border: 1px solid var(--border); background: var(--card-solid);
+      color: var(--text3); font-size: 13px; cursor: pointer; line-height: 1;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .chip-edit:hover { color: var(--primary); border-color: var(--primary); }
+    /* 視覺上維持小（晶片本來就窄），但觸控範圍撐到 44px。
+       直接把按鈕做成 44px 會蓋掉半張晶片 */
+    .chip-edit::before {
+      content: ''; position: absolute; top: -7px; right: -7px; bottom: -7px; left: -7px;
+    }
     .fc-mode {
       display: inline-block; font-size: 12px; font-weight: 800; padding: 2px 8px;
       border-radius: 999px; background: var(--bg); color: var(--text3);
@@ -2484,6 +2506,7 @@
     <!-- 順序＝急迫性。買便當有截止時間，排最前面；
          自動補扣是過去幾天的帳務更正，排在它後面，而且只佔一行 -->
     <div id="todayMealAlert"></div>
+    <div id="apptSyncWarn"></div>
     <div id="autoSettleAlert"></div>
     <div class="section-head">
       <h2 style="display:flex;align-items:center;gap:10px;">

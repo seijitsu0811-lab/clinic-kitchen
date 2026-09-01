@@ -266,6 +266,7 @@ const App = (() => {
     document.getElementById('productSections').innerHTML = d.products.map(prod => renderProductSection(prod, d.attending_count)).join('');
 
     renderTodayMeals(d.meals);
+    renderApptSyncWarning(d);
     renderAutoSettle();
 
     laborDate = d.date;
@@ -484,12 +485,15 @@ const App = (() => {
             const tag = needsTap ? ' ⚠' : (delivered ? '' : ' 未領');
             const title = needsTap ? '這位有禁忌註記，要核對過才算出餐'
                         : (delivered ? '預設已出餐。點一下標記為未領' : '已標記未領。點一下改回已出餐');
+            // 一個人點兩杯時，批次寫「3杯」但只看到兩個名字，對不起來。
+            // 把杯數標在名字後面
+            const mCups = m.type === 'case' ? (m.cups || 1) : 1;
             return `<div class="bmember-chip${cls}${m.type === 'case' ? ' bmember-case' : ''}"
                          draggable="true" title="${title}"
                          ondragstart="App.batchDragStart(event,${bi},'${m.id}')"
                          ondragend="App.batchDragEnd()"
                          onclick="${onclick}">
-              ${esc(m.name)}${tag}
+              ${esc(m.name)}${mCups > 1 ? ` ×${mCups}` : ''}${tag}
             </div>`;
           }).join('')}
         </div>
@@ -693,12 +697,17 @@ const App = (() => {
       const mt = c.meal_time && c.meal_time.length === 4
         ? `${c.meal_time.slice(0,2)}:${c.meal_time.slice(2)}` : (c.meal_time || '');
       const sub = type === 'fresh'
-        ? `${esc(c.rx_name)}${mt ? ' · ' + mt : ''}`
+        ? `${esc(c.rx_name)} ${c.cups}杯${mt ? ' · ' + mt : ''}`
         : `${c.cups}天 ${esc(ptLabel(c.powder_type))}${mt ? ' · ' + mt : ''}`;
       const cls = needsTap ? 'needs-check' : (delivered ? '' : 'missed');
+      // 用員工配方的個案不會出現在出餐時間軸（編輯鈕在那裡），
+      // 所以編輯入口只能放這張晶片上，否則時間和內容都改不了
       return `<div class="case-chip ${cls}" data-type="${type}" data-inuse="${isInuse?1:0}"
                    onclick="App.toggleCasePickup(${c.id})">
-        <div class="sname">${esc(name)}${needsTap ? ' ⚠' : (delivered ? '' : ' 未出餐')}</div>
+        <button class="chip-edit" title="編輯這筆出單"
+                onclick="event.stopPropagation();App.openEditCase(${c.id})">✎</button>
+        <div class="sname">${esc(name)}${c.cups > 1 ? ` ×${c.cups}` : ''}${
+          needsTap ? ' ⚠' : (delivered ? '' : ' 未出餐')}</div>
         <div class="chip-sub">${isInuse ? '🍽 內用精力湯' : ''}${sub}</div>
       </div>`;
     }
@@ -3184,6 +3193,22 @@ const App = (() => {
   // 這是「過去幾天的帳務更正」，不是今天要做的事，所以只給一行。
   // 明細要看再展開；看過按「知道了」就收掉 —— 否則它會永遠佔著版面頂端。
   let _autoSettleOpen = false;
+
+  // 讀不到預約時要講出來。「今天沒有預約」和「連不上預約系統」看起來一樣，
+  // 但意思完全不同 —— 實際發生過：權限被改成 401 之後什麼都沒帶進來，
+  // 大家以為是自己忘了 key，默默改成全部手動建單
+  function renderApptSyncWarning(d) {
+    const el = document.getElementById('apptSyncWarn');
+    if (!el) return;
+    const s = d && d.appt_sync;
+    if (!s || s.ok !== false) { el.innerHTML = ''; return; }
+    el.innerHTML = `<div class="sync-down">
+      <b>⚠ 讀不到預約系統</b>
+      <div>預約上的精力湯不會自動帶進來，今天的單要自己建。
+           這不是「今天沒有預約」，是連不上。</div>
+      <div class="sync-when">最後嘗試 ${esc(s.at || '')}　${esc(s.error || '')}</div>
+    </div>`;
+  }
 
   async function renderAutoSettle() {
     const el = document.getElementById('autoSettleAlert');
