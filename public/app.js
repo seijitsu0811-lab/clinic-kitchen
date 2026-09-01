@@ -1842,65 +1842,93 @@ const App = (() => {
     try { f = await api('/api/inventory/forecast?days=28'); }
     catch (e) { el.innerHTML = ''; return; }
 
-    const w = f.switch_warning;
-    // 換方案預警擺最上面：這是唯一「現在不做、之後補不了」的事 ——
-    // 下一個方案的蔬果在這個方案期間完全不會被動到，庫存 0 也不會有任何警告
-    const switchCard = w ? `
-      <div class="fc-card fc-switch">
-        <h3>⚠ ${_fcMd(w.date)} 換 ${esc(w.to)}（還有 ${w.days_ahead} 天）</h3>
-        <div class="fc-sub">這些現在完全不會用到，所以平常不會有缺貨警告。要先叫貨：</div>
-        <div class="fc-chips">
-          ${(fcShowAllSwitch ? w.missing : w.missing.slice(0, 6)).map(m =>
-            `<span class="fc-chip short">${esc(m.name)} 缺 ${Math.round(m.need - m.stock)}g</span>`).join('')}
-        </div>
-        ${w.missing.length > 6 ? `<button class="fc-more" onclick="App.toggleSwitchAll()">${
-          fcShowAllSwitch ? '收起' : `還有 ${w.missing.length - 6} 樣・展開全部 ▾`}</button>` : ''}
-      </div>` : '';
+    // 順序照「多急」排，不是照資料結構排：
+    //   1 做不做得出來（今天／明天）　2 這批要買　3 換方案前要叫　4 兩週節奏
+    // 原本把 14 天後的換方案警告放最上面，而最急的「明天做不出來」根本沒顯示
+    const cards = [];
 
-    // 這一批要備多少
+    // ── 1. 做不出來的日子 ──
+    const fsd = f.first_short;
+    if (fsd) {
+      const when = _fcWhen(f.date, fsd.date);
+      const top = fsd.short.slice(0, 6);
+      cards.push(`
+      <div class="fc-card fc-blocked">
+        <h3>⚠ ${esc(when)}做不出來</h3>
+        <div class="fc-sub">${esc(fsd.plan_name || '')} ${fsd.cups} 杯，${fsd.short.length} 樣不夠</div>
+        <div class="fc-chips">
+          ${top.map(x => `<span class="fc-chip short">${esc(x.name)} 缺 ${x.gap}${esc(x.unit)}</span>`).join('')}
+          ${fsd.short.length > 6 ? `<span class="fc-chip">…另 ${fsd.short.length - 6} 樣</span>` : ''}
+        </div>
+      </div>`);
+    } else {
+      cards.push(`
+      <div class="fc-card fc-ok">
+        <h3>✓ 接下來的量都夠</h3>
+        <div class="fc-sub">未來 ${f.horizon_days} 天排定的杯數，現有庫存都做得出來。</div>
+      </div>`);
+    }
+
+    // ── 2. 這批要買 ──
     const buy = f.ingredients.filter(i => i.buy > 0);
     const shown = fcShowAll ? buy : buy.slice(0, 8);
-    const rows = shown.map(i => `
-      <tr>
-        <td>${esc(i.name)}${i.below_safety ? ' <span class="fc-out">低於安全量</span>' : ''}</td>
-        <td class="num">${i.stock}</td>
-        <td class="num">${i.need_window}</td>
-        <td class="num">${i.buffer}</td>
-        <td class="num fc-buy">${i.buy}${esc(i.unit)}</td>
-        <td class="num">${i.runs_out_on ? `<span class="fc-out">${_fcMd(i.runs_out_on)}</span>` : '—'}</td>
-      </tr>`).join('');
-
-    const buyCard = `
+    cards.push(`
       <div class="fc-card">
         <h3>這一批要備到 ${_fcMd(f.prep_window.to)}（${f.prep_window.days} 天）</h3>
         <div class="fc-sub">
-          下一個盤點日是 ${_fcMd(f.prep_window.to)}，中間沒人盤點，所以要一次備足。
+          下一個盤點日是 ${_fcMd(f.prep_window.to)}，中間沒人盤點，要一次備足。
           緩衝抓 ${f.buffer.pct}% 或 ${f.buffer.cups} 杯份（突發外帶）的大者。
         </div>
         ${buy.length ? `
         <div class="fc-scroll"><table class="fc-table">
           <tr><th>食材</th><th>現有</th><th>這批要用</th><th>緩衝</th><th>要買</th><th>見底</th></tr>
-          ${rows}
+          ${shown.map(i => `
+          <tr>
+            <td>${esc(i.name)}${i.below_safety ? ' <span class="fc-out">低於安全量</span>' : ''}</td>
+            <td class="num">${i.stock}</td>
+            <td class="num">${i.need_window}</td>
+            <td class="num">${i.buffer}</td>
+            <td class="num fc-buy">${i.buy}${esc(i.unit)}</td>
+            <td class="num">${i.runs_out_on ? `<span class="fc-out">${_fcMd(i.runs_out_on)}</span>` : '—'}</td>
+          </tr>`).join('')}
         </table></div>
         ${buy.length > 8 ? `<button class="fc-more" onclick="App.toggleForecastAll()">${
-          fcShowAll ? '收起' : `還有 ${buy.length - 8} 樣・展開 ▾`}</button>` : ''}`
+          fcShowAll ? '收起' : `還有 ${buy.length - 8} 樣・展開 ▾`}</button>` : ''}
+        <a class="fc-go" href="/market.html">🛒 帶著這張去買</a>`
         : '<div class="fc-sub" style="margin-top:8px">這一批的量都夠，不用叫貨。</div>'}
-      </div>`;
+      </div>`);
 
-    // 未來兩週的節奏：哪天有員工餐、哪天要盤點、哪天換方案
-    const first = f.days[0] && f.days[0].plan_code;
-    // 方案預設照日期自動算，但現實會偏離排程（食材沒到、想延一週），
-    // 所以留一個手動切換。手動的狀態要標出來，否則沒人知道現在是被改過的
+    // ── 3. 換方案前要先叫 ──
+    const w = f.switch_warning;
+    if (w && w.missing.length) {
+      const list = fcShowAllSwitch ? w.missing : w.missing.slice(0, 6);
+      cards.push(`
+      <div class="fc-card fc-switch">
+        <h3>${_fcMd(w.date)} 換${esc(w.to)}（還有 ${w.days_ahead} 天）</h3>
+        <div class="fc-sub">
+          這些在${esc(w.from)}期間完全用不到，所以平常不會有缺貨警告。
+          數量是撐到 ${_fcMd(w.cover_to)} 為止的量。
+        </div>
+        <div class="fc-chips">
+          ${list.map(m => `<span class="fc-chip short">${esc(m.name)} 缺 ${m.gap}${esc(m.unit || 'g')}</span>`).join('')}
+        </div>
+        ${w.missing.length > 6 ? `<button class="fc-more" onclick="App.toggleSwitchAll()">${
+          fcShowAllSwitch ? '收起' : `還有 ${w.missing.length - 6} 樣・展開全部 ▾`}</button>` : ''}
+      </div>`);
+    }
+
+    // ── 4. 兩週節奏 ──
     let plans = { plans: [], is_override: false };
     try { plans = await api('/api/rotation/plans'); } catch (e) {}
     const other = (plans.plans || []).find(p => !f.plan_today || p.code !== f.plan_today.code);
-    const daysCard = `
+    const first = f.days[0] && f.days[0].plan_code;
+    cards.push(`
       <div class="fc-card">
         <h3>接下來兩週</h3>
         <div class="fc-sub">
           目前是 <b>${esc(f.plan_today ? f.plan_today.name : '—')}</b>
           <span class="fc-mode${plans.is_override ? ' manual' : ''}">${plans.is_override ? '手動指定' : '自動'}</span>
-          　橘框＝員工餐日　藍底＝盤點日
+          　紅底＝做不出來　橘框＝員工餐日　底線＝盤點日
         </div>
         <div class="fc-plan-act">
           ${plans.is_override
@@ -1910,33 +1938,23 @@ const App = (() => {
         <div class="fc-days">
           ${f.days.slice(0, 14).map(d => `
             <div class="fc-day${d.is_staff_meal_day ? ' meal' : ''}${d.is_stocktake_day ? ' st' : ''}${
-                 d.plan_code !== first ? ' swap' : ''}">
+                 d.plan_code !== first ? ' swap' : ''}${d.cups > 0 && !d.feasible ? ' bad' : ''}"
+                 title="${d.cups > 0 && !d.feasible ? '缺 ' + d.short.length + ' 樣' : ''}">
               <b>${_fcMd(d.date)}</b>週${_fcDow(d.dow)}
               <div>${d.cups ? d.cups + '杯' : '—'}</div>
             </div>`).join('')}
         </div>
-      </div>`;
+      </div>`);
 
-    el.innerHTML = '<div class="fc-wrap">' + switchCard + buyCard + daysCard + '</div>';
+    el.innerHTML = '<div class="fc-wrap">' + cards.join('') + '</div>';
   }
 
-  async function setPlanOverride(planId, name) {
-    if (!confirm(`把這一期改成「${name}」？\n\n影響備料量、採購清單與庫存預測。\n之後可以改回自動。`)) return;
-    try {
-      const r = await api('/api/rotation/plan/override', 'POST', { plan_id: planId });
-      alert(`${r.date_from} 到 ${r.date_to} 改用${r.plan}。\n這段期間過後會自己回到輪替。` +
-            (r.warning ? `\n\n⚠ ${r.warning}。` : ''));
-      renderForecast(); loadInventory();
-    } catch (e) { alert(e.message); }
-  }
-
-  async function clearPlanOverride() {
-    if (!confirm('改回照日期自動輪替？')) return;
-    try {
-      const p = await api('/api/rotation/plans');
-      for (const o of (p.overrides || [])) await api('/api/rotation/plan/override/' + o.id, 'DELETE');
-      renderForecast(); loadInventory();
-    } catch (e) { alert(e.message); }
+  // 「今天」「明天」比日期好讀 —— 這一段是要讓人一眼知道有多急
+  function _fcWhen(today, date) {
+    const diff = Math.round((Date.parse(date + 'T00:00:00Z') - Date.parse(today + 'T00:00:00Z')) / 86400000);
+    if (diff <= 0) return '今天';
+    if (diff === 1) return '明天';
+    return _fcMd(date) + '（' + diff + ' 天後）';
   }
 
   function toggleForecastAll() { fcShowAll = !fcShowAll; renderForecast(); }

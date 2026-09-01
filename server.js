@@ -2385,11 +2385,42 @@ app.post('/api/ingredients', (req, res) => {
 });
 
 app.put('/api/ingredients/:id', (req, res) => {
-  const { name, unit, category, safety_stock, storage_note, shelf_life_days } = req.body;
+  const { name, unit, category, safety_stock, storage_note, shelf_life_days,
+          active, track_stock } = req.body;
+  const cur = db.prepare('SELECT active, COALESCE(track_stock,1) track_stock FROM ingredients WHERE id=?')
+                .get(req.params.id);
+  if (!cur) return res.status(404).json({ error: '找不到這個食材' });
+
+  // 停用是軟停用：歷史採購、消耗紀錄與舊處方都還指向它，不能真的刪掉。
+  // 原本只能新增不能停用，換掉的食材（甜椒、蘿蔓生菜）只好寫一次性遷移處理
+  const nextActive = active === undefined ? cur.active : (active ? 1 : 0);
+  if (!nextActive && cur.active) {
+    const used = db.prepare(
+      `SELECT p.code FROM prescription_ingredients pi
+         JOIN prescriptions p ON p.id = pi.prescription_id
+        WHERE pi.ingredient_id=? AND pi.qty_per_cup>0 AND p.active=1 LIMIT 3`
+    ).all(req.params.id).map(r => r.code);
+    const inPlan = db.prepare(
+      `SELECT pp.name FROM produce_plan_items ppi
+         JOIN produce_plans pp ON pp.id = ppi.plan_id
+        WHERE ppi.ingredient_id=? AND ppi.qty_per_cup>0 AND pp.active=1 LIMIT 3`
+    ).all(req.params.id).map(r => r.name);
+    // 還在用的東西被停用，備料表會少一樣而且不會有人發現
+    if (used.length || inPlan.length) {
+      return res.status(400).json({
+        error: '還有在用，不能停用：' + [...used, ...inPlan].join('、')
+      });
+    }
+  }
+
   db.prepare(
-    `UPDATE ingredients SET name=?,unit=?,category=?,safety_stock=?,storage_note=?,shelf_life_days=? WHERE id=?`
-  ).run(name, unit, category, safety_stock||0, storage_note||'', shelf_life_days||0, req.params.id);
-  res.json({ ok: true });
+    `UPDATE ingredients SET name=?,unit=?,category=?,safety_stock=?,storage_note=?,
+            shelf_life_days=?,active=?,track_stock=? WHERE id=?`
+  ).run(name, unit, category, safety_stock||0, storage_note||'', shelf_life_days||0,
+        nextActive,
+        track_stock === undefined ? cur.track_stock : (track_stock ? 1 : 0),
+        req.params.id);
+  res.json({ ok: true, active: nextActive });
 });
 
 app.patch('/api/ingredients/:id', (req, res) => {
@@ -2757,10 +2788,27 @@ function buildForecast(daysAhead) {
     const plan = activePlanFor('主方案', date);
     const n    = needsOnDate(date);
     const cups = cupsOnDate(date).reduce((a, b) => a + b.cups, 0);
+
+    // 這一天做不做得出來。用「累計需求 vs 現有庫存」比 ——
+    // 今天用掉的，明天就沒有了，所以不能每天各自跟原始庫存比
+    const short = [];
+    Object.entries(n).forEach(([id, q]) => {
+      const used = cum[id] || 0;                 // 這一天之前已經用掉的
+      const left = Math.max(0, (stock[id] || 0) - used);
+      if (q - left > 0.05 && ingMap[id]) {
+        short.push({ id: Number(id), name: ingMap[id].name, unit: ingMap[id].unit,
+                     need: Math.round(q * 10) / 10,
+                     have: Math.round(left * 10) / 10,
+                     gap:  Math.round((q - left) * 10) / 10 });
+      }
+    });
+    short.sort((a, b) => b.gap - a.gap);
+
     days.push({ date, dow: dowOf(date), plan_code: plan ? plan.code : null,
                 plan_name: plan ? plan.name : null,
                 is_staff_meal_day: isStaffMealDay(dowOf(date)), cups,
-                is_stocktake_day: stocktakeDows().includes(dowOf(date)) });
+                is_stocktake_day: stocktakeDows().includes(dowOf(date)),
+                feasible: short.length === 0, short });
 
     Object.entries(n).forEach(([id, q]) => {
       cum[id] = (cum[id] || 0) + q;
@@ -2796,18 +2844,34 @@ function buildForecast(daysAhead) {
   const switchDay = days.find(d => todayPlan && d.plan_code && d.plan_code !== todayPlan.code);
   let switchWarning = null;
   if (switchDay) {
-    const n = needsOnDate(switchDay.date);
-    const missing = Object.entries(n)
+    // 換過去之後要撐到那時候的下一個盤點日，不是只撐換組當天。
+    // 只算一天會嚴重低估 —— 「缺 30g 蛋白粉」看起來沒事，實際上要好幾百克
+    const covTo = nextStocktakeDay(switchDay.date);
+    const need = {};
+    for (let d = switchDay.date; d <= covTo; d = addDays(d, 1)) {
+      Object.entries(needsOnDate(d)).forEach(([id, q]) => { need[id] = (need[id] || 0) + q; });
+    }
+    const coverDays = Math.round((Date.parse(covTo + 'T00:00:00Z') - Date.parse(switchDay.date + 'T00:00:00Z')) / 86400000) + 1;
+    const missing = Object.entries(need)
       .filter(([id, q]) => (stock[id] || 0) < q && ingMap[id])
-      .map(([id, q]) => ({ name: ingMap[id].name, need: Math.round(q * 10) / 10, stock: Math.round((stock[id] || 0) * 10) / 10 }))
-      .sort((a, b) => (b.need - b.stock) - (a.need - a.stock));
+      .map(([id, q]) => ({ name: ingMap[id].name, unit: ingMap[id].unit,
+                           need: Math.round(q * 10) / 10,
+                           stock: Math.round((stock[id] || 0) * 10) / 10,
+                           gap: Math.round((q - (stock[id] || 0)) * 10) / 10 }))
+      .sort((a, b) => b.gap - a.gap);
     switchWarning = { date: switchDay.date, from: todayPlan.name, to: switchDay.plan_name,
                       days_ahead: Math.round((Date.parse(switchDay.date + 'T00:00:00Z') - Date.parse(t + 'T00:00:00Z')) / 86400000),
-                      missing };
+                      cover_to: covTo, cover_days: coverDays, missing };
   }
+
+  // 最近一個做不出來的日子。廚房早上要問的第一個問題就是這個
+  const firstShort = days.find(d => d.cups > 0 && !d.feasible) || null;
 
   return {
     date: t, horizon_days: horizon,
+    first_short: firstShort && { date: firstShort.date, dow: firstShort.dow,
+                                 cups: firstShort.cups, plan_name: firstShort.plan_name,
+                                 short: firstShort.short },
     plan_today: todayPlan ? { code: todayPlan.code, name: todayPlan.name } : null,
     stocktake_dows: stocktakeDows(),
     prep_window: { from: t, to: windowTo, days: windowDays,
