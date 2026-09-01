@@ -1552,16 +1552,23 @@ function unitCost(ingredientId) {
 // 一鍋 3 杯的備料只做一次，所以拆成「每批固定 + 每杯額外」，
 // 而不是每杯都算一份完整備料工。
 function laborParams(settings) {
+  // 一定要轉成數字。settings 存的是 TEXT，拿字串去算 (15/3 + "3") 會得到
+  // "53" 而不是 8 —— 除法會自動轉型，加法卻變成字串串接。
+  // 人工成本因此被算成 6.6 倍，而且數字看起來只是「有點高」，不像壞掉
+  const num = (v, dflt) => {
+    const n = Number(v);
+    return Number.isFinite(n) && v !== null && v !== '' ? n : dflt;
+  };
   return {
-    rate:       settings.labor_rate != null ? settings.labor_rate : 250,
-    perBatch:   settings.labor_min_per_batch   != null ? settings.labor_min_per_batch   : 15,
-    perServing: settings.labor_min_per_serving != null ? settings.labor_min_per_serving : 3
+    rate:       num(settings.labor_rate, 250),
+    perBatch:   num(settings.labor_min_per_batch, 15),
+    perServing: num(settings.labor_min_per_serving, 3)
   };
 }
 
 // 每杯的標準工時成本（給處方成本參考表用，把每批工時攤到每杯）
 function laborPerCup(lp, batchSize) {
-  const size = batchSize || 3;
+  const size = Number(batchSize) || 3;
   return (lp.perBatch / size + lp.perServing) * lp.rate / 60;
 }
 
@@ -3134,7 +3141,8 @@ app.get('/api/costs', (req, res) => {
       const uc = ucCache[it.iid] || 0;
       const cost = uc * it.qty_per_cup;
       ingCost += cost;
-      return { name: it.name, unit: it.unit, qty: it.qty_per_cup,
+      return { name: it.name, unit: it.unit, category: it.category,
+               qty: it.qty_per_cup, qty_per_cup: it.qty_per_cup,
                unit_cost: Math.round(uc * 1000) / 1000, cost: Math.round(cost * 10) / 10 };
     });
 
