@@ -1568,6 +1568,7 @@ const App = (() => {
                 ${costHtml}
               </div>
               <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end">
+                <button class="btn btn-ghost btn-sm" onclick="App.openRxHistory(${rx.id},'${esc(rx.code)}','${esc(rx.name)}')">異動紀錄</button>
                 <button class="btn btn-ghost btn-sm" onclick="App.duplicateRx(${rx.id},'${esc(rx.code)}','${esc(rx.name)}')">複製</button>
                 <button class="btn btn-ghost btn-sm" onclick="App.openEditRx(${rx.id})">編輯資訊</button>
                 <button class="btn btn-primary btn-sm" onclick="App.openEditRxIngredients(${rx.id},'${esc(rx.name)}')">編輯配方</button>
@@ -1606,6 +1607,32 @@ const App = (() => {
 
   // 很多個案的內用配方跟員工／AW 幾乎一樣，只差益生菌那幾樣。
   // 從頭建要填二十幾行，複製再微調快得多
+  // 配方改了誰都看得到。這裡是具名個案的醫療配方 ——
+  // 2026-06 那次「去皮」變「純皮」語意翻轉，是靠翻 git log 才查出來的
+  async function openRxHistory(id, code, name) {
+    document.getElementById('rxHistTitle').textContent = `${code}　${name}`;
+    const el = document.getElementById('rxHistList');
+    el.innerHTML = '<div class="hist-empty">載入中…</div>';
+    openModal('modalRxHistory');
+    try {
+      const h = await api('/api/prescriptions/' + id + '/history');
+      document.getElementById('rxHistCount').textContent = `共 ${h.total} 次異動`;
+      el.innerHTML = h.rows.length ? h.rows.map(r => `
+        <div class="hist-row">
+          <div class="hist-head">
+            <span class="hist-when">${esc((r.changed_at || '').slice(0, 16))}</span>
+            <span class="hist-by">${esc(r.by)}</span>
+            <span class="hist-kind">${esc(r.change_type)}</span>
+          </div>
+          <div class="hist-sum">${esc(r.summary)}</div>
+        </div>`).join('')
+        : `<div class="hist-empty">還沒有任何異動紀錄。<br>
+             <small>從現在起，改配方都會留下「誰、什麼時候、從幾克改成幾克」。</small></div>`;
+    } catch (e) {
+      el.innerHTML = '<div class="hist-empty">載不到異動紀錄</div>';
+    }
+  }
+
   async function duplicateRx(id, srcCode, srcName) {
     const code = prompt(`複製「${srcName}」（${srcCode}）\n\n新處方的代號：`, '');
     if (!code || !code.trim()) return;
@@ -3733,7 +3760,7 @@ const App = (() => {
     batchDragStart, batchDragEnd, batchDrop, batchDropDelete, editBatchTime, addBatch, removeBatch,
     schDragStart, schDragOver, schDragLeave, schDrop,
     deleteCase, openAddCase, openEditCase, addCase,
-    loadRx, openAddRx, openEditRx, saveRx, deleteRx, duplicateRx,
+    loadRx, openAddRx, openEditRx, saveRx, deleteRx, duplicateRx, openRxHistory,
     openEditRxIngredients, saveRxIngredients,
     loadInventory, openEditInv, saveInventory, togglePurchaseHistory,
     openAddIngredient, addIngredient, openPurchase, savePurchase,

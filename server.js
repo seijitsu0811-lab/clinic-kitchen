@@ -220,6 +220,19 @@ try {
   // 有些人喝得不固定（沒有排定的日子，但一週大概幾杯）。
   // daily_cups 是「每個工作日幾杯」，對這種人算出來會失真
   "ALTER TABLE prescriptions ADD COLUMN weekly_cups REAL DEFAULT 0",
+  // 配方異動留痕。這裡放的是具名個案的醫療配方，改了卻不留任何痕跡 ——
+  // 2026-06 那次把「蘋果(去皮)」改名成「蘋果(純皮)」語意整個翻轉，
+  // 是靠翻 git log 才查出來的，資料本身什麼都沒有。
+  // 操作紀錄（user_logs）只記「誰動了哪個端點」，查不出「份量從幾克變成幾克」
+  `CREATE TABLE IF NOT EXISTS prescription_history (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     prescription_id INTEGER NOT NULL,
+     change_type TEXT NOT NULL DEFAULT '用料',
+     summary TEXT DEFAULT '',
+     before_json TEXT DEFAULT '', after_json TEXT DEFAULT '',
+     user_id INTEGER, user_name TEXT DEFAULT '',
+     changed_at TEXT DEFAULT (datetime('now','localtime')))`,
+  "CREATE INDEX IF NOT EXISTS idx_rx_hist ON prescription_history(prescription_id, id DESC)",
   // 手動指定某一段期間用哪個方案。現實會偏離排程（食材沒到、想延一週），
   // 但預設仍然是自動算 —— 需要人定期去按的東西一定會失守
   `CREATE TABLE IF NOT EXISTS produce_plan_overrides (
@@ -732,6 +745,66 @@ function boxesForOrder(o) {
 function shareLabel(o) {
   const sp = Number(o.share_people) || 1, sb = Number(o.share_boxes) || 1;
   return (sp <= 1 && sb <= 1) ? '一人一盒' : `${sp} 人 ${sb} 盒`;
+}
+
+// ── 配方異動留痕 ────────────────────────────────────────────
+// 只記這張處方自己的用料。蔬果來自方案，不屬於個人，改方案是另一件事
+function rxSnapshot(rxId) {
+  const p = db.prepare(
+    `SELECT code, name, formula_type, timing, COALESCE(contraindications,'') contraindications,
+            COALESCE(produce_plan_group,'') produce_plan_group, active
+       FROM prescriptions WHERE id=?`
+  ).get(rxId) || {};
+  const items = db.prepare(
+    `SELECT i.name, pi.qty_per_cup, COALESCE(pi.prep,'') prep, COALESCE(pi.prep_stage,'') prep_stage
+       FROM prescription_ingredients pi JOIN ingredients i ON i.id=pi.ingredient_id
+      WHERE pi.prescription_id=? AND pi.qty_per_cup>0 ORDER BY i.name`
+  ).all(rxId);
+  return { ...p, items };
+}
+
+// 把兩份快照的差異寫成人看得懂的一句話。
+// 「改過了」沒有用 —— 要看得出「蘋果 30g → 40g」才查得出當初發生什麼事
+function diffSummary(before, after) {
+  const parts = [];
+  const bi = Object.fromEntries((before.items || []).map(x => [x.name, x]));
+  const ai = Object.fromEntries((after.items  || []).map(x => [x.name, x]));
+
+  Object.keys(ai).forEach(n => {
+    const b = bi[n], a = ai[n];
+    if (!b) { parts.push(`新增 ${n} ${a.qty_per_cup}g${a.prep ? '（' + a.prep + '）' : ''}`); return; }
+    if (b.qty_per_cup !== a.qty_per_cup) parts.push(`${n} ${b.qty_per_cup}g → ${a.qty_per_cup}g`);
+    if (b.prep !== a.prep) parts.push(`${n} 處理方式「${b.prep || '無'}」→「${a.prep || '無'}」`);
+    if (b.prep_stage !== a.prep_stage)
+      parts.push(`${n} 備料階段「${b.prep_stage || '現場'}」→「${a.prep_stage || '現場'}」`);
+  });
+  Object.keys(bi).forEach(n => { if (!ai[n]) parts.push(`移除 ${n}（原 ${bi[n].qty_per_cup}g）`); });
+
+  [['name', '名稱'], ['formula_type', '配方類型'], ['timing', '服用時機'],
+   ['contraindications', '禁忌註記'], ['produce_plan_group', '蔬果方案組']].forEach(([k, label]) => {
+    if ((before[k] || '') !== (after[k] || ''))
+      parts.push(`${label}「${before[k] || '無'}」→「${after[k] || '無'}」`);
+  });
+  if ((before.active ?? 1) !== (after.active ?? 1))
+    parts.push(after.active ? '重新啟用' : '停用');
+
+  return parts.join('；');
+}
+
+// 記一筆。沒有實質差異就不記 —— 存檔沒改東西也留一筆，會把真正的異動淹掉
+function recordRxChange(rxId, before, changeType, req) {
+  try {
+    const after = rxSnapshot(rxId);
+    const summary = diffSummary(before, after);
+    if (!summary) return;
+    db.prepare(
+      `INSERT INTO prescription_history
+         (prescription_id, change_type, summary, before_json, after_json, user_id, user_name)
+       VALUES (?,?,?,?,?,?,?)`
+    ).run(rxId, changeType, summary, JSON.stringify(before), JSON.stringify(after),
+          req && req.kitchenUser ? req.kitchenUser.id : null,
+          req && req.kitchenUser ? req.kitchenUser.name : '');
+  } catch (e) { console.error('配方留痕失敗', e.message); }
 }
 
 // ── 雙週輪替配方 ─────────────────────────────────────────
@@ -2057,6 +2130,7 @@ app.post('/api/prescriptions', (req, res) => {
 app.put('/api/prescriptions/:id', (req, res) => {
   const { product_id, name, formula_type, contraindications, timing, is_staff_rx, active,
           daily_cups, buffer_cups, weekly_cups } = req.body;
+  const beforeSnap = rxSnapshot(req.params.id);
   const cur = db.prepare('SELECT daily_cups, buffer_cups, weekly_cups FROM prescriptions WHERE id=?').get(req.params.id) || {};
   db.prepare(
     `UPDATE prescriptions SET product_id=?,name=?,formula_type=?,contraindications=?,timing=?,
@@ -2067,6 +2141,7 @@ app.put('/api/prescriptions/:id', (req, res) => {
         buffer_cups === undefined ? (cur.buffer_cups || 0) : (Number(buffer_cups) || 0),
         weekly_cups === undefined ? (cur.weekly_cups || 0) : (Number(weekly_cups) || 0),
         req.params.id);
+  recordRxChange(req.params.id, beforeSnap, '基本資料', req);
   res.json({ ok: true });
 });
 
@@ -2224,6 +2299,25 @@ app.post('/api/prescriptions/:id/duplicate', (req, res) => {
   res.json({ ...created, copied_items: n, from_code: src.code });
 });
 
+// 某張處方的異動紀錄。before/after 全文也一起回，需要時看得到當時的完整配方
+app.get('/api/prescriptions/:id/history', (req, res) => {
+  const limit = Math.min(Math.max(Number(req.query.limit || 50), 1), 200);
+  const rows = db.prepare(
+    `SELECT h.*, u.name AS by_name FROM prescription_history h
+       LEFT JOIN users u ON u.id = h.user_id
+      WHERE h.prescription_id = ? ORDER BY h.id DESC LIMIT ?`
+  ).all(req.params.id, limit);
+  const total = db.prepare('SELECT COUNT(*) c FROM prescription_history WHERE prescription_id=?')
+                  .get(req.params.id).c;
+  res.json({ total, rows: rows.map(r => ({
+    id: r.id, changed_at: r.changed_at, change_type: r.change_type,
+    summary: r.summary, by: r.by_name || r.user_name || '—',
+    before: safeParse(r.before_json), after: safeParse(r.after_json)
+  })) });
+});
+
+function safeParse(t) { try { return JSON.parse(t || 'null'); } catch (e) { return null; } }
+
 app.get('/api/prescriptions/:id/ingredients', (req, res) => {
   const all = db.prepare('SELECT id, name, unit, category, sort_order FROM ingredients WHERE active=1 ORDER BY sort_order, category, name').all();
   const used = db.prepare(
@@ -2244,6 +2338,9 @@ app.get('/api/prescriptions/:id/ingredients', (req, res) => {
 // 更新處方食材（完整覆蓋）
 app.put('/api/prescriptions/:id/ingredients', (req, res) => {
   const items = req.body; // [{ingredient_id, qty_per_cup, prep, prep_stage}]
+  // 先照一張改動前的相片。這裡是具名個案的醫療配方，
+  // 「誰在什麼時候把份量從幾克改成幾克」必須查得到
+  const beforeSnap = rxSnapshot(req.params.id);
   tx(() => {
     // 這裡是先刪再插，送進來沒帶 prep_stage 的話冷凍包標記會整批消失。
     // 先把現有的記下來，沒帶就沿用原值
@@ -2261,6 +2358,7 @@ app.put('/api/prescriptions/:id/ingredients', (req, res) => {
       }
     });
   });
+  recordRxChange(req.params.id, beforeSnap, '用料', req);
   res.json({ ok: true });
 });
 
