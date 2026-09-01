@@ -5,3 +5,6 @@ clinic.db-wal
 *.db
 .env
 clinic.db.bak-*
+
+# 一次性的修補腳本，不進版控
+.*.mjs
