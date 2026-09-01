@@ -3274,6 +3274,35 @@ const App = (() => {
   // 大家以為是自己忘了 key，默默改成全部手動建單
   // 今天的料齊不齊。這個判斷本來只出現在庫存頁，
   // 但廚務同事早上打開的是今日頁 —— 講在他們看不到的地方等於沒講
+  // 這份缺料清單的指紋。內容變了才再跳，同一件事不重複吵
+  function _shortSig(day) {
+    return day.short.map(x => x.name + ':' + x.gap).sort().join('|');
+  }
+  function _shortSeen(date, sig) {
+    try { return localStorage.getItem('short_ack_' + date) === sig; } catch (e) { return false; }
+  }
+  function _markShortSeen(date, sig) {
+    try { localStorage.setItem('short_ack_' + date, sig); } catch (e) {}
+  }
+
+  function _showShortagePopup(day) {
+    const sig = _shortSig(day);
+    if (_shortSeen(day.date, sig)) return;
+    const box = document.getElementById('modalShortage');
+    if (!box) return;
+    document.getElementById('shortHead').textContent =
+      `${day.plan_name || ''} ${day.cups} 杯，${day.short.length} 樣不夠`;
+    document.getElementById('shortList').innerHTML = day.short.map(x =>
+      `<div class="sp-row"><span class="sp-name">${esc(x.name)}</span>
+        <span class="sp-gap">缺 ${x.gap}${esc(x.unit)}</span>
+        <span class="sp-have">需要 ${x.need}${esc(x.unit)}・剩 ${x.have}${esc(x.unit)}</span></div>`).join('');
+    document.getElementById('shortAck').onclick = () => {
+      _markShortSeen(day.date, sig);
+      closeModal('modalShortage');
+    };
+    openModal('modalShortage');
+  }
+
   async function renderTodayShortage(d) {
     const el = document.getElementById('todayShortage');
     if (!el) return;
@@ -3294,6 +3323,7 @@ const App = (() => {
       </div>
       <a class="ts-go" href="/market.html">🛒 去採購</a>
     </div>`;
+    _showShortagePopup(day);
   }
 
   function renderApptSyncWarning(d) {

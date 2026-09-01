@@ -863,6 +863,16 @@
       color: var(--text2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;
     }
     .log-empty { color: var(--text3); padding: 14px 0; }
+    /* 缺料跳出視窗 */
+    .sp-list { max-height: 340px; overflow-y: auto; }
+    .sp-row {
+      display: flex; align-items: baseline; gap: 8px;
+      padding: 10px 0; border-top: 1px solid var(--border);
+    }
+    .sp-row:first-child { border-top: 0; }
+    .sp-name { font-size: 15px; font-weight: 700; min-width: 84px; }
+    .sp-gap  { font-size: 15px; font-weight: 800; color: var(--red); }
+    .sp-have { font-size: 12px; color: var(--text3); margin-left: auto; white-space: nowrap; }
     /* 今天的料不齊 —— 今日頁最上面，比什麼都急 */
     .today-short {
       background: rgba(239,68,68,.08); border: 1px solid rgba(239,68,68,.35);
@@ -2761,6 +2771,19 @@
 </div>
 
 <!-- ══ Modals ════════════════════════════════════════════ -->
+<!-- 今天的料不齊（打開頁面就跳） -->
+<div class="modal-backdrop" id="modalShortage">
+  <div class="modal">
+    <div class="modal-title" style="color:var(--red)">⚠ 今天的料不齊</div>
+    <div id="shortHead" style="font-size:15px;font-weight:700;margin-bottom:10px"></div>
+    <div id="shortList" class="sp-list"></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="shortAck">知道了</button>
+      <a class="btn btn-primary" href="/market.html" style="text-decoration:none">🛒 去採購</a>
+    </div>
+  </div>
+</div>
+
 <!-- 配方異動紀錄 -->
 <div class="modal-backdrop" id="modalRxHistory">
   <div class="modal">
