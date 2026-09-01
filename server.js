@@ -1166,14 +1166,70 @@ const APPT_ITEM_MAP = {
 const SYNC_AHEAD_DAYS = 14;          // 往後同步幾天的預約
 let _apptCache = { at: 0, data: null };
 
+// 預約系統的 Firebase 在 2026-08-29 把 clinic_v3 的讀取權從「任何人可讀」
+// 改成「必須持有憑證」（那是對的，原本知道網址就能讀寫整個診所資料）。
+// 廚房是伺服器對伺服器，所以用服務帳號 —— 它會繞過規則，也不必跟著
+// 匿名登入那條路走（規則的註解自己也說匿名擋不住有心人）。
+//
+// 憑證放在 FIREBASE_SERVICE_ACCOUNT_JSON 環境變數，跟 assistant-service 同一把。
+// 沒設定的話仍會嘗試不帶憑證讀 —— 那會拿到 401，而錯誤訊息會講清楚要設什麼。
+const FB_SCOPE = 'https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/firebase.database';
+let _fbToken = { token: null, expiresAt: 0 };
+
+async function firebaseAccessToken() {
+  const raw = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
+  if (!raw) return null;
+  if (_fbToken.token && _fbToken.expiresAt > Date.now()) return _fbToken.token;
+
+  const { createSign } = require('node:crypto');
+  let acct;
+  try { acct = JSON.parse(raw); }
+  catch (e) { throw new Error('FIREBASE_SERVICE_ACCOUNT_JSON 不是合法的 JSON'); }
+  if (!acct.client_email || !acct.private_key || !acct.token_uri)
+    throw new Error('FIREBASE_SERVICE_ACCOUNT_JSON 缺少 client_email / private_key / token_uri');
+
+  const iat = Math.floor(Date.now() / 1000);
+  const enc = v => Buffer.from(JSON.stringify(v)).toString('base64url');
+  const head  = enc({ alg: 'RS256', typ: 'JWT' });
+  const claim = enc({ iss: acct.client_email, scope: FB_SCOPE, aud: acct.token_uri,
+                      iat, exp: iat + 3600 });
+  const signer = createSign('RSA-SHA256');
+  signer.update(head + '.' + claim);
+  signer.end();
+  const assertion = head + '.' + claim + '.' + signer.sign(acct.private_key, 'base64url');
+
+  const r = await fetch(acct.token_uri, {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: 'grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion=' + assertion,
+    signal: AbortSignal.timeout(8000)
+  });
+  // 不要把回應內容放進錯誤訊息 —— 那裡面可能帶著憑證相關的東西
+  if (!r.ok) throw new Error('取得 Firebase 存取權杖失敗（HTTP ' + r.status + '）');
+  const j = await r.json();
+  if (!j.access_token) throw new Error('Firebase 沒有回傳存取權杖');
+  // 權杖有效 1 小時，提前 15 分鐘換發
+  _fbToken = { token: j.access_token, expiresAt: Date.now() + 45 * 60 * 1000 };
+  return j.access_token;
+}
+
 async function fetchAppts() {
   const now = Date.now();
   if (_apptCache.data && now - _apptCache.at < 120000) return _apptCache.data;   // 快取 2 分鐘
-  const r = await fetch(APPTS_URL, { signal: AbortSignal.timeout(8000) });
+  const token = await firebaseAccessToken();
+  const r = await fetch(APPTS_URL, {
+    headers: token ? { authorization: 'Bearer ' + token } : {},
+    signal: AbortSignal.timeout(8000)
+  });
   // 一定要檢查狀態碼。Firebase 的 401 回的是 {"error":"Permission denied"} ——
   // 那是合法 JSON，直接 .json() 會當成正常資料收下，然後在上面找不到任何日期，
   // 於是回報「同步成功、0 筆」。權限被關掉了卻沒有人知道
-  if (!r.ok) throw new Error(`預約系統回 HTTP ${r.status}`);
+  if (!r.ok) {
+    const hint = (r.status === 401 || r.status === 403) && !token
+      ? '：預約系統已改成需要憑證，請在 Railway 設定 FIREBASE_SERVICE_ACCOUNT_JSON'
+      : '';
+    throw new Error(`預約系統回 HTTP ${r.status}${hint}`);
+  }
   const j = await r.json();
   if (j && typeof j === 'object' && j.error && !Array.isArray(j)) {
     throw new Error('預約系統：' + String(j.error).slice(0, 80));
