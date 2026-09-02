@@ -863,6 +863,28 @@
       color: var(--text2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;
     }
     .log-empty { color: var(--text3); padding: 14px 0; }
+    /* 下單時看得到處方內容，以及「這個人有沒有自己的處方」 */
+    .rxm { display: inline-flex; align-items: center; gap: 8px; font-size: 13px;
+           font-weight: 700; margin-bottom: 6px; }
+    .rxm.ok   { color: var(--green); }
+    .rxm.none { color: var(--text3); font-weight: 400; }
+    .rxm.warn { color: var(--orange); }
+    .rxm button {
+      min-height: 44px; padding: 0 14px; border-radius: 8px; cursor: pointer;
+      border: 1px solid var(--orange); background: rgba(249,115,22,.10);
+      color: var(--orange); font-size: 13px; font-weight: 700;
+    }
+    .rxp { margin-top: 8px; padding: 10px 12px; border-radius: var(--radius-sm);
+           background: var(--bg); border: 1px solid var(--border); }
+    .rxp-head { font-size: 14px; font-weight: 800; display: flex; align-items: center;
+                gap: 6px; flex-wrap: wrap; }
+    .rxp-tag { font-size: 11px; font-weight: 700; padding: 2px 7px; border-radius: 999px;
+               background: var(--card-solid); border: 1px solid var(--border); color: var(--text3); }
+    .rxp-tag.plan { color: var(--primary); border-color: var(--primary); }
+    .rxp-sum { font-size: 12px; color: var(--text3); margin-top: 3px; }
+    .rxp-items { font-size: 13px; color: var(--text2); margin-top: 6px; line-height: 1.7; }
+    .rxp-warn { font-size: 13px; font-weight: 700; color: var(--red); margin-top: 6px; }
+    .rxp-load { font-size: 12px; color: var(--text3); padding: 6px 0; }
     /* 採購籃：從市場帶回來的東西，回診所只補金額 */
     .pd-head { font-size: 14px; font-weight: 700; margin-bottom: 8px; }
     .pd-head span { font-size: 12px; color: var(--text3); font-weight: 400; }
@@ -2845,7 +2867,9 @@
     </div>
     <div class="form-group">
       <label>選擇處方</label>
+      <div id="caseRxMatch"></div>
       <select id="caseRxSel"></select>
+      <div id="caseRxPreview"></div>
     </div>
     <div class="form-group">
       <label id="caseCupsLabel">份數</label>

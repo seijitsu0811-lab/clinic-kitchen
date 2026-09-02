@@ -1436,8 +1436,64 @@ const App = (() => {
     loadToday();
   }
 
+  let _caseRxList = [];
+
+  // 選了哪一張，就把它的內容攤開來。
+  // 只看代號和名字，看不出「這張到底裝了什麼」，也就無從發現選錯了
+  async function _renderCaseRxPreview() {
+    const box = document.getElementById('caseRxPreview');
+    const sel = document.getElementById('caseRxSel');
+    if (!box || !sel) return;
+    const rx = _caseRxList.find(r => r.id == sel.value);
+    if (!rx) { box.innerHTML = ''; return; }
+    box.innerHTML = '<div class="rxp-load">載入配方…</div>';
+    try {
+      const n = await api('/api/nutrition/prescription/' + rx.id);
+      const items = (n.breakdown || []).filter(b => (b.qty ?? b.qty_per_cup) > 0);
+      const main = items.slice(0, 8)
+        .map(b => `${esc(b.name)} ${b.qty ?? b.qty_per_cup}${esc(b.unit || 'g')}`).join('、');
+      box.innerHTML = `<div class="rxp">
+        <div class="rxp-head">${esc(rx.code)}　${esc(rx.name)}${
+          rx.is_staff_rx ? '<span class="rxp-tag">員工配方</span>' : ''}${
+          rx.produce_plan_group ? '<span class="rxp-tag plan">跟著蔬果方案輪替</span>' : ''}</div>
+        <div class="rxp-sum">${items.length} 樣・${n.kcal} kcal・蛋白質 ${n.protein_g}g</div>
+        <div class="rxp-items">${esc(main)}${items.length > 8 ? `…另 ${items.length - 8} 樣` : ''}</div>
+        ${rx.contraindications ? `<div class="rxp-warn">⚠ ${esc(rx.contraindications)}</div>` : ''}
+      </div>`;
+    } catch (e) { box.innerHTML = ''; }
+  }
+
+  // 打了姓名就去比對有沒有他自己的處方。
+  // 有自己的處方卻掛員工配方，做出來的東西是錯的，而且沒有人會發現
+  function _matchCaseRxByName() {
+    const name = (document.getElementById('casePatientName').value || '').trim();
+    const hint = document.getElementById('caseRxMatch');
+    const sel  = document.getElementById('caseRxSel');
+    if (!hint || !sel) return;
+    if (!name) { hint.innerHTML = ''; return; }
+    const own = _caseRxList.find(r => String(r.name).trim() === name);
+    if (!own) {
+      hint.innerHTML = `<span class="rxm none">「${esc(name)}」沒有自己的處方</span>`;
+      return;
+    }
+    if (sel.value == own.id) {
+      hint.innerHTML = `<span class="rxm ok">✓ 用的是他自己的處方</span>`;
+    } else {
+      hint.innerHTML = `<span class="rxm warn">「${esc(name)}」有自己的處方 ${esc(own.code)}
+        <button type="button" onclick="App.useOwnRx(${own.id})">改用</button></span>`;
+    }
+  }
+
+  function useOwnRx(id) {
+    const sel = document.getElementById('caseRxSel');
+    sel.value = String(id);
+    sel.dispatchEvent(new Event('change'));
+    _matchCaseRxByName();
+  }
+
   async function _buildCaseRxSel(productId, selectedRxId) {
     const rxs = await api('/api/prescriptions');
+    _caseRxList = rxs;
     const sel = document.getElementById('caseRxSel');
     const byProduct = {};
     rxs.forEach(r => {
@@ -1457,8 +1513,12 @@ const App = (() => {
       const chosen = rxs.find(r => r.id == sel.value);
       document.getElementById('caseCupsLabel').textContent = chosen ? `份數（${chosen.product_unit||'份'}）` : '份數';
     };
-    sel.onchange = updateLabel;
+    sel.onchange = () => { updateLabel(); _renderCaseRxPreview(); _matchCaseRxByName(); };
     updateLabel();
+    _renderCaseRxPreview();
+    const nameInput = document.getElementById('casePatientName');
+    if (nameInput) nameInput.oninput = _matchCaseRxByName;
+    _matchCaseRxByName();
     return rxs;
   }
 
@@ -3898,7 +3958,7 @@ const App = (() => {
     batchDragStart, batchDragEnd, batchDrop, batchDropDelete, editBatchTime, addBatch, removeBatch,
     schDragStart, schDragOver, schDragLeave, schDrop,
     deleteCase, openAddCase, openEditCase, addCase,
-    loadRx, openAddRx, openEditRx, saveRx, deleteRx, duplicateRx, openRxHistory,
+    loadRx, openAddRx, openEditRx, saveRx, deleteRx, duplicateRx, openRxHistory, useOwnRx,
     openEditRxIngredients, saveRxIngredients,
     loadInventory, openEditInv, saveInventory, togglePurchaseHistory,
     openAddIngredient, addIngredient, openPurchase, savePurchase, commitPurchaseDraft,
