@@ -1896,6 +1896,66 @@ const App = (() => {
   function _fcDow(n) { return ['日','一','二','三','四','五','六'][n]; }
   function _fcMd(d)  { return d.slice(5).replace('-', '/'); }
 
+  // 備料：一次把整段期間的量做成 N 份冷凍核心包。
+  // 這一頁要回答兩件事：這批要秤多少、現在還剩幾份
+  let _prepServings = null;
+
+  async function openPrep() {
+    document.getElementById('prepList').innerHTML = '<div class="pp-load">計算中…</div>';
+    openModal('modalPrep');
+    await _renderPrep();
+  }
+
+  async function _renderPrep(servings) {
+    const box = document.getElementById('prepList');
+    let ws;
+    try {
+      ws = await api('/api/prep/worksheet' + (servings > 0 ? '?servings=' + servings : ''));
+    } catch (e) { box.innerHTML = '<div class="pp-load">' + esc(e.message) + '</div>'; return; }
+
+    _prepServings = servings > 0 ? servings : ws.suggested_servings;
+    document.getElementById('prepServings').value = _prepServings;
+    document.getElementById('prepPlan').textContent = ws.plan ? ws.plan.name : '—';
+
+    const st = ws.status || {};
+    document.getElementById('prepStatus').innerHTML = st.made
+      ? `目前備品：做了 <b>${st.made}</b> 份，已出 ${st.used} 份，<b>還剩 ${st.remaining} 份</b>`
+      : '目前沒有備品（還沒備過料，或已全部用完）';
+
+    if (!ws.items.length) {
+      box.innerHTML = '<div class="pp-load">這個方案沒有標成「冷凍包」的用料。</div>';
+      return;
+    }
+    box.innerHTML = `
+      <table class="pp-table">
+        <tr><th>食材</th><th>每份</th><th>要秤</th><th>現有</th></tr>
+        ${ws.items.map(i => `
+          <tr class="${i.short > 0 ? 'pp-short' : ''}">
+            <td>${esc(i.name)}${i.prep ? `<div class="pp-prep">${esc(i.prep)}</div>` : ''}</td>
+            <td class="num">${i.per_serving}${esc(i.unit)}</td>
+            <td class="num pp-need">${i.need}${esc(i.unit)}</td>
+            <td class="num">${i.have}${i.short > 0 ? `<span class="pp-gap">差 ${i.short}</span>` : ''}</td>
+          </tr>`).join('')}
+      </table>`;
+  }
+
+  function changePrepServings(v) {
+    const n = Number(v);
+    if (n > 0) _renderPrep(n);
+  }
+
+  async function savePrepBatch() {
+    const n = Number(document.getElementById('prepServings').value);
+    if (!(n > 0)) return alert('要做幾份？');
+    if (!confirm(`記錄備料 ${n} 份？\n\n會把冷凍包那幾樣的原料扣掉 —— 它們已經變成備品了。\n記錯可以還原。`)) return;
+    try {
+      const r = await api('/api/prep/batch', 'POST', { servings: n });
+      alert(`已記錄 ${r.servings} 份（${r.plan}）。` + (r.warning ? `\n\n⚠ ${r.warning}` : ''));
+      closeModal('modalPrep');
+      loadInventory();
+    } catch (e) { alert(e.message); }
+  }
+
   async function renderForecast() {
     const el = document.getElementById('invForecast');
     if (!el) return;
@@ -1986,6 +2046,7 @@ const App = (() => {
     cards.push(`
       <div class="fc-card">
         <h3>接下來兩週</h3>
+        ${f.packs && f.packs.made ? `<div class="fc-packs">冷凍核心包：還剩 <b>${f.packs.remaining}</b> 份（做了 ${f.packs.made}、已出 ${f.packs.used}）</div>` : ''}
         <div class="fc-sub">
           目前是 <b>${esc(f.plan_today ? f.plan_today.name : '—')}</b>
           <span class="fc-mode${plans.is_override ? ' manual' : ''}">${plans.is_override ? '手動指定' : '自動'}</span>
@@ -3979,6 +4040,7 @@ const App = (() => {
     loadMeals, switchMealTab, switchMealView, advanceMealStatus, goBuyMeals,
     openAddMealOrder, openEditMealOrder, saveMealOrder, deleteMealOrder, updateBoxHint,
     toggleForecastAll, toggleSwitchAll, setPlanOverride, clearPlanOverride, searchLogs,
+    openPrep, changePrepServings, savePrepBatch,
     openVendorPurchase, saveMealPurchase,
     openEditMealItem, saveMealItem,
     openEditNutritionCard, saveNutritionCard, reviewCard, openPrintCards,

@@ -220,6 +220,22 @@ try {
   // 有些人喝得不固定（沒有排定的日子，但一週大概幾杯）。
   // daily_cups 是「每個工作日幾杯」，對這種人算出來會失真
   "ALTER TABLE prescriptions ADD COLUMN weekly_cups REAL DEFAULT 0",
+  // 備料批次：週一（或週四）一次把整段期間的量處理好，做成 N 份冷凍核心包。
+  // 原料在備料當下就離開冰箱，但系統原本要等出餐才扣 —— 帳面因此對不上，
+  // 而且會誤報「今天缺藍莓」（藍莓其實已經在冷凍包裡了）
+  `CREATE TABLE IF NOT EXISTS prep_batches (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     date TEXT NOT NULL, group_code TEXT NOT NULL DEFAULT '主方案',
+     plan_id INTEGER, plan_name TEXT DEFAULT '',
+     servings INTEGER NOT NULL DEFAULT 0,
+     note TEXT DEFAULT '', user_id INTEGER, user_name TEXT DEFAULT '',
+     created_at TEXT DEFAULT (datetime('now','localtime')),
+     reversed_at TEXT DEFAULT '')`,
+  `CREATE TABLE IF NOT EXISTS prep_batch_items (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     batch_id INTEGER NOT NULL, ingredient_id INTEGER NOT NULL,
+     qty REAL NOT NULL DEFAULT 0,
+     FOREIGN KEY (batch_id) REFERENCES prep_batches(id))`,
   // 在市場勾的「買到了」要能被診所那台裝置接手登記金額 ——
   // 存 localStorage 的話，回到診所就看不到了。
   // 這是「買了什麼、幾份」，金額回診所再補：在市場輸入金額不現實
@@ -2749,6 +2765,65 @@ app.post('/api/consumption/:id/reverse', (req, res) => {
 });
 
 // 庫存充足性檢查：依星期幾遞減的本週剩餘需求 + 安全緩衝 7 杯
+// ── 備料批次 ────────────────────────────────────────────────
+// 冷凍核心包：備料當下把原料變成 N 份備品，之後出餐消耗備品、不再碰原料。
+// 備料可能一週做一次、也可能週一做一批週四再補一批 ——
+// 所以不綁週期，做幾份是備料當下填的，涵蓋到哪天由份數自己決定
+
+// 哪些處方吃這一組蔬果方案（備品是給他們用的）
+function planRxIds(group) {
+  return db.prepare(
+    "SELECT id FROM prescriptions WHERE active=1 AND COALESCE(produce_plan_group,'')=?"
+  ).all(group).map(r => r.id);
+}
+
+// 目前還剩幾份備品。做了幾份 − 從第一批之後已經出了幾杯
+function packStatus(group, asOf) {
+  const upto = asOf || today();
+  const batches = db.prepare(
+    `SELECT * FROM prep_batches
+      WHERE group_code=? AND COALESCE(reversed_at,'')='' AND date<=?
+      ORDER BY date, id`
+  ).all(group, upto);
+  if (!batches.length) return { made: 0, used: 0, remaining: 0, since: null, batches: [] };
+
+  const rxIds = new Set(planRxIds(group));
+  const since = batches[0].date;
+  let used = 0;
+  for (let d = since; d <= upto; d = addDays(d, 1)) {
+    used += cupsOnDate(d).filter(x => rxIds.has(x.rxId)).reduce((sum, x) => sum + x.cups, 0);
+  }
+  const made = batches.reduce((sum, b) => sum + b.servings, 0);
+  return { made, used: Math.round(used * 10) / 10,
+           remaining: Math.max(0, Math.round((made - used) * 10) / 10),
+           since, batches };
+}
+
+// 這一批要秤多少：冷凍包的每一樣 × 份數
+function prepWorksheet(group, servings, date) {
+  const plan = activePlanFor(group, date || today());
+  if (!plan) return { plan: null, items: [], servings };
+  const rows = db.prepare(
+    `SELECT i.id, i.name, i.unit, ppi.qty_per_cup, COALESCE(ppi.prep,'') prep
+       FROM produce_plan_items ppi JOIN ingredients i ON i.id=ppi.ingredient_id
+      WHERE ppi.plan_id=? AND COALESCE(ppi.prep_stage,'')='冷凍包' AND ppi.qty_per_cup>0
+      ORDER BY i.category, i.name`
+  ).all(plan.id);
+  const stock = {};
+  db.prepare('SELECT ingredient_id, qty FROM inventory').all()
+    .forEach(r => { stock[r.ingredient_id] = r.qty; });
+  return {
+    plan: { code: plan.code, name: plan.name }, servings,
+    items: rows.map(r => {
+      const need = Math.round(r.qty_per_cup * servings * 10) / 10;
+      const have = Math.round((stock[r.id] || 0) * 10) / 10;
+      return { id: r.id, name: r.name, unit: r.unit, prep: r.prep,
+               per_serving: r.qty_per_cup, need, have,
+               short: Math.max(0, Math.round((need - have) * 10) / 10) };
+    })
+  };
+}
+
 // ── 逐日庫存預測 ────────────────────────────────────────────
 // 原本的試算是「今天的配方 × 這週剩幾天」，打成一坨。那有兩個問題：
 //   1. 兩週後會換蔬果方案，換組要用到的東西現在完全不會被算到，
@@ -2867,16 +2942,45 @@ function buildForecast(daysAhead) {
   const firstNeed  = {};      // 每樣食材第一次被用到的日期
   const runsOut    = {};
 
+  // 冷凍包的用料由備品支應，不看原料。備料當下原料就離開冰箱了，
+  // 再去看原料會天天誤報「缺藍莓」—— 而藍莓其實就在包裡
+  const packIds = new Set(
+    db.prepare(
+      `SELECT DISTINCT ppi.ingredient_id id FROM produce_plan_items ppi
+         JOIN produce_plans pp ON pp.id = ppi.plan_id
+        WHERE COALESCE(ppi.prep_stage,'')='冷凍包' AND pp.active=1`
+    ).all().map(r => r.id)
+  );
+  const packGroupRx = new Set(planRxIds('主方案'));
+  let packLeft = packStatus('主方案', t).remaining;
+
   for (let i = 0; i < horizon; i++) {
     const date = addDays(t, i);
     const plan = activePlanFor('主方案', date);
     const n    = needsOnDate(date);
     const cups = cupsOnDate(date).reduce((a, b) => a + b.cups, 0);
+    // 這一天有幾杯是吃方案的（那幾杯才會消耗備品）
+    const planCups = cupsOnDate(date).filter(x => packGroupRx.has(x.rxId))
+                                     .reduce((a, b) => a + b.cups, 0);
 
     // 這一天做不做得出來。用「累計需求 vs 現有庫存」比 ——
     // 今天用掉的，明天就沒有了，所以不能每天各自跟原始庫存比
     const short = [];
+    const packCovered = Math.min(packLeft, planCups);      // 這一天有幾杯有備品可用
+    const packMissing = Math.max(0, planCups - packLeft);  // 還缺幾杯份
     Object.entries(n).forEach(([id, q]) => {
+      const isPack = packIds.has(Number(id));
+      // 冷凍包的用料：備品夠就不缺，不夠才按「缺幾杯份」換算成克數
+      if (isPack) {
+        if (packMissing <= 0 || !planCups) return;
+        const perCup = q / (planCups || 1);
+        const gap = Math.round(perCup * packMissing * 10) / 10;
+        if (gap > 0.05 && ingMap[id]) {
+          short.push({ id: Number(id), name: ingMap[id].name, unit: ingMap[id].unit,
+                       need: Math.round(q * 10) / 10, have: 0, gap, from_pack: true });
+        }
+        return;
+      }
       const used = cum[id] || 0;                 // 這一天之前已經用掉的
       const left = Math.max(0, (stock[id] || 0) - used);
       if (q - left > 0.05 && ingMap[id]) {
@@ -2886,12 +2990,14 @@ function buildForecast(daysAhead) {
                      gap:  Math.round((q - left) * 10) / 10 });
       }
     });
+    packLeft = Math.max(0, packLeft - packCovered);
     short.sort((a, b) => b.gap - a.gap);
 
     days.push({ date, dow: dowOf(date), plan_code: plan ? plan.code : null,
                 plan_name: plan ? plan.name : null,
                 is_staff_meal_day: isStaffMealDay(dowOf(date)), cups,
                 is_stocktake_day: stocktakeDows().includes(dowOf(date)),
+                packs_left: Math.round(packLeft * 10) / 10,
                 feasible: short.length === 0, short });
 
     Object.entries(n).forEach(([id, q]) => {
@@ -2953,6 +3059,7 @@ function buildForecast(daysAhead) {
 
   return {
     date: t, horizon_days: horizon,
+    packs: packStatus('主方案', t),
     first_short: firstShort && { date: firstShort.date, dow: firstShort.dow,
                                  cups: firstShort.cups, plan_name: firstShort.plan_name,
                                  short: firstShort.short },
@@ -2964,6 +3071,106 @@ function buildForecast(daysAhead) {
     days, ingredients, switch_warning: switchWarning
   };
 }
+
+// 分裝表：這一批要秤多少、做幾份。
+// servings 沒給的話，用「到下一個盤點日之前排定的杯數」當建議 ——
+// 備料可能一週一次也可能分兩次，所以是建議不是規定
+app.get('/api/prep/worksheet', (req, res) => {
+  const group = req.query.group || '主方案';
+  const date  = req.query.date  || today();
+  let servings = Number(req.query.servings);
+  if (!(servings > 0)) {
+    const to = nextStocktakeDay(date);
+    servings = 0;
+    for (let d = date; d <= to; d = addDays(d, 1)) {
+      const rxIds = new Set(planRxIds(group));
+      servings += cupsOnDate(d).filter(x => rxIds.has(x.rxId)).reduce((s, x) => s + x.cups, 0);
+    }
+    servings = Math.ceil(servings);
+  }
+  const ws = prepWorksheet(group, servings, date);
+  res.json({ date, group, suggested_servings: servings, ...ws,
+             status: packStatus(group, date) });
+});
+
+// 目前還剩幾份備品
+app.get('/api/prep/status', (req, res) => {
+  const group = req.query.group || '主方案';
+  res.json(packStatus(group, req.query.date || today()));
+});
+
+// 記錄一次備料：扣掉冷凍包那幾樣的原料，產生 N 份備品
+app.post('/api/prep/batch', (req, res) => {
+  const group = req.body.group || '主方案';
+  const date  = req.body.date  || today();
+  const servings = Math.floor(Number(req.body.servings) || 0);
+  if (!(servings > 0)) return res.status(400).json({ error: '要做幾份？' });
+
+  const ws = prepWorksheet(group, servings, date);
+  if (!ws.plan) return res.status(400).json({ error: '找不到當期的蔬果方案' });
+  if (!ws.items.length) return res.status(400).json({ error: '這個方案沒有標成冷凍包的用料' });
+
+  let id;
+  tx(() => {
+    const r = db.prepare(
+      `INSERT INTO prep_batches (date,group_code,plan_id,plan_name,servings,note,user_id,user_name)
+       VALUES (?,?,?,?,?,?,?,?)`
+    ).run(date, group, null, ws.plan.name, servings, req.body.note || '',
+          req.kitchenUser ? req.kitchenUser.id : null,
+          req.kitchenUser ? req.kitchenUser.name : '');
+    id = r.lastInsertRowid;
+    const ins = db.prepare('INSERT INTO prep_batch_items (batch_id,ingredient_id,qty) VALUES (?,?,?)');
+    ws.items.forEach(it => {
+      ins.run(id, it.id, it.need);
+      // 扣到 0 為止 —— 原料不夠也要記錄實際做了幾份，不要讓庫存變負數
+      db.prepare(
+        `UPDATE inventory SET qty=MAX(0, ROUND(qty-?,1)), updated_at=datetime('now','localtime')
+          WHERE ingredient_id=?`
+      ).run(it.need, it.id);
+    });
+  });
+  const short = ws.items.filter(i => i.short > 0);
+  res.json({ id, servings, plan: ws.plan.name,
+             items: ws.items.length,
+             warning: short.length
+               ? '原料不足：' + short.map(i => `${i.name} 差 ${i.short}${i.unit}`).join('、')
+               : '',
+             status: packStatus(group, date) });
+});
+
+// 還原一次備料：把原料加回去。備料記錯份量時要改得回來
+app.post('/api/prep/batch/:id/reverse', (req, res) => {
+  const b = db.prepare("SELECT * FROM prep_batches WHERE id=? AND COALESCE(reversed_at,'')=''")
+              .get(req.params.id);
+  if (!b) return res.status(404).json({ error: '找不到這一批，或已經還原過' });
+  tx(() => {
+    db.prepare('SELECT ingredient_id, qty FROM prep_batch_items WHERE batch_id=?').all(b.id)
+      .forEach(it => {
+        db.prepare(
+          `INSERT INTO inventory (ingredient_id,qty,updated_at) VALUES (?,?,datetime('now','localtime'))
+           ON CONFLICT(ingredient_id) DO UPDATE SET qty=qty+excluded.qty, updated_at=excluded.updated_at`
+        ).run(it.ingredient_id, it.qty);
+      });
+    db.prepare("UPDATE prep_batches SET reversed_at=datetime('now','localtime') WHERE id=?").run(b.id);
+  });
+  res.json({ ok: true, status: packStatus(b.group_code, today()) });
+});
+
+// 最近幾批
+app.get('/api/prep/batches', (req, res) => {
+  const days = Number(req.query.days || 30);
+  const from = addDays(today(), -days);
+  const rows = db.prepare(
+    `SELECT * FROM prep_batches WHERE date >= ? ORDER BY date DESC, id DESC`
+  ).all(from);
+  res.json(rows.map(b => ({
+    ...b,
+    items: db.prepare(
+      `SELECT pbi.qty, i.name, i.unit FROM prep_batch_items pbi
+         JOIN ingredients i ON i.id=pbi.ingredient_id WHERE pbi.batch_id=?`
+    ).all(b.id)
+  })));
+});
 
 app.get('/api/inventory/forecast', (req, res) => res.json(buildForecast(req.query.days)));
 
