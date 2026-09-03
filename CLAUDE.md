@@ -315,7 +315,7 @@ prescriptions.produce_plan_group     ← 指向方案；空字串 = 不用方案
 
 ## 測試
 
-改完一定要跑，全部都要過（共 337 項）。
+改完一定要跑，全部都要過（共 338 項）。
 
 ```bash
 PORT=3999 node server.js            # 另一個終端機

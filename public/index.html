@@ -1150,12 +1150,20 @@
       border-color: var(--orange);
       background: rgba(245, 158, 11, 0.08);
     }
-    /* 預設已出餐不加樣式；標出來的是例外 */
+    /* 預設是「還沒領」——一天的起點，不是錯誤。不要標紅、不要劃掉 */
     .case-chip.missed {
-      border-color: rgba(239,68,68,.5);
-      background: rgba(239,68,68,.07);
-      color: var(--red);
-      text-decoration: line-through;
+      border-style: dashed;
+      background: transparent;
+      color: var(--text3);
+    }
+    .case-chip.missed .sname { color: var(--text3); }
+    .case-chip.picked {
+      border-color: rgba(22,163,74,.5);
+      background: rgba(22,163,74,.09);
+    }
+    .case-chip.picked .sname { color: var(--green); }
+    .grp-note {
+      font-size: 11px; font-weight: 500; color: var(--text3); margin-left: 8px;
     }
     .case-chip.needs-check {
       border-color: var(--orange);

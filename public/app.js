@@ -11,7 +11,8 @@ const App = (() => {
   let lastTodayData = null;
   let staffPickedUp = new Set();  // 只用在「需人工核對」的個案（有禁忌註記那種）
   let casePickedUp  = new Set();
-  // 例外管理：排程上的預設是「已出餐」，這兩份記的是「沒發生」的那些。
+  // 舊的例外管理留下來的：以前預設是「已出餐」，這兩份記「沒發生」的那些。
+  // 2026-09-03 改成「點了才算領」之後就沒有人在寫了，只留給伺服器的退路規則讀。
   // 舊的 staffPickedUp/casePickedUp 保留不動，歷史資料才不會被誤讀
   let staffMissed   = new Set();  // 出席但沒領到的員工 userId
   let caseMissed    = new Set();  // 沒出餐的個案 caseId
@@ -767,7 +768,7 @@ const App = (() => {
       const sub = type === 'fresh'
         ? `${esc(c.rx_name)} ${c.cups}杯${mt ? ' · ' + mt : ''}`
         : `${c.cups}天 ${esc(ptLabel(c.powder_type))}${mt ? ' · ' + mt : ''}`;
-      const cls = needsTap ? 'needs-check' : (delivered ? '' : 'missed');
+      const cls = needsTap ? 'needs-check' : (delivered ? 'picked' : 'missed');
       // 用員工配方的個案不會出現在出餐時間軸（編輯鈕在那裡），
       // 所以編輯入口只能放這張晶片上，否則時間和內容都改不了
       return `<div class="case-chip ${cls}" data-type="${type}" data-inuse="${isInuse?1:0}"
@@ -775,7 +776,7 @@ const App = (() => {
         <button class="chip-edit" title="編輯這筆出單"
                 onclick="event.stopPropagation();App.openEditCase(${c.id})">✎</button>
         <div class="sname">${esc(name)}${c.cups > 1 ? ` ×${c.cups}` : ''}${
-          needsTap ? ' ⚠' : (delivered ? '' : ' 未出餐')}</div>
+          needsTap ? ' ⚠' : (delivered ? ' ✓' : '')}</div>
         <div class="chip-sub">${isInuse ? '🍽 內用精力湯' : ''}${sub}</div>
       </div>`;
     }
@@ -786,9 +787,12 @@ const App = (() => {
       return `<div class="today-group"><div class="today-group-label">${label}</div><div class="chips-row">${chips}</div></div>`;
     }
     let groupsHtml = '';
-    groupsHtml += chipGroup(fullPackageCases, 'full',   '📦 全配方外帶');
-    groupsHtml += chipGroup(freshCases,       'fresh',  '現打精力湯');
-    groupsHtml += chipGroup(powderCases,      'powder', '粉配方');
+    // 批次只放「員工標準配方」那一鍋。用自己處方的人是各自現打，
+    // 不會出現在上面的批次裡 —— 沒寫出來的話會以為是漏掉了
+    const soloNote = '<span class="grp-note">各自的處方，單獨現打，不併入上面的批次</span>';
+    groupsHtml += chipGroup(fullPackageCases, 'full',   '📦 全配方外帶' + soloNote);
+    groupsHtml += chipGroup(freshCases,       'fresh',  '現打精力湯' + soloNote);
+    groupsHtml += chipGroup(powderCases,      'powder', '粉配方' + soloNote);
     document.getElementById('caseChips').innerHTML = groupsHtml;
 
     // 右側：出餐順序
@@ -836,9 +840,10 @@ const App = (() => {
     return (now.getHours() * 100 + now.getMinutes()) >= Number(hhmm);
   }
 
-  // 改成預設已出餐之後，一開頁面所有批次就都是「完成」狀態。
-  // 沒有這道時間閘門的話，早上八點就會把中午的料扣掉 —— 那時候還可能有人請假或加單。
-  // 過了出餐時間才扣；真的沒扣到的，隔天伺服器的自動補扣會接住
+  // 一批要全部的人都點過「已領」才算完成，完成才扣庫存。
+  // 時間閘門留著當第二道保險：萬一有人提早把整批點完（或誤點），
+  // 也不會在中午的餐還沒發之前就把料扣掉。
+  // 真的沒扣到的，隔天伺服器的自動補扣會接住
   function _checkBatchDeductions() {
     if (!staffBatchGroups) return;
     staffBatchGroups.forEach(batch => {
@@ -848,8 +853,9 @@ const App = (() => {
       const { sk } = _getBatchTime(batch);
       if (!_timePassed(String(sk).slice(0, 4))) return;
       deductedBatches.add(key);
-      // 員工人數 → 員工配方（被標未領的不算）
-      const staffCount = batch.members.filter(m => m.type === 'staff' && !staffMissed.has(m.userId)).length;
+      // 員工人數 → 員工配方。改成「點了才算領」之後這裡不能再看 staffMissed
+      // （那份已經沒人在寫了，永遠是空的）—— 一律從 _memberDelivered 讀
+      const staffCount = batch.members.filter(m => m.type === 'staff' && _memberDelivered(m)).length;
       if (staffCount > 0 && empRxId) {
         api('/api/inventory/consume', 'POST', { prescription_id: empRxId, cups: staffCount }).catch(() => {});
       }
@@ -865,7 +871,7 @@ const App = (() => {
     if (!lastTodayData) return;
     (lastTodayData.products || []).flatMap(p => p.cases || []).forEach(c => {
       if (c.is_staff_rx) return;                 // 員工標準配方走批次那條路
-      if (!_caseDelivered(c)) return;            // 標了未出餐的不扣
+      if (!_caseDelivered(c)) return;            // 還沒點「已領」的不扣
       if (!_timePassed(c.meal_time)) return;     // 還沒到出餐時間
       _deductCaseOnce(c);
     });

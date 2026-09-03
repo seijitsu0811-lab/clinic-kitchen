@@ -27,14 +27,16 @@ const today = new Date().toISOString().slice(0, 10);
 const cupsOf = async d => (await api('/api/day/cups?date=' + d)).total_cups;
 const expectOf = async d => (await api('/api/consumption/expected?date=' + d)).total_cups;
 
-line('\n━━ 1. 沒有例外時，兩條路要算出同一個數字 ━━');
-// 先把例外清掉，起點才確定
+line('\n━━ 1. 沒有人點過時，兩條路要算出同一個數字 ━━');
+// 「扣庫存」現在只算點過的，跟「該做幾杯」本來就會不一樣 ——
+// 要比對兩條路有沒有算漏，得站在「沒有人點過」的退路規則上比
 const st = await api('/api/today/state?date=' + today);
 const orig = st.state ? JSON.parse(JSON.stringify(st.state)) : null;
-if (orig) {
-  await api('/api/today/state', 'PUT',
-    { date: today, state: { ...orig, staffMissed: [], caseMissed: [] } });
-}
+const clearTaps = () => api('/api/today/state', 'PUT', {
+  date: today,
+  state: { ...(orig || {}), staff: [], cases: [], staffMissed: [], caseMissed: [] }
+});
+await clearTaps();
 const a = await cupsOf(today), b = await expectOf(today);
 check('排產杯數 = 扣庫存杯數', Math.abs(a - b) < 0.05,
       `做得出來算 ${a} 杯／扣庫存算 ${b} 杯` +
@@ -45,6 +47,7 @@ const rxs = await api('/api/prescriptions?include_inactive=1');
 const staffRx = rxs.find(r => r.is_staff_rx === 1 && r.active === 1);
 check('找得到啟用中的員工配方', !!staffRx, staffRx && staffRx.code);
 if (staffRx) {
+  await clearTaps();
   const before = await cupsOf(today);
   const o = await api('/api/today/cases', 'POST',
     { date: today, prescription_id: staffRx.id, cups: 3, powder_type: '' });
@@ -52,6 +55,7 @@ if (staffRx) {
   check('加一張 3 杯的員工配方單，排產要跟著 +3', Math.abs(after - before - 3) < 0.05,
         `${before} → ${after}` +
         (Math.abs(after - before - 3) < 0.05 ? '' : ' ★ 這幾杯照做卻沒人算料'));
+  await clearTaps();
   const exp = await expectOf(today);
   check('扣庫存也是同一個數字', Math.abs(exp - after) < 0.05, `扣 ${exp} 杯／做 ${after} 杯`);
 
@@ -72,6 +76,7 @@ else {
   const o2 = await api('/api/today/cases', 'POST',
     { date: today, prescription_id: dailyRx.id, cups: 2, powder_type: '' });
   const withOrder = await cupsOf(today);
+  await clearTaps();
   const exp2 = await expectOf(today);
 
   // 預設 1 杯 → 開一張 2 杯的單，總數應該只 +1（單取代預設，不是疊加）
@@ -89,21 +94,22 @@ else {
         `${await cupsOf(today)} / ${base}`);
 }
 
-line('\n━━ 3. 標了例外時，扣庫存要比排產少 ━━');
-// 排產是「照排班該做幾杯」，扣庫存是「實際出了幾杯」——
-// 有人沒領時這兩個數字本來就該不一樣，不能硬要相等
-const st3 = await api('/api/today/state?date=' + today);
-const cur = st3.state || {};
-const users = await api('/api/users');
-const someone = (users || [])[0];
-if (someone) {
-  await api('/api/today/state', 'PUT',
-    { date: today, state: { ...cur, staffMissed: [someone.id], caseMissed: [] } });
+line('\n━━ 3. 有人點了之後，扣庫存要比排產少 ━━');
+// 排產是「照排班該做幾杯」，扣庫存是「實際被領走幾杯」——
+// 還沒領完時這兩個數字本來就該不一樣，不能硬要相等
+const td3 = await api('/api/today');
+const att3 = (td3.staff || []).filter(x => x.attending === 1 && x.date === today);
+if (!att3.length) { line('  － 今天沒有出勤紀錄，這組略過'); }
+else {
+  await api('/api/today/state', 'PUT', {
+    date: today,
+    state: { ...(orig || {}), staff: [att3[0].user_id], cases: [], staffMissed: [], caseMissed: [] }
+  });
   const plan = await cupsOf(today), real = await expectOf(today);
-  check('未領會讓扣庫存變少，但排產不變', real <= plan,
-        `排產 ${plan} 杯／實扣 ${real} 杯`);
-  await api('/api/today/state', 'PUT',
-    { date: today, state: { ...cur, staffMissed: [], caseMissed: [] } });
+  check('只有一個人領走時，扣的比該做的少', real < plan,
+        `該做 ${plan} 杯／實扣 ${real} 杯`);
+  check('排產不受點選影響', plan > 0, `${plan} 杯`);
+  await clearTaps();
 }
 
 line('\n━━ 4. 還原 ━━');
