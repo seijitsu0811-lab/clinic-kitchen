@@ -1,4 +1,41 @@
-/* 診所廚房管理系統 v2 */
+    // 「缺 150g」但冷凍庫裡有 3000g —— 那不是缺料，是備料還沒做。
+    // 講成一樣的話，人就會跑去買已經有的東西
+    const toBuy = day.short.filter(x => !x.from_pack);
+    const toPrep = day.short.filter(x => x.from_pack);
+    const buyRow = x => `<div class="sp-row">
+        <div class="sp-top">
+          <span class="sp-name">${esc(x.name)}</span>
+          <span class="sp-gap">缺 ${x.gap}${esc(x.unit)}</span>
+          <span class="sp-have">需要 ${x.need}${esc(x.unit)}・剩 ${x.have}${esc(x.unit)}</span>
+        </div>
+        <div class="sp-buy">
+          <span class="sp-lb">買到</span>
+          <input class="sp-in sp-qty" data-id="${x.id}" type="number" min="0" step="0.1"
+                 inputmode="decimal" placeholder="${x.gap}">
+          <span class="sp-u">${esc(x.unit)}</span>
+          <span class="sp-lb">花了</span>
+          <input class="sp-in sp-price" data-id="${x.id}" type="number" min="0" step="1"
+                 inputmode="numeric" placeholder="選填">
+          <span class="sp-u">元</span>
+        </div>
+      </div>`;
+    const prepRow = x => `<div class="sp-row sp-prep">
+        <span class="sp-name">${esc(x.name)}</span>
+        <span class="sp-gap2">還差 ${x.gap}${esc(x.unit)} 的份</span>
+      </div>`;
+
+    document.getElementById('shortList').innerHTML =
+      (toBuy.length
+        ? `<div class="sp-sec">要買的（${toBuy.length} 樣）</div>` + toBuy.map(buyRow).join('')
+        : '') +
+      (toPrep.length
+        ? `<div class="sp-sec sp-sec2">料已經有了，是冷凍包還沒做（${toPrep.length} 樣）</div>`
+          + toPrep.map(prepRow).join('')
+          + `<div class="sp-prephint">這幾樣生料在冰箱裡，不用再買。
+               去「備料」把這一批做出來就好。</div>
+             <button class="btn btn-ghost sp-prepbtn"
+                     onclick="App.closeModal('modalShortage');App.openPrep()">🧊 去備料</button>`
+        : '');/* 診所廚房管理系統 v2 */
 
 const App = (() => {
   let currentUser = null;
@@ -3552,7 +3589,11 @@ const App = (() => {
       total_price: priceOf(el.dataset.id)
     })).filter(l => l.qty > 0);
 
-    if (!lines.length) return alert('還沒填任何數量。');
+    if (!lines.length) {
+      return alert(document.querySelector('#shortList .sp-qty')
+        ? '還沒填任何數量。'
+        : '今天沒有要買的東西 —— 缺的那幾樣料都在，只是冷凍包還沒做。');
+    }
 
     const withPrice = lines.filter(l => l.total_price !== '');
     const noPrice   = lines.filter(l => l.total_price === '');
@@ -3585,13 +3626,18 @@ const App = (() => {
     const day = (f.days || []).find(x => x.date === d.date);
     if (!day || day.cups === 0 || day.feasible) { el.innerHTML = ''; return; }
 
-    const top = day.short.slice(0, 5);
+    const buyN  = day.short.filter(x => !x.from_pack).length;
+    const prepN = day.short.length - buyN;
+    const top = day.short.filter(x => !x.from_pack).slice(0, 5);
     el.innerHTML = `<div class="today-short">
-      <div class="ts-head">⚠ 今天的料不齊　<b>${day.short.length} 樣不夠</b></div>
-      <div class="ts-sub">${esc(day.plan_name || '')} ${day.cups} 杯做不完整。缺：</div>
+      <div class="ts-head">⚠ 今天的料不齊　<b>${
+        [buyN ? `要買 ${buyN} 樣` : '', prepN ? `備料 ${prepN} 樣` : ''].filter(Boolean).join('、')
+      }</b></div>
+      <div class="ts-sub">${esc(day.plan_name || '')} ${day.cups} 杯做不完整。${
+        buyN ? '要買：' : '生料都在，是冷凍包還沒做。'}</div>
       <div class="ts-chips">
         ${top.map(x => `<span class="ts-chip">${esc(x.name)} 缺 ${x.gap}${esc(x.unit)}</span>`).join('')}
-        ${day.short.length > 5 ? `<span class="ts-chip more">…另 ${day.short.length - 5} 樣</span>` : ''}
+        ${buyN > 5 ? `<span class="ts-chip more">…另 ${buyN - 5} 樣</span>` : ''}
       </div>
       <div class="ts-acts">
         <button class="ts-go ts-buy" onclick="App.openShortage()">✓ 登記已買的</button>
