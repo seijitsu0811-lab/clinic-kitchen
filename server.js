@@ -3129,7 +3129,7 @@ function cupsOnDate(date) {
   db.prepare(
     `SELECT co.prescription_id, co.cups, co.powder_type, p.name
        FROM case_orders co JOIN prescriptions p ON p.id=co.prescription_id
-      WHERE co.date=? AND COALESCE(p.daily_cups,0)=0`
+      WHERE co.date=?`
   ).all(date).forEach(c => {
     const pm = (c.powder_type === '罐裝' || c.powder_type === '全配方') ? 1.1 : 1.0;
     out.push({ rxId: c.prescription_id, cups: c.cups, powderMult: pm, why: c.name });

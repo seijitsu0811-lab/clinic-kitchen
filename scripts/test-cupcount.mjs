@@ -61,6 +61,34 @@ if (staffRx) {
         `${await cupsOf(today)} / ${before}`);
 }
 
+line('\n━━ 2.5 每日固定供應又另外開單 ━━');
+// 正式環境就是這樣：AW 設了每日 1 杯，同時每天還會另外建一張單。
+// 兩邊各自去重，結果 AW 從排產裡整個消失 —— 那杯照做，卻沒人算料。
+// 規則要一致：有單就以單為準，沒單才用每日預設值
+const dailyRx = (await api('/api/prescriptions')).find(r => (r.daily_cups || 0) > 0);
+if (!dailyRx) { line('  － 沒有每日固定供應的處方，這組略過'); }
+else {
+  const base = await cupsOf(today);
+  const o2 = await api('/api/today/cases', 'POST',
+    { date: today, prescription_id: dailyRx.id, cups: 2, powder_type: '' });
+  const withOrder = await cupsOf(today);
+  const exp2 = await expectOf(today);
+
+  // 預設 1 杯 → 開一張 2 杯的單，總數應該只 +1（單取代預設，不是疊加）
+  const delta = withOrder - base;
+  check(`${dailyRx.code} 開單後不會憑空消失`, withOrder >= base,
+        `${base} → ${withOrder}` + (withOrder >= base ? '' : ' ★ 那杯照做卻沒人算料'));
+  check('單取代每日預設值，不是疊加', Math.abs(delta - (2 - dailyRx.daily_cups)) < 0.05,
+        `預設 ${dailyRx.daily_cups} 杯、單 2 杯 → 總數 ${delta >= 0 ? '+' : ''}${delta}`);
+  check('排產與扣庫存仍然一致', Math.abs(withOrder - exp2) < 0.05,
+        `做 ${withOrder} 杯／扣 ${exp2} 杯`);
+
+  const id2 = o2.id || o2.order_id;
+  if (id2) await api('/api/today/cases/' + id2, 'DELETE');
+  check('刪掉單之後回到每日預設值', Math.abs((await cupsOf(today)) - base) < 0.05,
+        `${await cupsOf(today)} / ${base}`);
+}
+
 line('\n━━ 3. 標了例外時，扣庫存要比排產少 ━━');
 // 排產是「照排班該做幾杯」，扣庫存是「實際出了幾杯」——
 // 有人沒領時這兩個數字本來就該不一樣，不能硬要相等
