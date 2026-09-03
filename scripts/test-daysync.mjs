@@ -38,7 +38,7 @@ const grab = (name, kind) => {
   return m[0];
 };
 const mergeSrc = [
-  grab('SET_KEYS'), grab('REPLACE_KEYS'), grab('_same'),
+  grab('SET_KEYS'), grab('APPEND_ONLY_KEYS'), grab('REPLACE_KEYS'), grab('_same'),
   grab('_mergeOnto', 'fn'),
   'return { _mergeOnto, SET_KEYS, REPLACE_KEYS, _same };'
 ].join('\n');
@@ -116,6 +116,30 @@ check('扣過的批次紀錄還在',
       (after4.deductedBatches || []).includes('s_1|s_2|s_3'),
       (after4.deductedBatches || []).includes('s_1|s_2|s_3')
         ? '' : '★ 這一批會被扣第二次');
+
+line('\n━━ 4.5 「已經扣過」只進不出 ━━');
+// 這是防止同一批被扣兩次的唯一一道防線。任何一台裝置的畫面倒退
+// （重新整理、讀到舊的一份），合併時都不能把它刪掉 ——
+// 2026-09-03 當天帳上多扣了 15 杯就是這樣一路疊起來的
+await writeState({ ...blank });
+const b45 = await readState();
+await deviceSave(b45, { ...b45, deductedCases: [111, 222], deductedBatches: ['s_1|s_2'] });
+const marked = await readState();
+check('先記下兩筆已扣', (marked.deductedCases || []).length === 2);
+
+// 另一台的畫面倒退了：它手上那份還沒有這兩筆，而且它自己也沒有
+// 關鍵：那台載入時「有」這兩筆（base 有），畫面倒退後手上沒了（mine 沒有）——
+// 用 base 沒有的情境測是測不到的，那種情況合併本來就不會動它
+const staleBase = await readState();
+const stale = { ...staleBase, deductedCases: [], deductedBatches: [], notes: { z: '1' } };
+await deviceSave(staleBase, stale);
+const after45 = await readState();
+check('倒退的那台不會把已扣紀錄洗掉',
+      (after45.deductedCases || []).length === 2 &&
+      (after45.deductedBatches || []).length === 1,
+      `deductedCases = [${after45.deductedCases}]` +
+      ((after45.deductedCases || []).length === 2 ? '' : ' ★ 防線沒了，同一批會被扣第二次'));
+check('它自己改的別的東西還是存得進去', after45.notes && after45.notes.z === '1');
 
 line('\n━━ 5. 還原 ━━');
 await writeState(orig || blank);

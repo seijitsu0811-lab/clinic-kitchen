@@ -156,8 +156,13 @@ const App = (() => {
   // 直接把整包蓋上去的話，別人在這段期間做的事會被無聲抹掉
   let _serverBase = null;
 
-  const SET_KEYS = ['staff', 'cases', 'staffMissed', 'caseMissed',
-                    'deductedBatches', 'deductedCases'];
+  // 可以來回切換的：點了又取消，合併時要跟著拿掉
+  const SET_KEYS = ['staff', 'cases', 'staffMissed', 'caseMissed'];
+  // 「已經扣過庫存」的紀錄。這是防止同一批被扣兩次的唯一一道防線，
+  // 只能加、不能減 —— 任何一台裝置的畫面倒退（重新整理、讀到舊的一份），
+  // 都可能讓它在合併時被刪掉，然後另一台就會再扣一次。
+  // 2026-09-03 當天帳上多扣了 15 杯，就是這樣一路疊起來的
+  const APPEND_ONLY_KEYS = ['deductedBatches', 'deductedCases'];
   const REPLACE_KEYS = ['batchGroups', 'schOrder', 'notes', 'qc'];
   const _same = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 
@@ -171,6 +176,10 @@ const App = (() => {
       const cur = new Set((out[k]) || []);
       [...m].forEach(v => { if (!b.has(v)) cur.add(v); });      // 我加的
       [...b].forEach(v => { if (!m.has(v)) cur.delete(v); });   // 我拿掉的
+      out[k] = [...cur];
+    });
+    APPEND_ONLY_KEYS.forEach(k => {
+      const cur = new Set([...(out[k] || []), ...((mine && mine[k]) || [])]);
       out[k] = [...cur];
     });
     REPLACE_KEYS.forEach(k => {
