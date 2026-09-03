@@ -3056,6 +3056,28 @@ function planRxIds(group) {
 }
 
 // 目前還剩幾份備品。做了幾份 − 從第一批之後已經出了幾杯
+// 從某一天「開始」還有幾份備品可用 —— 那一天自己的用量還沒扣。
+// packStatus 的 remaining 是「到 asOf 為止（含當天）用完之後」的數字，
+// 逐日預測再從它扣一次當天用量，等於同一天扣兩次：
+// 2026-09-03 做了 24 份、當天要用 14 份，狀態頁說剩 10 份，
+// 預測卻說備品 0、還要再備 5 樣 —— 叫人去做已經做好的東西
+function packAvailableFrom(group, fromDate) {
+  const batches = db.prepare(
+    `SELECT date, servings FROM prep_batches
+      WHERE group_code=? AND COALESCE(reversed_at,'')='' AND date<=?
+      ORDER BY date, id`
+  ).all(group, fromDate);
+  if (!batches.length) return 0;
+  const rxIds = new Set(planRxIds(group));
+  const since = batches[0].date;
+  let usedBefore = 0;
+  for (let d = since; d < fromDate; d = addDays(d, 1)) {
+    usedBefore += cupsOnDate(d).filter(x => rxIds.has(x.rxId)).reduce((t, x) => t + x.cups, 0);
+  }
+  const made = batches.reduce((t, b) => t + b.servings, 0);
+  return Math.max(0, Math.round((made - usedBefore) * 10) / 10);
+}
+
 function packStatus(group, asOf) {
   const upto = asOf || today();
   const batches = db.prepare(
@@ -3257,7 +3279,8 @@ function buildForecast(daysAhead) {
     ).all().map(r => r.id)
   );
   const packGroupRx = new Set(planRxIds('主方案'));
-  let packLeft = packStatus('主方案', t).remaining;
+  // 從今天「開始」還剩幾份 —— 今天的用量在下面的迴圈裡才扣，不能先扣掉
+  let packLeft = packAvailableFrom('主方案', t);
 
   for (let i = 0; i < horizon; i++) {
     const date = addDays(t, i);
