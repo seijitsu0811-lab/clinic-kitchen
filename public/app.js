@@ -2262,7 +2262,9 @@ const App = (() => {
     catch (e) { box.innerHTML = ''; return; }
     if (!d.rows.length) {
       box.innerHTML = `<div class="pd-empty">採購籃是空的。
-        在 <a href="/market.html">採購單</a> 勾「買了」，回來這裡就能一次登記金額。</div>`;
+        在 <a href="/market.html">採購單</a> 勾「買了」，回來這裡就能一次登記金額。<br>
+        已經買回來、但沒走採購頁的話，直接帶入待買清單。</div>`
+        + `<button class="btn btn-ghost" style="width:100%;margin-top:8px" onclick="App.fillPurchaseDraft()">↧ 帶入待買清單</button>`;
       return;
     }
     box.innerHTML = `
@@ -2279,7 +2281,20 @@ const App = (() => {
       </div>
       <button class="btn btn-primary" style="width:100%;margin-top:10px"
               onclick="App.commitPurchaseDraft()">整批登記進貨</button>
-      <div class="pd-note">金額沒填的會留在籃子裡，下次再登記 —— 有時候就是先記一部分，剩下的等發票。</div>`;
+      <button class="btn btn-ghost" style="width:100%;margin-top:8px" onclick="App.fillPurchaseDraft()">↧ 帶入待買清單</button>
+      <div class="pd-note">金額沒填的會留在籃子裡，下次再登記 —— 有時候就是先記一部分，剩下的等發票。
+        「帶入」不會覆蓋已經在籃子裡的量。</div>`;
+  }
+
+  // 東西已經買回來、但沒經過採購頁勾選時用這個。
+  // 否則要一樣一樣開視窗，十幾樣就是十幾次，於是沒有人會做
+  async function fillPurchaseDraft() {
+    try {
+      const r = await api('/api/purchase/draft/fill', 'POST', {});
+      await _renderPurchaseDraft();
+      if (!r.added && !r.kept) alert('目前沒有待買的東西。');
+      else if (r.kept) alert(`帶入 ${r.added} 樣（${r.kept} 樣本來就在籃子裡，沒有覆蓋）。`);
+    } catch (e) { alert(e.message); }
   }
 
   async function commitPurchaseDraft() {
@@ -4023,6 +4038,7 @@ const App = (() => {
     openEditRxIngredients, saveRxIngredients,
     loadInventory, openEditInv, saveInventory, togglePurchaseHistory,
     openAddIngredient, addIngredient, openPurchase, savePurchase, commitPurchaseDraft,
+    fillPurchaseDraft,
     loadCost, switchCostTab, prevCostMonth, nextCostMonth,
     openSettings, saveSettings,
     openAddUser, addUser,

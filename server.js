@@ -2547,6 +2547,29 @@ app.put('/api/purchase/draft', (req, res) => {
   res.json({ ok: true });
 });
 
+// 把待買清單整批倒進籃子。用在「已經買回來了、但沒走採購頁勾選」的情況 ——
+// 否則要一樣一樣開視窗登記，十幾樣就是十幾次，於是沒有人會做
+app.post('/api/purchase/draft/fill', (req, res) => {
+  const date = req.body.date || today();
+  const f = buildForecast(28);
+  const src = f.ingredients.filter(i => i.buy > 0).map(i => ({ id: i.id, qty: i.buy }));
+  if (!src.length) return res.json({ ok: true, added: 0, kept: 0 });
+
+  let added = 0, kept = 0;
+  const ins = db.prepare(
+    `INSERT INTO purchase_draft (date,ingredient_id,qty,note,user_id)
+     VALUES (?,?,?,?,?) ON CONFLICT(date,ingredient_id) DO NOTHING`
+  );
+  tx(() => {
+    src.forEach(x => {
+      // 已經在籃子裡的不覆蓋 —— 那可能是採購的人在市場改過的實際量
+      const r = ins.run(date, x.id, x.qty, '', req.kitchenUser ? req.kitchenUser.id : null);
+      if (r.changes) added++; else kept++;
+    });
+  });
+  res.json({ ok: true, added, kept });
+});
+
 // 整批登記。金額沒填的那幾行留在籃子裡，不要默默丟掉 ——
 // 有時候就是先登記一部分，剩下的等發票
 app.post('/api/purchase/commit', (req, res) => {

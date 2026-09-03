@@ -50,6 +50,28 @@ d = await draft();
 check('取消的會離開籃子', d.count === 1 && d.rows[0].ingredient_id === a.id);
 await api('/api/purchase/draft', 'PUT', { ingredient_id: b.id, qty: 300 });   // 放回去
 
+line('\n━━ 3.5 已經買回來、沒走採購頁時直接帶入 ━━');
+// 逐樣開視窗要開十幾次 —— 那正是帳面長期空著的原因
+for (const r of (await draft()).rows)
+  await api('/api/purchase/draft', 'PUT', { ingredient_id: r.ingredient_id, remove: 1 });
+const fl = await api('/api/purchase/draft/fill', 'POST', {});
+const filled = await draft();
+check('待買清單整批進籃子', fl.added > 0 && filled.count === fl.added, `${fl.added} 樣`);
+check('帶進來的量就是建議量', filled.rows.every(r => r.qty > 0));
+// 採購的人在市場改過的實際量不能被蓋掉
+await api('/api/purchase/draft', 'PUT',
+  { ingredient_id: filled.rows[0].ingredient_id, qty: 999 });
+const fl2 = await api('/api/purchase/draft/fill', 'POST', {});
+const keptQty = (await draft()).rows
+  .find(r => r.ingredient_id === filled.rows[0].ingredient_id).qty;
+check('再帶一次不會覆蓋已改過的量', keptQty === 999 && fl2.added === 0,
+      `新增 ${fl2.added}／保留 ${fl2.kept}，那一樣仍是 ${keptQty}`);
+// 還原成第 4 組期待的起點
+for (const r of (await draft()).rows)
+  await api('/api/purchase/draft', 'PUT', { ingredient_id: r.ingredient_id, remove: 1 });
+await api('/api/purchase/draft', 'PUT', { ingredient_id: a.id, qty: 820 });
+await api('/api/purchase/draft', 'PUT', { ingredient_id: b.id, qty: 300 });
+
 line('\n━━ 4. 整批登記 ━━');
 const before = await inv();
 const r = await api('/api/purchase/commit', 'POST', {
