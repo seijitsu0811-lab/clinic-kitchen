@@ -2854,6 +2854,37 @@ function settleRecentDays(userId) {
   return results;
 }
 
+// 某一天實際扣了哪些。手動補扣之前一定要先看這個 ——
+// 看不到已經扣過什麼就補扣，等於把同一批料扣兩次
+app.get('/api/consumption', (req, res) => {
+  const date = req.query.date || today();
+  const rows = db.prepare(
+    `SELECT cl.*, p.code rx_code, p.name rx_name, u.name user_name
+       FROM consumption_log cl
+       LEFT JOIN prescriptions p ON p.id = cl.prescription_id
+       LEFT JOIN users u ON u.id = cl.user_id
+      WHERE cl.date = ? ORDER BY cl.id`
+  ).all(date);
+  const live = rows.filter(r => !r.reversed_at);
+  const byRx = {};
+  live.forEach(r => {
+    const k = r.rx_code || r.prescription_id;
+    if (!byRx[k]) byRx[k] = { rx_code: r.rx_code, rx_name: r.rx_name, cups: 0 };
+    byRx[k].cups += r.cups;
+  });
+  res.json({
+    date,
+    total_cups: Math.round(live.reduce((s, r) => s + r.cups, 0) * 10) / 10,
+    by_rx: Object.values(byRx),
+    rows: rows.map(r => ({
+      id: r.id, rx_code: r.rx_code, rx_name: r.rx_name, cups: r.cups,
+      powder_type: r.powder_type || '', source: r.source, note: r.note || '',
+      by: r.user_name || '—', at: r.created_at,
+      reversed: !!r.reversed_at
+    }))
+  });
+});
+
 // 今天「應該扣多少」——把例外扣掉之後的結果。
 // 這條規則決定隔天自動補扣的數量，攤開來才查得到為什麼是這個數字
 app.get('/api/consumption/expected', (req, res) => {
