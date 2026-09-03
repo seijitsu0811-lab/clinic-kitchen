@@ -220,6 +220,15 @@ try {
   // 有些人喝得不固定（沒有排定的日子，但一週大概幾杯）。
   // daily_cups 是「每個工作日幾杯」，對這種人算出來會失真
   "ALTER TABLE prescriptions ADD COLUMN weekly_cups REAL DEFAULT 0",
+  // 蔬果方案是共用的，改一次全體生效 —— 比改單一處方影響更大，
+  // 所以更需要留痕。原本只有處方有歷史，方案是唯一沒有的地方
+  `CREATE TABLE IF NOT EXISTS produce_plan_history (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     plan_id INTEGER NOT NULL, summary TEXT DEFAULT '',
+     before_json TEXT DEFAULT '', after_json TEXT DEFAULT '',
+     user_id INTEGER, user_name TEXT DEFAULT '',
+     changed_at TEXT DEFAULT (datetime('now','localtime')))`,
+  "CREATE INDEX IF NOT EXISTS idx_plan_hist ON produce_plan_history(plan_id, id DESC)",
   // 備料批次：週一（或週四）一次把整段期間的量處理好，做成 N 份冷凍核心包。
   // 原料在備料當下就離開冰箱，但系統原本要等出餐才扣 —— 帳面因此對不上，
   // 而且會誤報「今天缺藍莓」（藍莓其實已經在冷凍包裡了）
@@ -2765,6 +2774,96 @@ app.post('/api/consumption/:id/reverse', (req, res) => {
 });
 
 // 庫存充足性檢查：依星期幾遞減的本週剩餘需求 + 安全緩衝 7 杯
+// ── 蔬果方案的編修 ──────────────────────────────────────────
+// 方案改一次全體生效（員工、AW、所有引用它的個案），
+// 影響比改單一處方更大 —— 所以一樣要留下「誰、什麼時候、從幾克改成幾克」
+function planSnapshot(planId) {
+  const p = db.prepare('SELECT code, name, group_code, rotation_index, active FROM produce_plans WHERE id=?')
+              .get(planId) || {};
+  const items = db.prepare(
+    `SELECT i.name, ppi.qty_per_cup, COALESCE(ppi.prep,'') prep, COALESCE(ppi.prep_stage,'') prep_stage
+       FROM produce_plan_items ppi JOIN ingredients i ON i.id=ppi.ingredient_id
+      WHERE ppi.plan_id=? AND ppi.qty_per_cup>0 ORDER BY i.name`
+  ).all(planId);
+  return { ...p, items };
+}
+
+function recordPlanChange(planId, before, req) {
+  try {
+    const after = planSnapshot(planId);
+    const summary = diffSummary(before, after);   // 與處方共用同一套差異描述
+    if (!summary) return;
+    db.prepare(
+      `INSERT INTO produce_plan_history (plan_id, summary, before_json, after_json, user_id, user_name)
+       VALUES (?,?,?,?,?,?)`
+    ).run(planId, summary, JSON.stringify(before), JSON.stringify(after),
+          req && req.kitchenUser ? req.kitchenUser.id : null,
+          req && req.kitchenUser ? req.kitchenUser.name : '');
+  } catch (e) { console.error('方案留痕失敗', e.message); }
+}
+
+app.get('/api/produce-plans', (req, res) => {
+  const group = req.query.group || '主方案';
+  const plans = db.prepare(
+    'SELECT * FROM produce_plans WHERE group_code=? AND active=1 ORDER BY rotation_index'
+  ).all(group);
+  res.json(plans.map(p => ({
+    ...p,
+    items: db.prepare(
+      `SELECT ppi.ingredient_id, ppi.qty_per_cup, COALESCE(ppi.prep,'') prep,
+              COALESCE(ppi.prep_stage,'') prep_stage, i.name, i.unit, i.category
+         FROM produce_plan_items ppi JOIN ingredients i ON i.id=ppi.ingredient_id
+        WHERE ppi.plan_id=? ORDER BY i.category, i.name`
+    ).all(p.id)
+  })));
+});
+
+// 整批取代這個方案的蔬果。只收蔬菜與水果 ——
+// 機能配料屬於個人，混進方案會讓所有人一起被改到
+app.put('/api/produce-plans/:id/items', (req, res) => {
+  const plan = db.prepare('SELECT id FROM produce_plans WHERE id=?').get(req.params.id);
+  if (!plan) return res.status(404).json({ error: '找不到這個方案' });
+  const items = Array.isArray(req.body) ? req.body : (req.body.items || []);
+
+  const bad = [];
+  items.forEach(it => {
+    const ing = db.prepare('SELECT name, category FROM ingredients WHERE id=?').get(it.ingredient_id);
+    if (!ing) bad.push('#' + it.ingredient_id);
+    else if (!['蔬菜', '水果'].includes(ing.category)) bad.push(ing.name + '（' + ing.category + '）');
+  });
+  if (bad.length) return res.status(400).json({ error: '方案只放蔬菜與水果：' + bad.join('、') });
+
+  const before = planSnapshot(plan.id);
+  tx(() => {
+    db.prepare('DELETE FROM produce_plan_items WHERE plan_id=?').run(plan.id);
+    const ins = db.prepare(
+      `INSERT INTO produce_plan_items (plan_id,ingredient_id,qty_per_cup,prep,prep_stage)
+       VALUES (?,?,?,?,?)`);
+    items.forEach(it => {
+      if (Number(it.qty_per_cup) > 0)
+        ins.run(plan.id, it.ingredient_id, Number(it.qty_per_cup),
+                (it.prep || '').trim(), (it.prep_stage || '').trim());
+    });
+  });
+  recordPlanChange(plan.id, before, req);
+  const after = planSnapshot(plan.id);
+  res.json({ ok: true, items: after.items.length,
+             veg: after.items.length,
+             summary: diffSummary(before, after) });
+});
+
+app.get('/api/produce-plans/:id/history', (req, res) => {
+  const rows = db.prepare(
+    `SELECT h.*, u.name AS by_name FROM produce_plan_history h
+       LEFT JOIN users u ON u.id = h.user_id
+      WHERE h.plan_id=? ORDER BY h.id DESC LIMIT 50`
+  ).all(req.params.id);
+  res.json({ total: rows.length, rows: rows.map(r => ({
+    id: r.id, changed_at: r.changed_at, summary: r.summary,
+    by: r.by_name || r.user_name || '—'
+  })) });
+});
+
 // ── 備料批次 ────────────────────────────────────────────────
 // 冷凍核心包：備料當下把原料變成 N 份備品，之後出餐消耗備品、不再碰原料。
 // 備料可能一週做一次、也可能週一做一批週四再補一批 ——

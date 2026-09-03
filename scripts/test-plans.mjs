@@ -45,7 +45,13 @@ line('\n━━ 3. AW 保有自己的機能配料 ━━');
 const awAll = await recipe(byCode['RX-01'].id);
 ['AstragIN', '益生菌', '燕麥', '薑黃粉', '苦茶油'].forEach(n =>
   check(`AW 仍有 ${n}`, awAll.includes(n)));
-check('AW 也吃到方案的蔬果', awAll.includes('羽衣甘藍') && awAll.includes('芭樂'));
+// 跟當期方案的實際內容比，不要寫死品項 ——
+// 方案會因為現場買不到而換品項（甜菜根換牛番茄就是這樣），寫死就會假失敗
+const curPlan = await api('/api/rotation/plan');
+const curPlanNames = curPlan.items.filter(i => i.qty_per_cup > 0).map(i => i.name);
+const notInAw = curPlanNames.filter(n => !awAll.includes(n));
+check('AW 吃到方案的每一樣蔬果', notInAw.length === 0,
+      notInAw.join('、') || `${curPlanNames.length} 樣都在`);
 
 line('\n━━ 4. 其他個案完全不受影響 ━━');
 const others = rxs.filter(r => r.active === 1 && !r.produce_plan_group
