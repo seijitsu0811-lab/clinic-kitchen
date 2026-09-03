@@ -2612,6 +2612,43 @@ app.post('/api/purchase/commit', (req, res) => {
   res.json({ ok: true, saved, skipped });
 });
 
+// 登記錯食材時改過去。買的是小黃瓜卻登記在大黃瓜上 ——
+// 沒有這條路的話，錯的那筆會一直留著，而且庫存兩邊都不對
+app.post('/api/purchase/:id/move', (req, res) => {
+  const row = db.prepare('SELECT * FROM purchase_log WHERE id=?').get(req.params.id);
+  if (!row) return res.status(404).json({ error: '找不到這筆進貨' });
+  const to = Number(req.body.ingredient_id);
+  const dst = db.prepare('SELECT id,name FROM ingredients WHERE id=?').get(to);
+  if (!dst) return res.status(400).json({ error: '找不到要改成的食材' });
+  if (dst.id === row.ingredient_id) return res.status(400).json({ error: '本來就是這一樣' });
+
+  const src = db.prepare('SELECT name FROM ingredients WHERE id=?').get(row.ingredient_id);
+  tx(() => {
+    // 原本那樣扣回去、新的那樣加上來
+    db.prepare('UPDATE inventory SET qty=qty-?, updated_at=datetime(\'now\',\'localtime\') WHERE ingredient_id=?')
+      .run(row.qty, row.ingredient_id);
+    db.prepare(
+      `INSERT INTO inventory (ingredient_id,qty,updated_at) VALUES (?,?,datetime('now','localtime'))
+       ON CONFLICT(ingredient_id) DO UPDATE SET qty=qty+excluded.qty, updated_at=excluded.updated_at`
+    ).run(to, row.qty);
+    db.prepare('UPDATE purchase_log SET ingredient_id=? WHERE id=?').run(to, row.id);
+  });
+  res.json({ ok: true, from: src ? src.name : '', to: dst.name, qty: row.qty });
+});
+
+// 整筆登記錯（重複登記、根本沒買）時刪掉，庫存跟著扣回去
+app.delete('/api/purchase/:id', (req, res) => {
+  const row = db.prepare('SELECT * FROM purchase_log WHERE id=?').get(req.params.id);
+  if (!row) return res.status(404).json({ error: '找不到這筆進貨' });
+  const ing = db.prepare('SELECT name FROM ingredients WHERE id=?').get(row.ingredient_id);
+  tx(() => {
+    db.prepare('UPDATE inventory SET qty=qty-?, updated_at=datetime(\'now\',\'localtime\') WHERE ingredient_id=?')
+      .run(row.qty, row.ingredient_id);
+    db.prepare('DELETE FROM purchase_log WHERE id=?').run(row.id);
+  });
+  res.json({ ok: true, name: ing ? ing.name : '', qty: row.qty });
+});
+
 // 食材採購歷史
 app.get('/api/inventory/:id/purchases', (req, res) => {
   const rows = db.prepare(

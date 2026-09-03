@@ -2563,17 +2563,51 @@ const App = (() => {
         const purposeTag = r.purpose && r.purpose !== '精力湯'
           ? `<span class="ph-purpose">${esc(r.purpose)}</span>` : '';
         const typeTag = r.item_type === '用具' ? '<span class="ph-purpose" style="background:rgba(175,82,222,.1);color:var(--purple)">用具</span>' : '';
-        return `<div class="ph-row">
+        return `<div class="ph-row" id="phr_${r.id}">
           <span class="ph-date">${r.purchased_at}</span>
           <span class="ph-qty">${r.qty}${r.unit||''}</span>
           <span class="ph-price">NT$${r.total_price}</span>
           <span class="ph-uc">${uc}</span>
           ${purposeTag}${typeTag}
+          <button class="ph-fix" title="登記錯食材"
+                  onclick="App.movePurchase(${r.id}, ${ingId})">改</button>
+          <button class="ph-fix ph-del" title="這筆根本沒買"
+                  onclick="App.deletePurchase(${r.id}, ${ingId})">刪</button>
         </div>`;
       }).join('')}</div>`;
     }
     box.style.display = '';
     btn.textContent = '📋 收起';
+  }
+
+  // 買的是小黃瓜卻登記在大黃瓜上 —— 沒有這條路的話，
+  // 錯的那筆會一直留著，而且兩邊庫存都不對
+  async function movePurchase(logId, ingId) {
+    const row = document.getElementById('phr_' + logId);
+    if (!row || row.querySelector('.ph-pick')) return;
+    const list = (await api('/api/ingredients')).filter(i => i.id !== ingId);
+    const sel = document.createElement('select');
+    sel.className = 'ph-pick';
+    sel.innerHTML = '<option value="">改成哪一樣…</option>' +
+      list.map(i => `<option value="${i.id}">${esc(i.name)}</option>`).join('');
+    sel.onchange = async () => {
+      if (!sel.value) return;
+      try {
+        const r = await api(`/api/purchase/${logId}/move`, 'POST', { ingredient_id: Number(sel.value) });
+        alert(`${r.qty} 已從「${r.from}」改到「${r.to}」，兩邊庫存都調好了。`);
+        loadInventory();
+      } catch (e) { alert(e.message); }
+    };
+    row.appendChild(sel);
+  }
+
+  async function deletePurchase(logId, ingId) {
+    if (!confirm('刪掉這筆進貨？庫存會跟著扣回去。')) return;
+    try {
+      const r = await api('/api/purchase/' + logId, 'DELETE');
+      alert(`已刪除：${r.name} ${r.qty}，庫存已扣回。`);
+      loadInventory();
+    } catch (e) { alert(e.message); }
   }
 
   // ── 人力記錄 ────────────────────────────────────────────
@@ -4144,7 +4178,7 @@ const App = (() => {
     deleteCase, openAddCase, openEditCase, addCase,
     loadRx, openAddRx, openEditRx, saveRx, deleteRx, duplicateRx, openRxHistory, useOwnRx,
     openEditRxIngredients, saveRxIngredients,
-    loadInventory, openEditInv, saveInventory, togglePurchaseHistory,
+    loadInventory, openEditInv, saveInventory, togglePurchaseHistory, movePurchase, deletePurchase,
     openAddIngredient, addIngredient, openPurchase, savePurchase, commitPurchaseDraft,
     fillPurchaseDraft,
     openShortage, saveShortagePurchase,

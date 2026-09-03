@@ -26,7 +26,7 @@ const GLOBALS = new Set([
   // 關鍵字，後面接括號長得像呼叫
   'if', 'for', 'while', 'switch', 'catch', 'return', 'typeof', 'function', 'await',
   'new', 'delete', 'void', 'do', 'else', 'case', 'in', 'of', 'instanceof', 'yield',
-  'throw', 'with', 'import', 'super'
+  'throw', 'with', 'import', 'super', 'async', 'static', 'get', 'set'
 ]);
 
 // 註解裡提到某個函式名不是呼叫（「和伺服器的 boxesForOrder() 是同一條規則」），

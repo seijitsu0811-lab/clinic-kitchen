@@ -135,6 +135,45 @@ const after6 = await inv();
 check('沒登記的庫存不動', Math.abs(after6[b.id] - before6[b.id]) < 0.05,
       `核桃 ${before6[b.id]} → ${after6[b.id]}`);
 
+line('\n━━ 6.5 登記錯食材可以改過去 ━━');
+// 買的是小黃瓜卻登記在大黃瓜上。沒有這條路的話，錯的那筆會一直留著，
+// 而且兩邊庫存都不對 —— 一邊多了沒買的，一邊少了買到的
+await api('/api/purchase/draft', 'PUT', { ingredient_id: a.id, remove: 1 }).catch(() => {});
+const beforeMove = await inv();
+await api('/api/purchase/commit', 'POST', {
+  lines: [{ ingredient_id: a.id, qty: 250, total_price: 125 }]
+});
+const wrong = (await api(`/api/inventory/${a.id}/purchases`))
+  .find(x => Math.abs(x.qty - 250) < 0.05 && Number(x.total_price) === 125);
+check('先製造一筆登記錯的', !!wrong, wrong ? `id=${wrong.id}` : '建不出來');
+
+const mv = await api(`/api/purchase/${wrong.id}/move`, 'POST', { ingredient_id: b.id });
+const afterMove = await inv();
+check('改到另一樣食材', mv.to && mv.from !== mv.to, `${mv.from} → ${mv.to}`);
+check('原本那樣的庫存扣回去', Math.abs(afterMove[a.id] - beforeMove[a.id]) < 0.05,
+      `${beforeMove[a.id]} → ${afterMove[a.id]}（不能留著沒買的量）`);
+check('改成的那樣庫存加上來', Math.abs(afterMove[b.id] - beforeMove[b.id] - 250) < 0.05,
+      `${beforeMove[b.id]} → ${afterMove[b.id]}`);
+check('紀錄跟著搬過去',
+      (await api(`/api/inventory/${b.id}/purchases`)).some(x => x.id === wrong.id) &&
+      !(await api(`/api/inventory/${a.id}/purchases`)).some(x => x.id === wrong.id),
+      '成本要算在對的食材上');
+
+line('\n━━ 6.6 根本沒買的那筆可以刪掉 ━━');
+const del = await api('/api/purchase/' + wrong.id, 'DELETE');
+const afterDel = await inv();
+check('刪得掉', del.ok);
+check('庫存跟著扣回去', Math.abs(afterDel[b.id] - beforeMove[b.id]) < 0.05,
+      `${afterMove[b.id]} → ${afterDel[b.id]}（回到登記之前）`);
+check('紀錄不見了',
+      !(await api(`/api/inventory/${b.id}/purchases`)).some(x => x.id === wrong.id));
+let gone = false;
+try { await api('/api/purchase/' + wrong.id, 'DELETE'); }
+catch (e) { gone = /404/.test(e.message); }
+check('刪第二次會擋下來', gone, '不然庫存會被重複扣');
+
+await api('/api/purchase/draft', 'PUT', { ingredient_id: b.id, remove: 1 }).catch(() => {});
+
 line('\n━━ 7. 還原 ━━');
 await api('/api/purchase/draft', 'PUT', { ingredient_id: b.id, remove: 1 });
 // 把這次加進去的量用盤點扣回來
