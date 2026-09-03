@@ -3496,8 +3496,12 @@ const App = (() => {
     if (!force && (Date.now() < _shortQuiet || _shortSeen(day.date, sig))) return;
     const box = document.getElementById('modalShortage');
     if (!box) return;
+    // 標題也要跟橫幅講一樣的話 —— 一邊寫「7 樣不夠」、一邊分成 2＋5，只會更亂
+    const nBuy = day.short.filter(x => !x.from_pack).length;
+    const nPrep = day.short.length - nBuy;
     document.getElementById('shortHead').textContent =
-      `${day.plan_name || ''} ${day.cups} 杯，${day.short.length} 樣不夠`;
+      `${day.plan_name || ''} ${day.cups} 杯｜` +
+      [nBuy ? `要買 ${nBuy} 樣` : '', nPrep ? `備料 ${nPrep} 樣` : ''].filter(Boolean).join('、');
     _shortDay = day;
     const dt = document.getElementById('shortDate');
     if (dt && !dt.value) dt.value = day.date;
