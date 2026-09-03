@@ -2961,12 +2961,18 @@ app.put('/api/produce-plans/:id/items', (req, res) => {
 });
 
 app.get('/api/produce-plans/:id/history', (req, res) => {
+  const limit = Math.min(Math.max(Number(req.query.limit || 50), 1), 200);
   const rows = db.prepare(
     `SELECT h.*, u.name AS by_name FROM produce_plan_history h
        LEFT JOIN users u ON u.id = h.user_id
-      WHERE h.plan_id=? ORDER BY h.id DESC LIMIT 50`
-  ).all(req.params.id);
-  res.json({ total: rows.length, rows: rows.map(r => ({
+      WHERE h.plan_id=? ORDER BY h.id DESC LIMIT ?`
+  ).all(req.params.id, limit);
+  // total 要是真的筆數，不是這一頁的筆數 ——
+  // 寫成 rows.length 的話，滿 50 筆之後畫面就永遠停在「50 筆」，
+  // 再改幾次都看不出來有沒有留下紀錄
+  const total = db.prepare('SELECT COUNT(*) c FROM produce_plan_history WHERE plan_id=?')
+                  .get(req.params.id).c;
+  res.json({ total, rows: rows.map(r => ({
     id: r.id, changed_at: r.changed_at, summary: r.summary,
     by: r.by_name || r.user_name || '—'
   })) });
