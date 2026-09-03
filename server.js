@@ -3032,6 +3032,22 @@ function needsOnDate(date) {
   return need;
 }
 
+// 同一樣食材可能同時出現在冷凍包裡、也出現在某個人自己的處方裡
+// （藍莓就是這樣：方案一把它做進冷凍包，個案自己的處方也有）。
+// 這兩份要分開算 —— 冷凍包那份看還剩幾份備品，自己那份看還有沒有生料。
+// 混在一起算的話，庫存裡明明有 3100g 也會說做不出來。
+function needsSplitOnDate(date, planRxSet) {
+  const fromPlan = {}, fromOwn = {};
+  cupsOnDate(date).forEach(({ rxId, cups, powderMult }) => {
+    const bucket = planRxSet.has(rxId) ? fromPlan : fromOwn;
+    effectiveItems(rxId, date).forEach(r => {
+      const mult = FRESH_CATS.has(r.category) ? 1.0 : powderMult;
+      bucket[r.ingredient_id] = (bucket[r.ingredient_id] || 0) + r.qty_per_cup * cups * mult;
+    });
+  });
+  return { fromPlan, fromOwn };
+}
+
 function buildForecast(daysAhead) {
   const t       = today();
   const horizon = Math.min(Math.max(Number(daysAhead || 21), 7), 60);
@@ -3092,26 +3108,29 @@ function buildForecast(daysAhead) {
     const short = [];
     const packCovered = Math.min(packLeft, planCups);      // 這一天有幾杯有備品可用
     const packMissing = Math.max(0, planCups - packLeft);  // 還缺幾杯份
+    const split = needsSplitOnDate(date, packGroupRx);
     Object.entries(n).forEach(([id, q]) => {
-      const isPack = packIds.has(Number(id));
-      // 冷凍包的用料：備品夠就不缺，不夠才按「缺幾杯份」換算成克數
-      if (isPack) {
-        if (packMissing <= 0 || !planCups) return;
-        const perCup = q / (planCups || 1);
-        const gap = Math.round(perCup * packMissing * 10) / 10;
-        if (gap > 0.05 && ingMap[id]) {
-          short.push({ id: Number(id), name: ingMap[id].name, unit: ingMap[id].unit,
-                       need: Math.round(q * 10) / 10, have: 0, gap, from_pack: true });
-        }
-        return;
+      const nid = Number(id);
+      // 冷凍包那一份：備品夠就不缺，不夠才按「缺幾杯份」換算成克數。
+      // 只算吃方案的那幾杯 —— 個案自己處方裡的同一樣食材不吃備品
+      const packQ = packIds.has(nid) ? (split.fromPlan[id] || 0) : 0;
+      let packGap = 0;
+      if (packQ > 0 && packMissing > 0 && planCups) {
+        packGap = Math.round((packQ / planCups) * packMissing * 10) / 10;
       }
+
+      // 其餘的（個案自己的處方、以及沒進冷凍包的食材）照生料庫存算
+      const rawQ = q - packQ;
       const used = cum[id] || 0;                 // 這一天之前已經用掉的
       const left = Math.max(0, (stock[id] || 0) - used);
-      if (q - left > 0.05 && ingMap[id]) {
-        short.push({ id: Number(id), name: ingMap[id].name, unit: ingMap[id].unit,
+      const rawGap = rawQ > 0 ? Math.round((rawQ - left) * 10) / 10 : 0;
+
+      const gap = Math.round((packGap + Math.max(0, rawGap)) * 10) / 10;
+      if (gap > 0.05 && ingMap[id]) {
+        short.push({ id: nid, name: ingMap[id].name, unit: ingMap[id].unit,
                      need: Math.round(q * 10) / 10,
-                     have: Math.round(left * 10) / 10,
-                     gap:  Math.round((q - left) * 10) / 10 });
+                     have: Math.round(Math.min(left, rawQ > 0 ? left : 0) * 10) / 10,
+                     gap, from_pack: packGap > 0 });
       }
     });
     packLeft = Math.max(0, packLeft - packCovered);

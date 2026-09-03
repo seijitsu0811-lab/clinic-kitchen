@@ -100,6 +100,66 @@ else {
     { name: mat.name, unit: mat.unit, category: mat.category, active: 0 }).catch(() => {});
 }
 
+line('\n━━ 3.5 冷凍包與個人處方共用同一樣食材 ━━');
+// 2026-09-03 把綜合莓換成冷凍藍莓之後才冒出來的：
+//   藍莓同時在方案的冷凍包裡、也在好幾個個案自己的處方裡。
+//   原本的判斷把整包需求都算成「吃冷凍包」，於是生料庫存 3100g 完全沒被看過，
+//   畫面還是說缺 300g。這一組自己造出那個情境，不靠現場剛好有這種資料。
+const planA = (await api('/api/produce-plans')).find(p => p.code === 'PLAN-A');
+const packItem = planA && planA.items.find(i => i.qty_per_cup > 0 && i.prep_stage === '冷凍包');
+if (!packItem) { line('  － 方案裡沒有冷凍包用料，這組略過'); }
+else {
+  const PID = packItem.ingredient_id;
+  const invOf = async () => ((await api('/api/inventory')).find(i => i.id === PID) || {}).qty || 0;
+  const stock0 = await invOf();
+
+  // 一張不吃方案的處方，自己用同一樣食材。它不該吃冷凍包的備品
+  const allP = await api('/api/prescriptions?include_inactive=1');
+  let rxP = allP.find(p => p.code === 'ZZ-PACK');
+  if (!rxP) {
+    const r = await api('/api/prescriptions', 'POST',
+      { code: 'ZZ-PACK', name: 'ZZ 冷凍包共用測試', formula_type: '全配方', timing: '餐前' });
+    rxP = { id: r.id };
+  }
+  await api(`/api/prescriptions/${rxP.id}`, 'PUT',
+    { name: 'ZZ 冷凍包共用測試', formula_type: '全配方', timing: '餐前', active: 1,
+      daily_cups: 1, buffer_cups: 0, weekly_cups: 0 });
+  await api(`/api/prescriptions/${rxP.id}/ingredients`, 'PUT',
+    [{ ingredient_id: PID, qty_per_cup: 100 }]);
+
+  const gapOn = async () => {
+    const f = await api('/api/inventory/forecast?days=7');
+    const d = f.days.find(x => x.cups > 0);
+    const row = d && d.short.find(x => x.id === PID);
+    return { gap: row ? row.gap : 0, need: row ? row.need : (d ? 0 : 0), date: d && d.date };
+  };
+
+  // 生料一點都沒有
+  await api('/api/stocktake', 'POST',
+    { note: 'ZZ 冷凍包共用測試（歸零）', items: [{ ingredient_id: PID, counted_qty: 0 }] });
+  const dry = await gapOn();
+
+  // 生料補到絕對夠
+  await api('/api/stocktake', 'POST',
+    { note: 'ZZ 冷凍包共用測試（補滿）', items: [{ ingredient_id: PID, counted_qty: 100000 }] });
+  const wet = await gapOn();
+
+  check('自己處方那份會看生料庫存', wet.gap < dry.gap,
+        `庫存 0 時缺 ${dry.gap}，庫存 100000 時缺 ${wet.gap}` +
+        (wet.gap < dry.gap ? '' : ' ★ 補了生料還是一樣缺，代表被當成冷凍包算了'));
+  check('補生料消掉的正好是自己那份',
+        Math.abs((dry.gap - wet.gap) - 100) < 0.5 || dry.gap - wet.gap >= 100 - 0.5,
+        `少了 ${Math.round((dry.gap - wet.gap) * 10) / 10}（每杯 100，1 杯）`);
+  check('缺的量不會超過當天總需求', wet.gap <= (wet.need || 0) + 0.05,
+        `需要 ${wet.need}／缺 ${wet.gap}`);
+
+  // 收乾淨
+  await api(`/api/prescriptions/${rxP.id}`, 'DELETE');
+  await api('/api/stocktake', 'POST',
+    { note: 'ZZ 冷凍包共用測試還原', items: [{ ingredient_id: PID, counted_qty: stock0 }] });
+  check('庫存還原成測試前', Math.abs((await invOf()) - stock0) < 0.05, `${stock0}`);
+}
+
 line('\n━━ 4. 最近做不出來的那一天要單獨提出來 ━━');
 f = await fc();
 const anyBad = f.days.find(d => d.cups > 0 && !d.feasible);
