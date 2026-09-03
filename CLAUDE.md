@@ -314,12 +314,14 @@ node scripts/test-appt-sync.mjs     #  9 項：預約帶入、改過的不被覆
 ```bash
 node scripts/check-exports.mjs      # 匯出清單裡的名字都有定義嗎
 node scripts/check-calls.mjs        # 呼叫的函式都存在嗎
+node scripts/check-load.mjs         # app.js 真的載入得起來嗎
 ```
 
 兩支都是踩過才加的，而且踩的是同一類坑：**`node --check` 過得了，但使用者一按下去就爆**。
 
 - 匯出清單留著已經刪掉的名字 → IIFE 建回傳物件時 ReferenceError → `App` 卡在 TDZ → 畫面上每一個 `onclick` 都變成「App is not defined」。整個系統掛掉。
 - 呼叫了 `toast()`，但這個檔案從頭到尾用的是 `alert()` → 平常沒事，按下「登記進貨」才爆，而那時東西已經上線了。
+- 補丁用 `indexOf` 抓錯位置，把一整段程式碼塞到檔案第 3 行 → IIFE 一開始就 ReferenceError。前面三支檢查全部都過，因為它們都不執行程式碼。`check-load` 直接用假的 document／window 把 app.js 跑一遍，這才擋得住。
 
 `test-exceptions` 會自己造出席與出單，不依賴當天剛好有資料 —— 週末跑起來全部略過而「通過」的測試等於沒有測試。
 
