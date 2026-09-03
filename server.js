@@ -1064,6 +1064,11 @@ function staffRxFor(date, productId) {
   ['蘋果',       0.52,  0.003, 'USDA'],
   ['檸檬',       0.29,  0.011, 'USDA'],
   ['莓果',       0.50,  0.008, 'USDA'],
+  ['牛番茄',     0.18,  0.009, 'USDA 生番茄 18 kcal/100g'],
+  ['西洋芹',     0.16,  0.007, 'USDA 生西洋芹 16 kcal/100g'],
+  ['火龍果',     0.60,  0.012, 'USDA 火龍果 60 kcal/100g'],
+  ['冷凍菠菜',   0.29,  0.036, 'USDA 冷凍菠菜（未調理）29 kcal/100g'],
+  ['冷凍花椰菜', 0.24,  0.019, 'USDA 冷凍白花椰（未調理）24 kcal/100g'],
   ['藍莓',       0.51,  0.004, 'USDA 冷凍藍莓（未加糖）51 kcal/100g'],
   ['蔓越莓',     0.46,  0.004, 'USDA 冷凍蔓越莓（未加糖生果）46 kcal/100g'],
   ['小黃瓜',     0.15,  0.007, 'USDA 帶皮小黃瓜 15 kcal/100g'],
@@ -2648,6 +2653,38 @@ app.delete('/api/purchase/:id', (req, res) => {
     db.prepare('DELETE FROM purchase_log WHERE id=?').run(row.id);
   });
   res.json({ ok: true, name: ing ? ing.name : '', qty: row.qty });
+});
+
+// 某一天的杯數是怎麼來的、每一樣料是誰要的。
+// 「為什麼還是跳缺貨」這種問題原本只能翻程式碼猜 —— 這條路直接把帳攤開
+app.get('/api/day/cups', (req, res) => {
+  const date = req.query.date || today();
+  const rows = cupsOnDate(date).map(c => {
+    const rx = db.prepare('SELECT code, name, active FROM prescriptions WHERE id=?').get(c.rxId) || {};
+    return { rx_id: c.rxId, code: rx.code || '?', name: rx.name || '', active: rx.active,
+             cups: c.cups, powder_mult: c.powderMult, why: c.why };
+  });
+  const out = { date, dow: dowOf(date), total_cups: rows.reduce((t, r) => t + r.cups, 0), rows };
+
+  // 指定食材時，列出這一天是誰要用它
+  const want = String(req.query.ingredient || '').trim();
+  if (want) {
+    const ing = db.prepare('SELECT id,name,unit FROM ingredients WHERE name=? OR id=?').get(want, Number(want) || -1);
+    if (ing) {
+      out.ingredient = { id: ing.id, name: ing.name, unit: ing.unit, from: [] };
+      cupsOnDate(date).forEach(c => {
+        const it = effectiveItems(c.rxId, date).find(x => x.ingredient_id === ing.id);
+        if (!it || !(it.qty_per_cup > 0)) return;
+        const rx = db.prepare('SELECT code, active FROM prescriptions WHERE id=?').get(c.rxId) || {};
+        out.ingredient.from.push({
+          code: rx.code, active: rx.active, cups: c.cups,
+          per_cup: it.qty_per_cup,
+          total: Math.round(it.qty_per_cup * c.cups * 10) / 10
+        });
+      });
+    }
+  }
+  res.json(out);
 });
 
 // 食材採購歷史
