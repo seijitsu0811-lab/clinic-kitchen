@@ -3486,22 +3486,93 @@ const App = (() => {
     try { localStorage.setItem('short_ack_' + date, sig); } catch (e) {}
   }
 
-  function _showShortagePopup(day) {
+  // 缺料清單就是採購清單 —— 東西買回來了要能就地登記，
+  // 不必記著品項再去翻另一頁。看到缺料的人跟去買的人是同一個
+  let _shortDay = null;
+  let _shortQuiet = 0;      // 剛登記完的這一小段時間不要再跳
+
+  function _showShortagePopup(day, force) {
     const sig = _shortSig(day);
-    if (_shortSeen(day.date, sig)) return;
+    if (!force && (Date.now() < _shortQuiet || _shortSeen(day.date, sig))) return;
     const box = document.getElementById('modalShortage');
     if (!box) return;
     document.getElementById('shortHead').textContent =
       `${day.plan_name || ''} ${day.cups} 杯，${day.short.length} 樣不夠`;
+    _shortDay = day;
+    const dt = document.getElementById('shortDate');
+    if (dt && !dt.value) dt.value = day.date;
     document.getElementById('shortList').innerHTML = day.short.map(x =>
-      `<div class="sp-row"><span class="sp-name">${esc(x.name)}</span>
-        <span class="sp-gap">缺 ${x.gap}${esc(x.unit)}</span>
-        <span class="sp-have">需要 ${x.need}${esc(x.unit)}・剩 ${x.have}${esc(x.unit)}</span></div>`).join('');
+      `<div class="sp-row">
+        <div class="sp-top">
+          <span class="sp-name">${esc(x.name)}</span>
+          <span class="sp-gap">缺 ${x.gap}${esc(x.unit)}</span>
+          <span class="sp-have">需要 ${x.need}${esc(x.unit)}・剩 ${x.have}${esc(x.unit)}</span>
+        </div>
+        <div class="sp-buy">
+          <span class="sp-lb">買到</span>
+          <input class="sp-in sp-qty" data-id="${x.id}" type="number" min="0" step="0.1"
+                 inputmode="decimal" placeholder="${x.gap}">
+          <span class="sp-u">${esc(x.unit)}</span>
+          <span class="sp-lb">花了</span>
+          <input class="sp-in sp-price" data-id="${x.id}" type="number" min="0" step="1"
+                 inputmode="numeric" placeholder="選填">
+          <span class="sp-u">元</span>
+        </div>
+      </div>`).join('');
     document.getElementById('shortAck').onclick = () => {
       _markShortSeen(day.date, sig);
       closeModal('modalShortage');
     };
     openModal('modalShortage');
+  }
+
+  // 從今日頁的缺料橫幅手動叫出來 —— 已經按過「知道了」也要叫得出來
+  async function openShortage() {
+    let f;
+    try { f = await api('/api/inventory/forecast?days=7'); }
+    catch (e) { return alert('讀不到庫存預測：' + e.message); }
+    const day = (f.days || []).find(x => x.short && x.short.length);
+    if (!day) return alert('目前沒有缺料。');
+    _showShortagePopup(day, true);
+  }
+
+  // 就地登記進貨。數量填了、發票還沒拿到的那幾樣丟進採購籃留著，
+  // 不要默默消失 —— 消失掉的那一樣就永遠不會被登記
+  async function saveShortagePurchase() {
+    if (!_shortDay) return;
+    const dtEl = document.getElementById('shortDate');
+    const date = (dtEl && dtEl.value) || _shortDay.date;
+    const priceOf = id => {
+      const el = document.querySelector('#shortList .sp-price[data-id="' + id + '"]');
+      return el ? el.value.trim() : '';
+    };
+    const lines = [...document.querySelectorAll('#shortList .sp-qty')].map(el => ({
+      ingredient_id: Number(el.dataset.id),
+      qty: Number(el.value),
+      total_price: priceOf(el.dataset.id)
+    })).filter(l => l.qty > 0);
+
+    if (!lines.length) return alert('還沒填任何數量。');
+
+    const withPrice = lines.filter(l => l.total_price !== '');
+    const noPrice   = lines.filter(l => l.total_price === '');
+
+    try {
+      let saved = 0;
+      if (withPrice.length) {
+        const r = await api('/api/purchase/commit', 'POST', { date, lines: withPrice });
+        saved = r.saved;
+      }
+      for (const l of noPrice) {
+        await api('/api/purchase/draft', 'PUT', { ingredient_id: l.ingredient_id, qty: l.qty });
+      }
+      alert(`登記 ${saved} 樣進貨。` +
+            (noPrice.length ? `\n另外 ${noPrice.length} 樣只填了數量，放進採購籃，等發票再補金額。` : ''));
+      _shortQuiet = Date.now() + 60000;
+      closeModal('modalShortage');
+      loadToday();
+      loadInventory();
+    } catch (e) { alert('登記失敗：' + e.message); }
   }
 
   async function renderTodayShortage(d) {
@@ -3522,7 +3593,10 @@ const App = (() => {
         ${top.map(x => `<span class="ts-chip">${esc(x.name)} 缺 ${x.gap}${esc(x.unit)}</span>`).join('')}
         ${day.short.length > 5 ? `<span class="ts-chip more">…另 ${day.short.length - 5} 樣</span>` : ''}
       </div>
-      <a class="ts-go" href="/market.html">🛒 去採購</a>
+      <div class="ts-acts">
+        <button class="ts-go ts-buy" onclick="App.openShortage()">✓ 登記已買的</button>
+        <a class="ts-go" href="/market.html">🛒 去採購</a>
+      </div>
     </div>`;
     _showShortagePopup(day);
   }
@@ -4039,6 +4113,7 @@ const App = (() => {
     loadInventory, openEditInv, saveInventory, togglePurchaseHistory,
     openAddIngredient, addIngredient, openPurchase, savePurchase, commitPurchaseDraft,
     fillPurchaseDraft,
+    openShortage, saveShortagePurchase,
     loadCost, switchCostTab, prevCostMonth, nextCostMonth,
     openSettings, saveSettings,
     openAddUser, addUser,

@@ -932,6 +932,31 @@
     .sp-name { font-size: 15px; font-weight: 700; min-width: 84px; }
     .sp-gap  { font-size: 15px; font-weight: 800; color: var(--red); }
     .sp-have { font-size: 12px; color: var(--text3); margin-left: auto; white-space: nowrap; }
+    .sp-row { display: block; }
+    .sp-top { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+    .sp-top .sp-have { white-space: normal; }
+    .sp-buy { display: flex; align-items: center; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+    .sp-lb { font-size: 12px; color: var(--text3); }
+    .sp-u  { font-size: 12px; color: var(--text3); margin-left: -2px; }
+    .sp-in {
+      width: 92px; min-height: 44px; padding: 8px 10px; font-size: 16px;
+      border: 1px solid var(--border); border-radius: var(--radius-md);
+      background: var(--card); color: var(--text);
+    }
+    .sp-in:focus { outline: 2px solid var(--blue); outline-offset: -1px; }
+    .sp-datebar {
+      display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+      font-size: 13px; color: var(--text2); margin-bottom: 10px;
+    }
+    .sp-datebar input {
+      min-height: 44px; padding: 6px 10px; font-size: 15px;
+      border: 1px solid var(--border); border-radius: var(--radius-md);
+      background: var(--card); color: var(--text);
+    }
+    .sp-note { font-size: 12px; color: var(--text3); }
+    .sp-foot { font-size: 12px; color: var(--text3); margin-top: 10px; line-height: 1.6; }
+    .ts-acts { display: flex; gap: 8px; flex-wrap: wrap; }
+    .ts-buy { background: var(--red); color: #fff; border: 0; cursor: pointer; font: inherit; }
     /* 今天的料不齊 —— 今日頁最上面，比什麼都急 */
     .today-short {
       background: rgba(239,68,68,.08); border: 1px solid rgba(239,68,68,.35);
@@ -2836,10 +2861,17 @@
   <div class="modal">
     <div class="modal-title" style="color:var(--red)">⚠ 今天的料不齊</div>
     <div id="shortHead" style="font-size:15px;font-weight:700;margin-bottom:10px"></div>
+    <div class="sp-datebar">
+      <span>買到的日期</span>
+      <input id="shortDate" type="date">
+      <span class="sp-note">昨天買的就改成昨天</span>
+    </div>
     <div id="shortList" class="sp-list"></div>
+    <div class="sp-foot">金額可以先不填 —— 只填數量的會留在採購籃，等發票再補。</div>
     <div class="modal-actions">
-      <button class="btn btn-ghost" id="shortAck">知道了</button>
-      <a class="btn btn-primary" href="/market.html" style="text-decoration:none">🛒 去採購</a>
+      <button class="btn btn-ghost" id="shortAck" style="white-space:nowrap">知道了</button>
+      <button class="btn btn-primary" onclick="App.saveShortagePurchase()"
+              style="white-space:nowrap">✓ 登記進貨</button>
     </div>
   </div>
 </div>

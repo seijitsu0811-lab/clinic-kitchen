@@ -88,6 +88,25 @@ check('第二樣也加了', Math.abs((after[b.id] - before[b.id]) - 300) < 0.05,
       `核桃 ${before[b.id]} → ${after[b.id]}`);
 check('登記完就離開籃子', (await draft()).count === 0, '不然會重複登記');
 
+line('\n━━ 4.5 昨天買的要記成昨天 ━━');
+// 缺料清單上可以就地登記，而看到缺料通常是隔天早上 ——
+// 全部記成今天的話，加權平均成本的回看區間就會抓錯批次
+const yest = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+const b45 = await inv();
+await api('/api/purchase/commit', 'POST', {
+  date: yest, lines: [{ ingredient_id: b.id, qty: 50, total_price: 100 }]
+});
+// 清單是照日期排的，昨天那筆不會排在最前面 —— 要找剛才建的那一筆
+const h45 = await api(`/api/inventory/${b.id}/purchases`);
+const mine = h45.find(x => Math.abs(x.qty - 50) < 0.05 && Number(x.total_price) === 100);
+check('採購日期照送出的那一天記', !!mine && mine.purchased_at === yest,
+      mine ? `${mine.purchased_at}（今天是 ${new Date().toISOString().slice(0, 10)}）`
+           : '找不到剛登記的那一筆');
+check('庫存仍然是當下就加進去', Math.abs((await inv())[b.id] - b45[b.id] - 50) < 0.05,
+      '東西已經在手上了，不能等到那個日期才進帳');
+await api('/api/stocktake', 'POST',
+  { note: 'ZZ 採購日期測試還原', items: [{ ingredient_id: b.id, counted_qty: b45[b.id] }] });
+
 line('\n━━ 5. 單價要算得出來（成本靠它）━━');
 const hist = await api(`/api/inventory/${a.id}/purchases`);
 const last = hist[0];
