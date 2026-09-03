@@ -2765,9 +2765,29 @@ function expectedForDate(date) {
   const staffRx = staffRxFor(date);
   if (staffRx && staffCups > 0) out.push({ rxId: staffRx.id, cups: staffCups, powderType: '' });
 
-  db.prepare(
+  // 每日固定供應的處方（AW 就是這種）。排產那邊一直有算，扣庫存這邊漏了 ——
+  // 結果是那杯照做、照喝，庫存卻從來沒有扣過。目前被「每天另外建一張單」
+  // 蓋過去所以看不出來，哪天沒建單就直接漏掉一整杯的料
+  const orders = db.prepare(
     'SELECT id, prescription_id, cups, powder_type FROM case_orders WHERE date=?'
-  ).all(date).forEach(o => {
+  ).all(date);
+  const ordered = new Set(orders.map(o => o.prescription_id));
+
+  // 每日固定供應的處方（AW 就是這種）。當天沒有另外開單時才用這個預設值 ——
+  // 有開單就以單為準：單可能是 3 杯而不是預設的 1 杯，也可能被標成沒出餐。
+  // 排產那邊用同一條規則，兩邊要一致
+  const dow = dowOf(date);
+  if (dow >= 1 && dow <= 5) {
+    db.prepare(
+      `SELECT id, COALESCE(daily_cups,0) daily_cups FROM prescriptions
+        WHERE active=1 AND COALESCE(daily_cups,0) > 0`
+    ).all().forEach(r => {
+      if (ordered.has(r.id)) return;
+      out.push({ rxId: r.id, cups: r.daily_cups, powderType: '' });
+    });
+  }
+
+  orders.forEach(o => {
     if (ex.caseMissed.has(o.id)) return;
     out.push({ rxId: o.prescription_id, cups: o.cups, powderType: o.powder_type || '' });
   });
@@ -3078,12 +3098,20 @@ function cupsOnDate(date) {
     }
   }
 
+  // 當天已經另外開單的處方，以單為準（單可能不是預設杯數）
+  const orderedRx = new Set(db.prepare(
+    'SELECT DISTINCT prescription_id FROM case_orders WHERE date=?'
+  ).all(date).map(r => r.prescription_id));
+
   // 固定每日供應的處方，週末不出
   if (dow >= 1 && dow <= 5) {
     db.prepare(
       `SELECT id, name, COALESCE(daily_cups,0) daily_cups FROM prescriptions
         WHERE active=1 AND COALESCE(daily_cups,0) > 0`
-    ).all().forEach(rx => out.push({ rxId: rx.id, cups: rx.daily_cups, powderMult: 1.0, why: rx.name }));
+    ).all().forEach(rx => {
+      if (orderedRx.has(rx.id)) return;
+      out.push({ rxId: rx.id, cups: rx.daily_cups, powderMult: 1.0, why: rx.name });
+    });
 
     // 喝得不固定的（例如一週約 6 杯、沒有排定日子）：把週量平均攤到 5 個工作日。
     // 攤平只是為了讓備料量抓得住，不代表那天真的會喝那麼多
@@ -3094,11 +3122,14 @@ function cupsOnDate(date) {
                                      why: rx.name + '（每週 ' + rx.weekly_cups + ' 杯攤平）' }));
   }
 
-  // 已排的個案出單（排除上面已經算過的員工與每日供應）
+  // 已排的個案出單。只排除「每日固定供應」那種（上面已經算過）——
+  // 不能連「用員工配方的個案單」一起排掉：員工那幾杯是從出勤表來的，
+  // 這些是另外點的單，排掉就等於做了卻沒人算料。2026-09-03 當天
+  // 扣庫存算 20 杯、缺料與採購只算 16 杯，差的就是這 4 杯。
   db.prepare(
     `SELECT co.prescription_id, co.cups, co.powder_type, p.name
        FROM case_orders co JOIN prescriptions p ON p.id=co.prescription_id
-      WHERE co.date=? AND p.is_staff_rx=0 AND COALESCE(p.daily_cups,0)=0`
+      WHERE co.date=? AND COALESCE(p.daily_cups,0)=0`
   ).all(date).forEach(c => {
     const pm = (c.powder_type === '罐裝' || c.powder_type === '全配方') ? 1.1 : 1.0;
     out.push({ rxId: c.prescription_id, cups: c.cups, powderMult: pm, why: c.name });
