@@ -398,12 +398,18 @@ const App = (() => {
     return batch.members.reduce((sum, m) => sum + (m.type === 'case' ? (m.cups || 1) : 1), 0);
   }
 
+  // 明確被標「未領」的（待核對不算 —— 那杯還是會做）
+  function _memberMissed(m) {
+    if (m.type === 'staff') return staffMissed.has(m.userId);
+    return caseMissed.has(m.caseId);
+  }
+
   // 實際會出幾杯：被標「未領」的不算。
   // 標籤原本一律數人頭，所以三個人全部未領還是寫「3杯」——
   // 而真正算料的地方早就把未領的扣掉了，同一個數字兩種算法
   function _batchServed(batch) {
     return batch.members.reduce((sum, m) =>
-      sum + (_memberDelivered(m) ? (m.type === 'case' ? (m.cups || 1) : 1) : 0), 0);
+      sum + (_memberMissed(m) ? 0 : (m.type === 'case' ? (m.cups || 1) : 1)), 0);
   }
 
   // ── 批次時間計算（可被手動覆蓋）────────────────────────────────
@@ -447,7 +453,7 @@ const App = (() => {
     const planned = (staffBatchGroups || []).reduce((s, b) => s + _batchCups(b), 0);
     const inBatch = (staffBatchGroups || []).reduce((s, b) => s + _batchServed(b), 0);
     const soloAll = d.products.flatMap(p => p.cases).filter(c => !c.is_staff_rx);
-    const solo    = soloAll.filter(c => _caseDelivered(c))
+    const solo    = soloAll.filter(c => !caseMissed.has(c.id))
                      .reduce((s, c) => s + (c.cups || 1), 0);
     const soloPlanned = soloAll.reduce((s, c) => s + (c.cups || 1), 0);
     const missed  = (planned - inBatch) + (soloPlanned - solo);
