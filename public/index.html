@@ -954,6 +954,21 @@
       background: var(--card); color: var(--text);
     }
     .sp-note { font-size: 12px; color: var(--text3); }
+    .batch-grp-was {
+      font-size: 11px; color: var(--text3); margin-left: 6px;
+      text-decoration: line-through;
+    }
+    .batch-grp-void-tag, .batch-grp-part-tag {
+      font-size: 12px; font-weight: 700; padding: 2px 8px;
+      border-radius: 999px; margin-left: 6px;
+    }
+    .batch-grp-void-tag { color: var(--red); background: rgba(255,59,48,.12); }
+    .batch-grp-part-tag { color: var(--orange, #ff9500); background: rgba(255,149,0,.12); }
+    .bt-missed { font-size: 12px; color: var(--text3); }
+    .batch-grp-head { flex-wrap: wrap; row-gap: 4px; }
+    .batch-grp-label { white-space: nowrap; }
+    .batch-grp-void-tag, .batch-grp-part-tag { white-space: nowrap; }
+    .batch-grp-was { white-space: nowrap; }
     .ph-fix {
       min-height: 32px; padding: 4px 10px; margin-left: 6px; font-size: 12px;
       border: 1px solid var(--border); border-radius: var(--radius-sm);

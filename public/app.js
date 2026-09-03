@@ -398,6 +398,14 @@ const App = (() => {
     return batch.members.reduce((sum, m) => sum + (m.type === 'case' ? (m.cups || 1) : 1), 0);
   }
 
+  // 實際會出幾杯：被標「未領」的不算。
+  // 標籤原本一律數人頭，所以三個人全部未領還是寫「3杯」——
+  // 而真正算料的地方早就把未領的扣掉了，同一個數字兩種算法
+  function _batchServed(batch) {
+    return batch.members.reduce((sum, m) =>
+      sum + (_memberDelivered(m) ? (m.type === 'case' ? (m.cups || 1) : 1) : 0), 0);
+  }
+
   // ── 批次時間計算（可被手動覆蓋）────────────────────────────────
   // 每位成員都有自己該取餐的時間：員工預設 11:30，個案用自己出單的時間。
   // 舊版只要批次裡有員工就一律顯示 11:30，會把個案的時間蓋掉 ——
@@ -434,12 +442,17 @@ const App = (() => {
     const prod = d.products && d.products[0];
     if (!prod) return '';
 
-    const inBatch = (staffBatchGroups || []).reduce((s, b) => s + _batchCups(b), 0);
-    const solo    = d.products.flatMap(p => p.cases)
-                     .filter(c => !c.is_staff_rx)
+    // planned = 排班該做幾杯（拿來跟伺服器對帳，看有沒有人沒被分到批次）
+    // served  = 實際會出幾杯（扣掉未領）—— 給現場看的是這個
+    const planned = (staffBatchGroups || []).reduce((s, b) => s + _batchCups(b), 0);
+    const inBatch = (staffBatchGroups || []).reduce((s, b) => s + _batchServed(b), 0);
+    const soloAll = d.products.flatMap(p => p.cases).filter(c => !c.is_staff_rx);
+    const solo    = soloAll.filter(c => _caseDelivered(c))
                      .reduce((s, c) => s + (c.cups || 1), 0);
+    const soloPlanned = soloAll.reduce((s, c) => s + (c.cups || 1), 0);
+    const missed  = (planned - inBatch) + (soloPlanned - solo);
     const expected = prod.total_staff_cups || 0;
-    const ok = inBatch === expected;
+    const ok = planned === expected;
 
     return `
       <div class="batch-tally${ok ? '' : ' batch-tally-bad'}">
@@ -448,7 +461,8 @@ const App = (() => {
         <span>批次（員工標準配方） <strong>${inBatch}</strong> 杯</span>
         <span class="bt-sep">＋</span>
         <span>個別現打（自己的處方） <strong>${solo}</strong> 杯</span>
-        ${ok ? '' : `<span class="bt-warn">⚠ 批次應為 ${expected} 杯，少了 ${expected - inBatch} 杯</span>`}
+        ${missed > 0 ? `<span class="bt-missed">（另有 ${missed} 杯未領，不計入）</span>` : ''}
+        ${ok ? '' : `<span class="bt-warn">⚠ 批次應為 ${expected} 杯，少了 ${expected - planned} 杯</span>`}
       </div>`;
   }
 
@@ -466,13 +480,22 @@ const App = (() => {
                     ondragover="event.preventDefault()" ondrop="App.batchDrop(event,${bi})">
         <div class="batch-grp-head">
           <span class="batch-grp-label">批次 ${bi + 1}</span>
-          <span class="batch-grp-sz">${_batchCups(batch)}杯</span>
+          <span class="batch-grp-sz">${_batchServed(batch)}杯</span>${
+            _batchServed(batch) !== _batchCups(batch)
+              ? `<span class="batch-grp-was">原 ${_batchCups(batch)}</span>` : ''}
           <span class="batch-time-wrap"><span class="batch-grp-time${batch.manualTime ? ' bt-manual' : ''}"
                   title="${batch.manualTime ? '手動指定的時間' : '依成員取餐時間自動判定'}">⏰ ${timeLabel}</span><button
                   class="batch-time-edit" title="修改這批的時間"
                   onclick="App.editBatchTime(${bi},this)">✎</button></span>
           ${conflictTag}
-          ${allDone ? '<span class="batch-grp-done-tag">✓ 完成</span>' : ''}
+          ${(() => {
+            // 「沒有人未領」才叫完成。有人未領時原本什麼都不顯示，
+            // 看起來就像這一批還沒做 —— 整批都未領的話更是永遠不會變成完成
+            if (allDone) return '<span class="batch-grp-done-tag">✓ 完成</span>';
+            const served = _batchServed(batch), planned = _batchCups(batch);
+            if (served === 0) return '<span class="batch-grp-void-tag">整批未領</span>';
+            return `<span class="batch-grp-part-tag">未領 ${planned - served}</span>`;
+          })()}
           <button class="batch-grp-del" onclick="App.removeBatch(${bi})">×</button>
         </div>
         <div class="batch-grp-members">
