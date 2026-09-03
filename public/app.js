@@ -150,13 +150,51 @@ const App = (() => {
   }
 
   let _pendingState = null;   // 最後一次沒送成功的狀態，連線回來就補送
-  function _pushDayState(date, payload) {
-    return api('/api/today/state', 'PUT', { date, state: payload })
-      .then(() => { _pendingState = null; _clearSyncTrouble(); })
-      .catch(e => {
-        _pendingState = { date, payload };
-        _showSyncTrouble('這次的變更還沒存回伺服器，其他裝置看不到。' + (e.message || ''));
-      });
+
+  // 這一頁開起來時伺服器上的樣子。要算「我改了什麼」就得跟它比 ——
+  // 直接把整包蓋上去的話，別人在這段期間做的事會被無聲抹掉
+  let _serverBase = null;
+
+  const SET_KEYS = ['staff', 'cases', 'staffMissed', 'caseMissed',
+                    'deductedBatches', 'deductedCases'];
+  const REPLACE_KEYS = ['batchGroups', 'schOrder', 'notes', 'qc'];
+  const _same = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+
+  // 拿「伺服器最新的」當底，只把我這邊真正改動的部分套上去。
+  // 兩台手機同時開著時，A 勾的不會因為 B 後存檔就消失
+  function _mergeOnto(server, base, mine) {
+    const out = JSON.parse(JSON.stringify(server || {}));
+    SET_KEYS.forEach(k => {
+      const b = new Set((base && base[k]) || []);
+      const m = new Set((mine && mine[k]) || []);
+      const cur = new Set((out[k]) || []);
+      [...m].forEach(v => { if (!b.has(v)) cur.add(v); });      // 我加的
+      [...b].forEach(v => { if (!m.has(v)) cur.delete(v); });   // 我拿掉的
+      out[k] = [...cur];
+    });
+    REPLACE_KEYS.forEach(k => {
+      // 這幾項不是集合，沒辦法逐項合併 —— 我沒動就用伺服器的，動了才蓋過去
+      if (!_same(mine ? mine[k] : null, base ? base[k] : null)) out[k] = mine ? mine[k] : null;
+    });
+    return out;
+  }
+
+  async function _pushDayState(date, payload) {
+    try {
+      let server = null;
+      try {
+        const r = await api('/api/today/state?date=' + date);
+        server = r && r.state;
+      } catch (e) { /* 讀不到就用自己的，至少別把這次改動丟掉 */ }
+      const merged = _serverBase ? _mergeOnto(server, _serverBase, payload) : payload;
+      await api('/api/today/state', 'PUT', { date, state: merged });
+      _serverBase = JSON.parse(JSON.stringify(merged));
+      _pendingState = null;
+      _clearSyncTrouble();
+    } catch (e) {
+      _pendingState = { date, payload };
+      _showSyncTrouble('這次的變更還沒存回伺服器，其他裝置看不到。' + (e.message || ''));
+    }
   }
 
   function _saveDayState(date) {
@@ -182,6 +220,7 @@ const App = (() => {
       try { s = JSON.parse(localStorage.getItem(`clinic_day_${d.date}`) || 'null'); } catch (e) { s = null; }
     }
     if (!s) return null;
+    _serverBase = JSON.parse(JSON.stringify(s));
     staffPickedUp   = new Set(s.staff || []);
     casePickedUp    = new Set(s.cases || []);
     staffMissed     = new Set(s.staffMissed || []);
