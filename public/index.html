@@ -659,14 +659,21 @@
     .bmember-chip:active {
       cursor: grabbing;
     }
-    /* 預設就是已出餐，所以「正常」不需要任何樣式。
-       標出來的是兩種例外：沒領到、以及還沒核對過的禁忌單 */
+    /* 預設是「還沒領」——那是一天的起點，不是錯誤，所以不要標紅、
+       也不要劃掉。整批都紅通通的話，真正需要注意的東西就看不見了。
+       領走的才亮起來，掃一眼就知道還剩誰沒拿 */
     .bmember-chip.missed {
-      color: var(--red);
-      border-color: rgba(239,68,68,.5);
-      background: rgba(239,68,68,.07);
-      text-decoration: line-through;
+      color: var(--text3);
+      border-style: dashed;
+      background: transparent;
     }
+    .bmember-chip.picked {
+      color: var(--green, #16a34a);
+      border-color: rgba(22,163,74,.5);
+      background: rgba(22,163,74,.09);
+      font-weight: 700;
+    }
+    .bmember-chip.bmember-case.picked { color: var(--green, #16a34a); }
     .bmember-chip.needs-check {
       color: var(--orange);
       border-color: var(--orange);
@@ -962,7 +969,13 @@
       font-size: 12px; font-weight: 700; padding: 2px 8px;
       border-radius: 999px; margin-left: 6px;
     }
-    .batch-grp-void-tag { color: var(--red); background: rgba(255,59,48,.12); }
+    /* 一天的起點就是都還沒領，那不是異常 —— 不要用紅色 */
+    .batch-grp-wait-tag {
+      font-size: 12px; font-weight: 700; padding: 2px 8px;
+      border-radius: 999px; margin-left: 6px; white-space: nowrap;
+      color: var(--text3); background: var(--bg);
+    }
+    .batch-grp-was { text-decoration: none; }
     .batch-grp-part-tag { color: var(--orange, #ff9500); background: rgba(255,149,0,.12); }
     .bt-missed { font-size: 12px; color: var(--text3); }
     .batch-grp-head { flex-wrap: wrap; row-gap: 4px; }

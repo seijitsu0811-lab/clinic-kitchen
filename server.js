@@ -2741,14 +2741,21 @@ app.post('/api/inventory/consume', (req, res) => {
 // 例外管理：排程上的東西預設就是做了、送出去了，只有被明確標記的才是沒發生。
 // 例外和批次狀態存在同一份 day_state（整個廚房共用），這裡讀那一份，不另外算一次。
 function dayExceptions(date) {
-  const empty = { staffMissed: new Set(), caseMissed: new Set() };
+  const empty = { staffMissed: new Set(), caseMissed: new Set(),
+                  staffPicked: new Set(), casePicked: new Set(), anyTap: false };
   try {
     const row = db.prepare('SELECT state FROM day_state WHERE date=?').get(date);
     if (!row) return empty;
     const s = JSON.parse(row.state || '{}');
+    const staffPicked = new Set(s.staff || []);
+    const casePicked  = new Set(s.cases || []);
     return {
       staffMissed: new Set(s.staffMissed || []),
-      caseMissed:  new Set(s.caseMissed  || [])
+      caseMissed:  new Set(s.caseMissed  || []),
+      staffPicked, casePicked,
+      // 那一天到底有沒有人在點。完全沒有人點過的日子（包含改成
+      // 「點了才算領」之前的所有歷史）一律走舊規則，否則整天會變成 0 杯
+      anyTap: staffPicked.size > 0 || casePicked.size > 0
     };
   } catch (e) { return empty; }
 }
@@ -2761,7 +2768,12 @@ function expectedForDate(date) {
   const attendingIds = db.prepare(
     'SELECT user_id FROM staff_attendance WHERE date=? AND attending=1'
   ).all(date).map(r => r.user_id);
-  const staffCups = attendingIds.filter(id => !ex.staffMissed.has(id)).length;
+  // 預設沒拿、點了才代表領走。沒有人點過的那一天（歷史資料、或是當天
+  // 根本沒人動過畫面）退回舊規則：照出勤扣，扣多了看得出來，
+  // 扣不到才是真的查不出來
+  const staffCups = ex.anyTap
+    ? attendingIds.filter(id => ex.staffPicked.has(id)).length
+    : attendingIds.filter(id => !ex.staffMissed.has(id)).length;
   const staffRx = staffRxFor(date);
   if (staffRx && staffCups > 0) out.push({ rxId: staffRx.id, cups: staffCups, powderType: '' });
 
@@ -2788,7 +2800,7 @@ function expectedForDate(date) {
   }
 
   orders.forEach(o => {
-    if (ex.caseMissed.has(o.id)) return;
+    if (ex.anyTap ? !ex.casePicked.has(o.id) : ex.caseMissed.has(o.id)) return;
     out.push({ rxId: o.prescription_id, cups: o.cups, powderType: o.powder_type || '' });
   });
   return out;
@@ -2855,6 +2867,8 @@ app.get('/api/consumption/expected', (req, res) => {
   res.json({
     date, items,
     total_cups: Math.round(items.reduce((s, i) => s + i.cups, 0) * 10) / 10,
+    rule: ex.anyTap ? '點了才算領' : '沒有人點過，照出勤與出單補扣',
+    picked: { staff: [...ex.staffPicked], cases: [...ex.casePicked] },
     exceptions: { staff_missed: [...ex.staffMissed], case_missed: [...ex.caseMissed] }
   });
 });

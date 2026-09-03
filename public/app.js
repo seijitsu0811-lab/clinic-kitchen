@@ -439,8 +439,7 @@ const App = (() => {
 
   // 明確被標「未領」的（待核對不算 —— 那杯還是會做）
   function _memberMissed(m) {
-    if (m.type === 'staff') return staffMissed.has(m.userId);
-    return caseMissed.has(m.caseId);
+    return !_memberDelivered(m);
   }
 
   // 實際會出幾杯：被標「未領」的不算。
@@ -492,7 +491,7 @@ const App = (() => {
     const planned = (staffBatchGroups || []).reduce((s, b) => s + _batchCups(b), 0);
     const inBatch = (staffBatchGroups || []).reduce((s, b) => s + _batchServed(b), 0);
     const soloAll = d.products.flatMap(p => p.cases).filter(c => !c.is_staff_rx);
-    const solo    = soloAll.filter(c => !caseMissed.has(c.id))
+    const solo    = soloAll.filter(c => _caseDelivered(c))
                      .reduce((s, c) => s + (c.cups || 1), 0);
     const soloPlanned = soloAll.reduce((s, c) => s + (c.cups || 1), 0);
     const missed  = (planned - inBatch) + (soloPlanned - solo);
@@ -506,7 +505,7 @@ const App = (() => {
         <span>批次（員工標準配方） <strong>${inBatch}</strong> 杯</span>
         <span class="bt-sep">＋</span>
         <span>個別現打（自己的處方） <strong>${solo}</strong> 杯</span>
-        ${missed > 0 ? `<span class="bt-missed">（另有 ${missed} 杯未領，不計入）</span>` : ''}
+        ${missed > 0 ? `<span class="bt-missed">（還有 ${missed} 杯沒領，不計入）</span>` : ''}
         ${ok ? '' : `<span class="bt-warn">⚠ 批次應為 ${expected} 杯，少了 ${expected - planned} 杯</span>`}
       </div>`;
   }
@@ -527,7 +526,7 @@ const App = (() => {
           <span class="batch-grp-label">批次 ${bi + 1}</span>
           <span class="batch-grp-sz">${_batchServed(batch)}杯</span>${
             _batchServed(batch) !== _batchCups(batch)
-              ? `<span class="batch-grp-was">原 ${_batchCups(batch)}</span>` : ''}
+              ? `<span class="batch-grp-was">／共 ${_batchCups(batch)}</span>` : ''}
           <span class="batch-time-wrap"><span class="batch-grp-time${batch.manualTime ? ' bt-manual' : ''}"
                   title="${batch.manualTime ? '手動指定的時間' : '依成員取餐時間自動判定'}">⏰ ${timeLabel}</span><button
                   class="batch-time-edit" title="修改這批的時間"
@@ -538,8 +537,8 @@ const App = (() => {
             // 看起來就像這一批還沒做 —— 整批都未領的話更是永遠不會變成完成
             if (allDone) return '<span class="batch-grp-done-tag">✓ 完成</span>';
             const served = _batchServed(batch), planned = _batchCups(batch);
-            if (served === 0) return '<span class="batch-grp-void-tag">整批未領</span>';
-            return `<span class="batch-grp-part-tag">未領 ${planned - served}</span>`;
+            if (served === 0) return '<span class="batch-grp-wait-tag">都還沒領</span>';
+            return `<span class="batch-grp-part-tag">還差 ${planned - served}</span>`;
           })()}
           <button class="batch-grp-del" onclick="App.removeBatch(${bi})">×</button>
         </div>
@@ -550,10 +549,10 @@ const App = (() => {
             const onclick = m.type === 'staff'
               ? `App.handleStaffChipClick(${m.userId},1)`
               : `App.toggleCasePickup(${m.caseId})`;
-            const cls = needsTap ? ' needs-check' : (delivered ? '' : ' missed');
-            const tag = needsTap ? ' ⚠' : (delivered ? '' : ' 未領');
-            const title = needsTap ? '這位有禁忌註記，要核對過才算出餐'
-                        : (delivered ? '預設已出餐。點一下標記為未領' : '已標記未領。點一下改回已出餐');
+            const cls = needsTap ? ' needs-check' : (delivered ? ' picked' : ' missed');
+            const tag = needsTap ? ' ⚠' : (delivered ? ' ✓' : '');
+            const title = needsTap ? '這位有禁忌註記，要核對過才算領走'
+                        : (delivered ? '已領走。點一下改回還沒領' : '還沒領。誰拿了就點一下');
             // 一個人點兩杯時，批次寫「3杯」但只看到兩個名字，對不起來。
             // 把杯數標在名字後面
             const mCups = m.type === 'case' ? (m.cups || 1) : 1;
@@ -707,8 +706,8 @@ const App = (() => {
       // 一列只放一顆主要動作。配方／菜單／編輯是偶爾才用的，
       // 全部攤開來每列要換行兩次，整頁高度會翻倍 —— 在手機上等於一直捲
       const mark = it.needsCheck && !it.done
-        ? `<button class="sch-primary" onclick="event.stopPropagation();App.toggleCasePickup(${it.caseId})">⚠ 核對出餐</button>`
-        : `<button class="${it.done ? '' : 'sch-missed'}" onclick="event.stopPropagation();App.toggleCasePickup(${it.caseId})">${it.done ? '標未出餐' : '改回已出餐'}</button>`;
+        ? `<button class="sch-primary" onclick="event.stopPropagation();App.toggleCasePickup(${it.caseId})">⚠ 核對後領走</button>`
+        : `<button class="${it.done ? '' : 'sch-missed'}" onclick="event.stopPropagation();App.toggleCasePickup(${it.caseId})">${it.done ? '改回還沒領' : '標記已領'}</button>`;
       const open = schMoreOpen.has(it.key);
       return `<div class="sch-actions">
         ${mark}
@@ -810,14 +809,16 @@ const App = (() => {
       ? lastTodayData.products.flatMap(p => p.cases || []) : [];
     return all.find(x => x.id === caseId) || null;
   }
+  // 預設沒拿，點了才代表領走。漏點的那杯會被當成沒出 ——
+  // 帳上會比實際多，盤點時看得出來；反過來（預設已領）漏標則是永遠查不到
   function _caseDelivered(c) {
     if (!c) return false;
-    return _needsCheck(c) ? casePickedUp.has(c.id) : !caseMissed.has(c.id);
+    return casePickedUp.has(c.id);
   }
   function _memberDelivered(m) {
-    if (m.type === 'staff') return !staffMissed.has(m.userId);
+    if (m.type === 'staff') return staffPickedUp.has(m.userId);
     const c = _findCase(m.caseId);
-    return c ? _caseDelivered(c) : !caseMissed.has(m.caseId);
+    return c ? _caseDelivered(c) : casePickedUp.has(m.caseId);
   }
   // 這一批是不是全部都出餐了（空批次不算完成）
   function _batchDone(batch) {
@@ -884,8 +885,8 @@ const App = (() => {
       toggleAttendance(userId, 1);
       return;
     }
-    if (staffMissed.has(userId)) staffMissed.delete(userId);
-    else staffMissed.add(userId);
+    if (staffPickedUp.has(userId)) staffPickedUp.delete(userId);
+    else staffPickedUp.add(userId);
     _checkBatchDeductions();
     _checkCaseDeductions();
     if (lastTodayData) { _saveDayState(lastTodayData.date); renderTodaySection1(lastTodayData); }
@@ -910,9 +911,7 @@ const App = (() => {
     div.querySelector('#contraCancel').onclick = () => div.remove();
   }
 
-  // 兩種個案走不同路：
-  //   有禁忌註記 → 維持原本的人工核對，核對過才算出餐（安全閘門）
-  //   其餘       → 預設已出餐，點一下是標「沒出餐」
+  // 兩種個案都要點過才算領走，差別只在有禁忌註記的會先跳核對視窗
   function toggleCasePickup(caseId) {
     const c = _findCase(caseId);
     const after = () => {
@@ -931,8 +930,8 @@ const App = (() => {
       return;
     }
 
-    if (caseMissed.has(caseId)) { caseMissed.delete(caseId); return after(); }
-    caseMissed.add(caseId);
+    if (casePickedUp.has(caseId)) { casePickedUp.delete(caseId); return after(); }
+    casePickedUp.add(caseId);
     after();
   }
 
