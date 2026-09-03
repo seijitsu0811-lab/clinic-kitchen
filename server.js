@@ -80,6 +80,14 @@ try {
   if (!hasMixed) db.exec("UPDATE ingredients SET name='綜合莓' WHERE name='莓果'");
 } catch(e) {}
 
+// 已經在用的資料庫：先立旗子，免得 schema.sql 的種子把刪掉的用料種回來。
+// 全新資料庫還沒有這張表，會丟例外 —— 那就是該種的情況，什麼都不做
+try {
+  const seeded = db.prepare('SELECT COUNT(*) c FROM prescription_ingredients').get();
+  if (seeded && seeded.c > 0)
+    db.prepare("INSERT OR IGNORE INTO settings (key,value) VALUES ('rx_ingredients_seeded','1')").run();
+} catch (e) {}
+
 db.exec(fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8'));
 try { db.exec("ALTER TABLE users ADD COLUMN password TEXT DEFAULT ''"); } catch(e) {}
 if (KITCHEN_PASSWORD) {
