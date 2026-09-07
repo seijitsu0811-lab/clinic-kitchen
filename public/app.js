@@ -1682,44 +1682,96 @@ const App = (() => {
       return;
     }
 
+    // 手機上這一頁最常做的事是「看某個人吃什麼」，不是改配方。
+    // 舊版把四顆按鈕直排在右邊，每顆字都折兩行、吃掉四成寬度，
+    // 而配方內容一個字都看不到 —— 要看還得開編輯視窗。看與改混在一起了。
+    //
+    // 現在：摘要直接在卡片上，點一下就地展開完整用料（唯讀），
+    // 四顆按鈕收成底部一排。
     list.innerHTML = Object.entries(byProduct).map(([pname, rxs]) => `
       <div class="rx-product-group">
         <div class="rx-product-label">📦 ${esc(pname)}</div>
         ${rxs.map(rx => {
           const cost = costMap[rx.id];
           const costHtml = cost
-            ? `<div style="margin-top:6px;font-size:12px;color:var(--text2)">
-                🧺 食材 <strong style="color:var(--blue)">NT$${cost.ingredient_cost}</strong>/份
-                &nbsp;+&nbsp; 人工 <strong>NT$${cost.labor_cost}</strong>
-                &nbsp;= <strong style="color:var(--text)">NT$${cost.total_cost}</strong>
-                ${cost.ingredient_cost === 0 ? '<span style="color:var(--orange);font-size:11px">（尚無採購記錄）</span>' : ''}
-               </div>`
+            ? `<span class="rxc-cost">🧺 NT$${cost.ingredient_cost} ＋ 工 NT$${cost.labor_cost}
+               ＝ <b>NT$${cost.total_cost}</b>${
+                 cost.ingredient_cost === 0 ? ' <i>（尚無採購紀錄）</i>' : ''}</span>`
             : '';
           return `
-          <div class="rx-card">
-            <div style="display:flex;justify-content:space-between;align-items:flex-start">
-              <div>
-                <div class="rx-code">${esc(rx.code)}
-                  ${rx.is_staff_rx ? '<span class="badge badge-green" style="font-size:11px;margin-left:6px">員工標準</span>' : ''}
-                </div>
-                <div class="rx-name">${esc(rx.name)}</div>
-                <div class="rx-meta">
-                  <span class="badge ${rx.formula_type==='全配方'?'badge-blue':'badge-purple'}">${esc(rx.formula_type)}</span>
-                  · ${esc(rx.timing)}
-                  ${rx.contraindications ? `· <span style="color:var(--orange)">⚠ ${esc(rx.contraindications)}</span>` : ''}
-                </div>
-                ${costHtml}
-              </div>
-              <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end">
-                <button class="btn btn-ghost btn-sm" onclick="App.openRxHistory(${rx.id},'${esc(rx.code)}','${esc(rx.name)}')">異動紀錄</button>
-                <button class="btn btn-ghost btn-sm" onclick="App.duplicateRx(${rx.id},'${esc(rx.code)}','${esc(rx.name)}')">複製</button>
-                <button class="btn btn-ghost btn-sm" onclick="App.openEditRx(${rx.id})">編輯資訊</button>
-                <button class="btn btn-primary btn-sm" onclick="App.openEditRxIngredients(${rx.id},'${esc(rx.name)}')">編輯配方</button>
-              </div>
+          <div class="rx-card" id="rxc_${rx.id}">
+            <div class="rxc-top">
+              <span class="rxc-code">${esc(rx.code)}</span>
+              ${rx.is_staff_rx ? '<span class="badge badge-green rxc-badge">員工標準</span>' : ''}
+              ${rx.produce_plan_group ? '<span class="badge badge-blue rxc-badge">跟方案輪替</span>' : ''}
+            </div>
+            <div class="rxc-name">${esc(rx.name)}</div>
+            <div class="rxc-meta">
+              <span class="badge ${rx.formula_type==='全配方'?'badge-blue':'badge-purple'}">${esc(rx.formula_type)}</span>
+              <span>${esc(rx.timing)}</span>
+              ${rx.avoid_proteins ? `<span class="rxc-avoid">不吃 ${esc(rx.avoid_proteins)}</span>` : ''}
+            </div>
+            ${rx.contraindications ? `<div class="rxc-warn">⚠ ${esc(rx.contraindications)}</div>` : ''}
+            ${costHtml}
+            <button class="rxc-open" onclick="App.toggleRxDetail(${rx.id})">
+              <span id="rxcArrow_${rx.id}">▸</span> 看配方
+            </button>
+            <div class="rxc-detail" id="rxcDetail_${rx.id}" hidden></div>
+            <div class="rxc-acts">
+              <button onclick="App.openEditRxIngredients(${rx.id},'${esc(rx.name)}')">改配方</button>
+              <button onclick="App.openEditRx(${rx.id})">改資料</button>
+              <button onclick="App.duplicateRx(${rx.id},'${esc(rx.code)}','${esc(rx.name)}')">複製</button>
+              <button onclick="App.openRxHistory(${rx.id},'${esc(rx.code)}','${esc(rx.name)}')">紀錄</button>
             </div>
           </div>`;
         }).join('')}
       </div>`).join('');
+  }
+
+  // 就地展開配方。第一次點才去要資料，之後切換不再打伺服器 ——
+  // 十張處方全部預先載入會讓這一頁在手機上等很久
+  const _rxDetailCache = {};
+  async function toggleRxDetail(rxId) {
+    const box = document.getElementById('rxcDetail_' + rxId);
+    const arrow = document.getElementById('rxcArrow_' + rxId);
+    if (!box) return;
+    if (!box.hidden) { box.hidden = true; if (arrow) arrow.textContent = '▸'; return; }
+    box.hidden = false;
+    if (arrow) arrow.textContent = '▾';
+    if (_rxDetailCache[rxId]) { box.innerHTML = _rxDetailCache[rxId]; return; }
+
+    box.innerHTML = '<div class="rxd-load">載入配方…</div>';
+    try {
+      const n = await api('/api/nutrition/prescription/' + rxId);
+      const items = (n.breakdown || []).filter(b => (b.qty ?? b.qty_per_cup) > 0);
+      // 這一頁可能還沒載過食材（那是庫存頁在做的），自己補一次才分得出類別
+      if (!allIngredients.length) {
+        try { allIngredients = await api('/api/ingredients'); } catch (e) {}
+      }
+      const byName = Object.fromEntries(allIngredients.map(i => [i.name, i]));
+      // 依類別分組。廚房秤料就是照這個順序走，混在一起讀起來很吃力
+      const ORDER = ['蔬菜', '水果', '粉類', '保健品', '油', '水', '其他'];
+      const byCat = {};
+      items.forEach(b => {
+        const ing = byName[b.name];
+        const cat = (ing && ing.category) || '其他';
+        (byCat[cat] = byCat[cat] || []).push(b);
+      });
+      const groups = ORDER.filter(c => byCat[c]).map(c => {
+        const sum = byCat[c].reduce((t, b) => t + (b.qty ?? b.qty_per_cup), 0);
+        // 只有一樣的類別（水）不必再寫一次合計，否則會變成「水 275g／水 275g」
+        const catSum = byCat[c].length > 1 ? `<span>${Math.round(sum * 10) / 10}g</span>` : '';
+        return `<div class="rxd-cat">${esc(c)}${catSum}</div>
+          <div class="rxd-items">${byCat[c].map(b =>
+            `<span class="rxd-i"><b>${esc(b.name)}</b> ${b.qty ?? b.qty_per_cup}${esc(b.unit || 'g')}</span>`
+          ).join('')}</div>`;
+      }).join('');
+      const html = `<div class="rxd-sum">${items.length} 樣　${n.kcal} 大卡　蛋白質 ${n.protein_g} 公克</div>${groups}`;
+      _rxDetailCache[rxId] = html;
+      box.innerHTML = html;
+    } catch (e) {
+      box.innerHTML = '<div class="rxd-load">讀不到配方：' + esc(e.message) + '</div>';
+    }
   }
 
   async function _fillProductSel(selectedId) {
@@ -4270,7 +4322,7 @@ const App = (() => {
     batchDragStart, batchDragEnd, batchDrop, batchDropDelete, editBatchTime, addBatch, removeBatch,
     schDragStart, schDragOver, schDragLeave, schDrop,
     deleteCase, openAddCase, openEditCase, addCase,
-    loadRx, openAddRx, openEditRx, saveRx, deleteRx, duplicateRx, openRxHistory, useOwnRx,
+    loadRx, toggleRxDetail, openAddRx, openEditRx, saveRx, deleteRx, duplicateRx, openRxHistory, useOwnRx,
     openEditRxIngredients, saveRxIngredients,
     loadInventory, openEditInv, saveInventory, togglePurchaseHistory, movePurchase, deletePurchase,
     openAddIngredient, addIngredient, openPurchase, savePurchase, commitPurchaseDraft,
