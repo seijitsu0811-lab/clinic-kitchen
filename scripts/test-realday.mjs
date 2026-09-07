@@ -1,3 +1,4 @@
+import { ensureMealDay } from './_setup.mjs';
 // 一整個營運日的模擬 —— 不是測單一函式，是測「串起來之後還對不對」。
 //
 // 單元測試各測各的都會過，但真正會出事的是交界處：
@@ -22,6 +23,8 @@ const money = n => '$' + (Math.round(n * 10) / 10);
 // ── 開場：記住現場原本的樣子，結束要原封不動還回去 ──────────
 const day0     = await api('/api/today');
 const TODAY    = day0.date;
+// 非供餐日不出員工餐 —— 這一組要驗員工杯數，先把今天算成供餐日
+const restoreMealDay = await ensureMealDay(api, TODAY);
 const YDAY     = new Date(Date.parse(TODAY + 'T00:00:00Z') - 86400000).toISOString().slice(0, 10);
 const origState  = day0.day_state?.state || {};
 const origAttend = day0.staff.map(s => ({ id: s.user_id, on: s.attending ? 1 : 0, t: s.meal_time }));
@@ -200,6 +203,8 @@ const leftCases = (await api('/api/today')).products[0].cases.filter(c => String
 const leftMeals = (await api('/api/meals/today')).orders.filter(o => String(o.patient_name).startsWith('ZZ模擬'));
 check('測試出單清乾淨', leftCases.length === 0 && leftMeals.length === 0,
       `個案 ${leftCases.length} 筆、餐盒 ${leftMeals.length} 筆`);
+
+await restoreMealDay();
 
 line(`\n${'─'.repeat(50)}\n通過 ${pass} 項，失敗 ${fail} 項`);
 process.exit(fail ? 1 : 0);

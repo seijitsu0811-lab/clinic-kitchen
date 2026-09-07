@@ -18,8 +18,13 @@ const line = s => console.log(s);
 const check = (n, c, d = '') => { c ? (pass++, line(`  ✓ ${n}${d ? '  ' + d : ''}`))
                                    : (fail++, line(`  ✗ ${n}${d ? '  ' + d : ''}`)); };
 
+import { ensureMealDay } from './_setup.mjs';
+
 const day = await api('/api/today');
 const today = day.date;
+// 非供餐日不出員工餐，員工那段一律 0 杯 —— 這一組全部建立在員工杯數上，
+// 所以先把今天算成供餐日，最後還原
+const restoreMealDay = await ensureMealDay(api, today);
 const setState = s => api('/api/today/state', 'PUT', { date: today, state: s });
 const getState = async () => (await api('/api/today')).day_state?.state || {};
 const expected = () => api('/api/consumption/expected?date=' + today);
@@ -92,6 +97,8 @@ await setState(origState);
 const restored = await getState();
 check('狀態還原成測試前的樣子',
       JSON.stringify(restored.staffMissed || []) === JSON.stringify(origState.staffMissed || []));
+
+await restoreMealDay();
 
 line(`\n${'─'.repeat(46)}\n通過 ${pass} 項，失敗 ${fail} 項`);
 process.exit(fail ? 1 : 0);

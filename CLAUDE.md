@@ -315,7 +315,20 @@ prescriptions.produce_plan_group     ← 指向方案；空字串 = 不用方案
 
 ## 測試
 
-改完一定要跑，全部都要過（共 349 項（會依當天資料浮動））。
+改完一定要跑：
+
+```bash
+PORT=3999 node server.js            # 另一個終端機
+node scripts/run-tests.mjs          # 一次跑完，含三支靜態檢查
+```
+
+`run-tests` 會擋住一種假綠燈：**任何一支測試通過 0 項，一律視為失敗**。
+靠當天現場剛好有資料才跑得起來的測試，沒資料時會整組略過然後回報通過 ——
+test-appt-sync 就這樣長期通過 0 項，而它守的是最會出事的那條路。
+
+要驗的環境自己備：`scripts/_setup.mjs` 提供 `ensureMealDay()`（把今天暫時
+算成員工供餐日）與 `ensureAttendance()`（補出勤），跑完還原。四支測試共用
+同一份 —— 各自抄一份的話，供餐日規則改了會有四個地方要跟著改。
 
 ```bash
 PORT=3999 node server.js            # 另一個終端機

@@ -1,3 +1,4 @@
+import { ensureMealDay, ensureAttendance } from './_setup.mjs';
 // 「今天幾杯」只能有一個答案
 //
 //   系統裡有兩條路各自在算杯數：
@@ -30,6 +31,15 @@ const expectOf = async d => (await api('/api/consumption/expected?date=' + d)).t
 line('\n━━ 1. 沒有人點過時，兩條路要算出同一個數字 ━━');
 // 「扣庫存」現在只算點過的，跟「該做幾杯」本來就會不一樣 ——
 // 要比對兩條路有沒有算漏，得站在「沒有人點過」的退路規則上比
+// 今天不一定是員工供餐日（現在是週二、週四）。不是的話員工那段一律 0 杯，
+// 整組測不出東西 —— 所以測試自己把今天設成供餐日，跑完還原。
+// 靠「今天剛好是週二」才跑得起來的測試，一週有五天等於沒有測試。
+const restoreDow = await ensureMealDay(api, today);
+
+// 沒有人按出勤時，排產用「在編人數」估、扣庫存用實際出勤 —— 那是合理的差異，
+// 拿它當「兩條路一致」的基準會誤報。所以先把出勤備好。
+const restoreAtt = await ensureAttendance(api, today);
+
 const st = await api('/api/today/state?date=' + today);
 const orig = st.state ? JSON.parse(JSON.stringify(st.state)) : null;
 const clearTaps = () => api('/api/today/state', 'PUT', {
@@ -97,10 +107,10 @@ else {
 line('\n━━ 3. 有人點了之後，扣庫存要比排產少 ━━');
 // 排產是「照排班該做幾杯」，扣庫存是「實際被領走幾杯」——
 // 還沒領完時這兩個數字本來就該不一樣，不能硬要相等
-const td3 = await api('/api/today');
-const att3 = (td3.staff || []).filter(x => x.attending === 1 && x.date === today);
-if (!att3.length) { line('  － 今天沒有出勤紀錄，這組略過'); }
-else {
+const att3 = ((await api('/api/today')).staff || [])
+  .filter(x => x.attending === 1 && x.date === today);
+check('前置：有出勤紀錄可測', att3.length > 0, att3.length + ' 位');
+{
   await api('/api/today/state', 'PUT', {
     date: today,
     state: { ...(orig || {}), staff: [att3[0].user_id], cases: [], staffMissed: [], caseMissed: [] }
@@ -113,6 +123,8 @@ else {
 }
 
 line('\n━━ 4. 還原 ━━');
+await restoreDow();
+await restoreAtt();
 if (orig) await api('/api/today/state', 'PUT', { date: today, state: orig });
 const back = await api('/api/today/state?date=' + today);
 check('當天狀態還原', JSON.stringify(back.state) === JSON.stringify(orig) || !orig);

@@ -656,8 +656,10 @@ function installAbeiSet() {
   });
   console.log('阿北套餐與加菜品項已建立（店家資訊待補）');
 }
-installAbeiSet();
-updateFormulaB2026();
+// 這幾支會寫 vendors／meal_items，而那些資料表在檔案更後面才建。
+// 在這裡跑的話全新資料庫直接開不起來（no such table: vendors）——
+// 既有資料庫看不出來，因為那些表早就存在了。
+// 呼叫統一移到「餐盒資料表建好之後」，見下方 installMealSeeds()
 
 function installFormulaSets() {
   if (db.prepare("SELECT 1 FROM settings WHERE key='formula_sets_2026_09'").get()) return;
@@ -751,7 +753,7 @@ function switchLefuToThigh() {
     console.log('樂芙雞胸已換成去骨烤雞腿餐盒（674kcal / 48g / $170）');
   });
 }
-switchLefuToThigh();
+// switchLefuToThigh() 同樣移到餐盒資料表之後
 
 // 樂芙的雞胸改成雞腿。熱量與蛋白質原本是店家公告的「雞胸」數字，
 // 換成雞腿之後那些數字就不對了 —— 標回待確認，不要拿舊數字充新品項
@@ -1014,6 +1016,9 @@ function staffRxFor(date, productId) {
      nutrition_as_of TEXT DEFAULT '',
      price_single INTEGER DEFAULT 0, price_box INTEGER DEFAULT 0,
      default_mode TEXT DEFAULT '餐盒',
+     -- 這幾欄上面也有 ALTER，但那批跑在建表之前：既有資料庫靠 ALTER 補，
+     -- 全新資料庫要靠這裡。少了它，開機時 installAbeiSet 會掛
+     item_type TEXT DEFAULT '餐盒',
      sort_order INTEGER DEFAULT 0, active INTEGER DEFAULT 1,
      FOREIGN KEY (series_id) REFERENCES meal_series(id))`,
 
@@ -1037,6 +1042,8 @@ function staffRxFor(date, productId) {
      status TEXT DEFAULT '待採購',
      snap_display_name TEXT DEFAULT '', snap_kcal REAL DEFAULT 0, snap_price INTEGER DEFAULT 0,
      notes TEXT DEFAULT '', source_key TEXT DEFAULT '',
+     -- 同上：上面那批 ALTER 跑在建表之前，全新資料庫要靠這裡
+     share_people INTEGER DEFAULT 1, share_boxes INTEGER DEFAULT 1,
      created_at TEXT DEFAULT (datetime('now','localtime')),
      FOREIGN KEY (meal_item_id) REFERENCES meal_items(id))`,
   `CREATE INDEX IF NOT EXISTS idx_meal_orders_date ON meal_orders(date)`,
@@ -1058,6 +1065,16 @@ function staffRxFor(date, productId) {
   `ALTER TABLE ingredients ADD COLUMN protein_per_unit REAL DEFAULT 0`,
   `ALTER TABLE ingredients ADD COLUMN nutrition_source TEXT DEFAULT ''`,
 ].forEach(sql => { try { db.exec(sql); } catch(e) {} });
+
+// 餐盒相關的資料表到這裡才建好。所有會碰到 vendors／meal_items 的種子
+// 都放在這之後跑 —— 順序錯了，全新資料庫會在開機時就掛掉，
+// 而既有資料庫完全看不出來
+function installMealSeeds() {
+  updateFormulaB2026();
+  switchLefuToThigh();
+  installAbeiSet();
+}
+installMealSeeds();
 
 // ── 食材營養密度（每 1 單位；油品的單位是 ml）──────────────
 [
@@ -2784,7 +2801,11 @@ function expectedForDate(date) {
     ? attendingIds.filter(id => ex.staffPicked.has(id)).length
     : attendingIds.filter(id => !ex.staffMissed.has(id)).length;
   const staffRx = staffRxFor(date);
-  if (staffRx && staffCups > 0) out.push({ rxId: staffRx.id, cups: staffCups, powderType: '' });
+  // 非供餐日不出員工餐 —— 排產那邊本來就有這道判斷，扣庫存這邊漏了。
+  // 出勤表在非供餐日照樣有紀錄（那是上班，不是吃飯），
+  // 少了這一行就會扣掉根本沒做的那幾杯
+  if (staffRx && staffCups > 0 && isStaffMealDay(dowOf(date)))
+    out.push({ rxId: staffRx.id, cups: staffCups, powderType: '' });
 
   // 每日固定供應的處方（AW 就是這種）。排產那邊一直有算，扣庫存這邊漏了 ——
   // 結果是那杯照做、照喝，庫存卻從來沒有扣過。目前被「每天另外建一張單」
