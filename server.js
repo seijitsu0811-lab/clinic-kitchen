@@ -2690,7 +2690,18 @@ app.get('/api/day/cups', (req, res) => {
     return { rx_id: c.rxId, code: rx.code || '?', name: rx.name || '', active: rx.active,
              cups: c.cups, powder_mult: c.powderMult, why: c.why };
   });
-  const out = { date, dow: dowOf(date), total_cups: rows.reduce((t, r) => t + r.cups, 0), rows };
+  // 那一天實際有哪幾張個案出單。要修某一筆時得知道它的編號，
+  // 而系統原本沒有「列出某天出單」的路 —— 只有今天那一頁看得到
+  const orders = db.prepare(
+    `SELECT co.id, co.prescription_id, co.cups, co.powder_type, co.meal_time,
+            co.patient_name, COALESCE(co.source_key,'') source_key,
+            p.code rx_code, p.name rx_name, p.active rx_active
+       FROM case_orders co LEFT JOIN prescriptions p ON p.id=co.prescription_id
+      WHERE co.date=? ORDER BY co.meal_time, co.id`
+  ).all(date);
+
+  const out = { date, dow: dowOf(date),
+                total_cups: rows.reduce((t, r) => t + r.cups, 0), rows, orders };
 
   // 指定食材時，列出這一天是誰要用它
   const want = String(req.query.ingredient || '').trim();
