@@ -982,6 +982,21 @@
     .batch-grp-label { white-space: nowrap; }
     .batch-grp-void-tag, .batch-grp-part-tag { white-space: nowrap; }
     .batch-grp-was { white-space: nowrap; }
+    .avoid-row { display: flex; gap: 8px; flex-wrap: wrap; }
+    .avoid-chk {
+      display: inline-flex; align-items: center; gap: 6px;
+      min-height: 44px; padding: 6px 14px; cursor: pointer;
+      border: 1px solid var(--border); border-radius: 999px;
+      background: var(--card); font-size: 15px; font-weight: 600;
+    }
+    .avoid-chk input { width: 18px; height: 18px; }
+    .avoid-chk:has(input:checked) {
+      border-color: var(--red); color: var(--red); background: rgba(239,68,68,.08);
+    }
+    .avoid-hint {
+      display: block; margin-top: 8px; font-size: 12px;
+      color: var(--text3); line-height: 1.6;
+    }
     .ph-fix {
       min-height: 32px; padding: 4px 10px; margin-left: 6px; font-size: 12px;
       border: 1px solid var(--border); border-radius: var(--radius-sm);
@@ -3102,7 +3117,19 @@
       </select>
     </div>
     <div class="form-group">
-      <label>禁忌 / 注意事項</label>
+      <label>不吃的蛋白質（套餐菜單會擋掉）</label>
+      <div class="avoid-row" id="rxAvoid">
+        <label class="avoid-chk"><input type="checkbox" value="豬">豬</label>
+        <label class="avoid-chk"><input type="checkbox" value="雞">雞</label>
+        <label class="avoid-chk"><input type="checkbox" value="魚">魚</label>
+        <label class="avoid-chk"><input type="checkbox" value="蛋">蛋</label>
+        <label class="avoid-chk"><input type="checkbox" value="奶">奶</label>
+      </div>
+      <small class="avoid-hint">勾起來的類別，個管師的菜單會標紅、給客人看時直接不顯示。
+        過敏或宗教因素要勾在這裡 —— 下面那欄是自由備註，系統不會拿它比對。</small>
+    </div>
+    <div class="form-group">
+      <label>禁忌 / 注意事項（自由備註）</label>
       <input id="rxContra" type="text" placeholder="如：無肉桂粉改薑片">
     </div>
     <div class="modal-actions">

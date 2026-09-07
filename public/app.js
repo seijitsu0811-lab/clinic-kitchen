@@ -1806,6 +1806,7 @@ const App = (() => {
     document.getElementById('rxType').value = rx.formula_type;
     document.getElementById('rxTiming').value = rx.timing;
     document.getElementById('rxContra').value = rx.contraindications || '';
+    _setAvoid(rx.avoid_proteins || '');
     document.getElementById('rxDailyCups').value  = rx.daily_cups  || 0;
     document.getElementById('rxBufferCups').value = rx.buffer_cups || 0;
     const delBtn = document.getElementById('rxDelBtn');
@@ -1836,6 +1837,7 @@ const App = (() => {
       formula_type:      document.getElementById('rxType').value,
       timing:            document.getElementById('rxTiming').value,
       contraindications: document.getElementById('rxContra').value.trim(),
+      avoid_proteins:    _getAvoid(),
       daily_cups:        parseFloat(document.getElementById('rxDailyCups').value)  || 0,
       buffer_cups:       parseFloat(document.getElementById('rxBufferCups').value) || 0,
       active: 1
@@ -4242,6 +4244,16 @@ const App = (() => {
     window.open(
       `menu.html?prescription_id=${prescriptionId}&powder_type=${encodeURIComponent(powderType || '袋裝')}`,
       '_blank');
+  }
+
+  // 不吃的蛋白質：畫面上是勾勾，存的是逗號字串
+  function _setAvoid(csv) {
+    const on = new Set(String(csv || '').split(',').map(x => x.trim()).filter(Boolean));
+    document.querySelectorAll('#rxAvoid input').forEach(el => { el.checked = on.has(el.value); });
+  }
+  function _getAvoid() {
+    return [...document.querySelectorAll('#rxAvoid input')]
+      .filter(el => el.checked).map(el => el.value).join(',');
   }
 
   function esc(s) {

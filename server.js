@@ -306,6 +306,10 @@ try {
   // 盤點的人只有這幾天上班（0=日 1=一 … 6=六）。備料區間依這個算，不是固定一週
   "INSERT OR IGNORE INTO settings (key,value) VALUES ('stocktake_dows','1,2,4')",
   // 雙週輪替：同一個 rotation_group 裡的處方會依週期自動換手，不必有人記得每兩週去切換
+  // 不吃哪幾類蛋白質。用明確欄位，不要拿 contraindications 去比對關鍵字 ——
+  // 那個欄位現在放的是「無肉桂粉改薑片」「早餐」這種備註，
+  // 猜錯的方向是「漏掉過敏」，那不能賭
+  "ALTER TABLE prescriptions ADD COLUMN avoid_proteins TEXT DEFAULT ''",
   "ALTER TABLE prescriptions ADD COLUMN rotation_group TEXT DEFAULT ''",
   "ALTER TABLE prescriptions ADD COLUMN rotation_index INTEGER DEFAULT 0",
   // 備料階段：標成「冷凍包」的用料進每週分裝，其餘出餐當天現秤。一個標記長出兩張表
@@ -794,6 +798,7 @@ function shareLabel(o) {
 function rxSnapshot(rxId) {
   const p = db.prepare(
     `SELECT code, name, formula_type, timing, COALESCE(contraindications,'') contraindications,
+            COALESCE(avoid_proteins,'') avoid_proteins,
             COALESCE(produce_plan_group,'') produce_plan_group, active
        FROM prescriptions WHERE id=?`
   ).get(rxId) || {};
@@ -823,7 +828,8 @@ function diffSummary(before, after) {
   Object.keys(bi).forEach(n => { if (!ai[n]) parts.push(`移除 ${n}（原 ${bi[n].qty_per_cup}g）`); });
 
   [['name', '名稱'], ['formula_type', '配方類型'], ['timing', '服用時機'],
-   ['contraindications', '禁忌註記'], ['produce_plan_group', '蔬果方案組']].forEach(([k, label]) => {
+   ['contraindications', '禁忌註記'], ['avoid_proteins', '不吃的蛋白質'],
+   ['produce_plan_group', '蔬果方案組']].forEach(([k, label]) => {
     if ((before[k] || '') !== (after[k] || ''))
       parts.push(`${label}「${before[k] || '無'}」→「${after[k] || '無'}」`);
   });
@@ -2186,17 +2192,20 @@ app.post('/api/prescriptions', (req, res) => {
 
 app.put('/api/prescriptions/:id', (req, res) => {
   const { product_id, name, formula_type, contraindications, timing, is_staff_rx, active,
-          daily_cups, buffer_cups, weekly_cups } = req.body;
+          daily_cups, buffer_cups, weekly_cups, avoid_proteins } = req.body;
   const beforeSnap = rxSnapshot(req.params.id);
   const cur = db.prepare('SELECT daily_cups, buffer_cups, weekly_cups FROM prescriptions WHERE id=?').get(req.params.id) || {};
+  const curAvoid = db.prepare("SELECT COALESCE(avoid_proteins,'') a FROM prescriptions WHERE id=?")
+                     .get(req.params.id) || { a: '' };
   db.prepare(
     `UPDATE prescriptions SET product_id=?,name=?,formula_type=?,contraindications=?,timing=?,
-            is_staff_rx=?,active=?,daily_cups=?,buffer_cups=?,weekly_cups=? WHERE id=?`
+            is_staff_rx=?,active=?,daily_cups=?,buffer_cups=?,weekly_cups=?,avoid_proteins=? WHERE id=?`
   ).run(product_id||1, name, formula_type, contraindications||'', timing, is_staff_rx?1:0,
         active===undefined?1:active,
         daily_cups  === undefined ? (cur.daily_cups  || 0) : (Number(daily_cups)  || 0),
         buffer_cups === undefined ? (cur.buffer_cups || 0) : (Number(buffer_cups) || 0),
         weekly_cups === undefined ? (cur.weekly_cups || 0) : (Number(weekly_cups) || 0),
+        avoid_proteins === undefined ? curAvoid.a : String(avoid_proteins || ''),
         req.params.id);
   recordRxChange(req.params.id, beforeSnap, '基本資料', req);
   res.json({ ok: true });
@@ -4134,6 +4143,12 @@ app.get('/api/meals/menu/case', (req, res) => {
   const tonic = rx ? calcTonicNutrition(rx.id, pm) : null;
   const prod  = db.prepare('SELECT name, unit FROM products WHERE id=1').get();
 
+  // 明確勾選的「不吃哪幾類」。contraindications 那欄放的是自由備註
+  // （「無肉桂粉改薑片」「早餐」），拿它比對關鍵字會漏掉真的過敏
+  const avoidList = String((rx && rx.avoid_proteins) || '')
+    .split(',').map(x => x.trim()).filter(Boolean);
+  const avoidSet = new Set(avoidList);
+
   const series = db.prepare(
     `SELECT id, name, tagline FROM meal_series WHERE active=1 ORDER BY sort_order, id`
   ).all();
@@ -4151,8 +4166,16 @@ app.get('/api/meals/menu/case', (req, res) => {
       protein_g: tonic ? tonic.protein_g : null,
       exact:     !!tonic
     },
-    case: rx ? { name: rx.name, code: rx.code, formula_type: rx.formula_type } : null,
+    // 一盒幾個人分。菜單上要能當場回答「我們兩個人要點幾盒」
+    share_ratios: String(rotationSetting('share_ratios', '1:1'))
+      .split(',').map(x => x.trim()).filter(Boolean)
+      .map(x => { const [p, b] = x.split(':').map(Number); return { people: p || 1, boxes: b || 1 }; }),
+    case: rx ? {
+      name: rx.name, code: rx.code, formula_type: rx.formula_type,
+      avoid: avoidList, note: String(rx.contraindications || '').trim()
+    } : null,
     series: series.map(s => ({
+      id:      s.id,
       name:    s.name,
       tagline: s.tagline,
       items:   itemStmt.all(s.id).map(it => ({
@@ -4161,10 +4184,17 @@ app.get('/api/meals/menu/case', (req, res) => {
         name:         it.display_name,
         kcal:         it.kcal,
         kcal_single:  it.kcal_single,
-        protein_g:    it.protein_g,
+        // 店家沒給就回 null。回 0 的話菜單會寫「蛋白質 0 公克」，
+        // 客人會以為那盒真的沒有蛋白質 —— 比不寫還糟
+        protein_g:        it.protein_g > 0 ? it.protein_g : null,
+        protein_g_single: it.protein_g_single > 0 ? it.protein_g_single : null,
+        kcal_unknown:     !(it.kcal > 0),
         estimated:    it.kcal_source === '內部估算',
-        set_kcal:     tonic ? Math.round(it.kcal + tonic.kcal) : null,
-        set_kcal_single: tonic ? Math.round(it.kcal_single + tonic.kcal) : null
+        // 這個人不吃這一類。比對的是明確勾選的類別，不是拿備註猜關鍵字
+        avoid:        avoidSet.has(it.protein),
+        avoid_reason: avoidSet.has(it.protein) ? it.protein : '',
+        set_kcal:     tonic && it.kcal > 0 ? Math.round(it.kcal + tonic.kcal) : null,
+        set_kcal_single: tonic && it.kcal_single > 0 ? Math.round(it.kcal_single + tonic.kcal) : null
       }))
     }))
   });

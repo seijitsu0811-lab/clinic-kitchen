@@ -88,6 +88,73 @@
      依 AAA 需要 7:1，--chick 只有 5.92:1，所以這裡另外指定。 */
   .approx { font-size: 18px; font-weight: 700; color: #5F3D04; }
 
+  /* ── 個管師那一條 ──────────────────────────────────────
+     最常用的是手機，所以這條要黏在上面、按鈕大顆，單手按得到。
+     切到「給客人看」時整條收起來，螢幕轉過去只剩菜單。 */
+  .bar {
+    position: sticky; top: 0; z-index: 20;
+    background: var(--ink); color: #fff;
+    margin: 0 -20px 20px; padding: 12px 20px;
+    display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+  }
+  .bar-title { font-size: 17px; font-weight: 800; letter-spacing: .04em; }
+  .bar-sp { margin-left: auto; }
+  .bar button {
+    font: inherit; font-size: 17px; font-weight: 800;
+    min-height: 48px; padding: 8px 18px; border-radius: 12px;
+    border: 2px solid #fff; background: transparent; color: #fff; cursor: pointer;
+  }
+  .bar button.go { background: #fff; color: var(--ink); }
+
+  /* 客人模式：一次只看一間，回頭的按鈕要在但不要搶戲 */
+  .back {
+    font: inherit; font-size: 17px; font-weight: 700;
+    min-height: 48px; padding: 8px 16px; margin-bottom: 16px;
+    border: 2px solid var(--line); border-radius: 12px;
+    background: var(--card); color: var(--ink-2); cursor: pointer;
+  }
+
+  /* 選餐廳：客人模式一次一間，先由個管師挑 */
+  .pick { display: grid; gap: 12px; margin-bottom: 28px; }
+  .pick button {
+    font: inherit; text-align: left; cursor: pointer;
+    background: var(--card); border: 3px solid var(--line);
+    border-radius: 16px; padding: 18px 22px; min-height: 64px;
+  }
+  .pick .p-name { font-size: 26px; font-weight: 900; display: block; }
+  .pick .p-tag  { font-size: 18px; color: var(--ink-2); }
+  .pick .p-n    { font-size: 17px; color: var(--green); font-weight: 800; }
+
+  /* 這個人不吃的：個管師看得到、標紅；客人模式整個不顯示 */
+  .dish.avoid {
+    border-color: var(--pork); background: var(--pork-bg);
+  }
+  .dish.avoid .dish-name { text-decoration: line-through; }
+  .avoid-flag {
+    display: inline-block; font-size: 18px; font-weight: 900;
+    color: #fff; background: var(--pork);
+    padding: 3px 12px; border-radius: 999px; margin-left: 8px;
+  }
+  .none-note { font-size: 19px; color: var(--ink-2); }
+
+  /* 幾個人吃 → 要幾盒。當場就要答得出來 */
+  .share {
+    background: var(--card); border: 2px dashed var(--line);
+    border-radius: 16px; padding: 18px 22px; margin-bottom: 28px;
+  }
+  .share-q { font-size: 21px; font-weight: 800; margin-bottom: 12px; }
+  .share-btns { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+  .share-btns button {
+    font: inherit; font-size: 20px; font-weight: 800; cursor: pointer;
+    min-width: 56px; min-height: 52px; border-radius: 12px;
+    border: 2px solid var(--line); background: var(--paper); color: var(--ink);
+  }
+  .share-btns button[aria-pressed="true"] {
+    border-color: var(--green); background: var(--green-bg); color: var(--green);
+  }
+  .share-out { font-size: 21px; font-weight: 800; line-height: 1.9; }
+  .share-out em { font-style: normal; color: var(--green); font-size: 25px; }
+
   .foot { font-size: 18px; color: var(--ink-2); border-top: 2px solid var(--line); padding-top: 20px; }
   .err  { font-size: 22px; color: var(--pork); padding: 40px 0; }
 
@@ -101,6 +168,7 @@
   @media print {
     body { background: #fff; }
     .dish, .tonic { break-inside: avoid; }
+    .bar, .back, .share-btns, .pick { display: none !important; }
   }
 </style>
 </head>
@@ -140,42 +208,144 @@ async function load() {
   }
 
   const tonicKcal = d.tonic.kcal;
-  root.innerHTML = `
-    <header>
-      <h1>調理套餐菜單</h1>
-      ${d.case ? `<div class="who">${esc(d.case.name)} 專屬</div>` : ''}
-    </header>
+  const avoid = (d.case && d.case.avoid) || [];
 
-    <div class="tonic">
-      <div class="tonic-label">每一份套餐都包含</div>
-      <div class="tonic-name">${esc(d.tonic.name)}（${d.tonic.volume_ml} 毫升）</div>
-      <div class="tonic-num">${tonicKcal != null ? tonicKcal + ' 大卡' : '熱量依處方計算'}${
-        d.tonic.protein_g != null ? '　蛋白質 ' + d.tonic.protein_g + ' 公克' : ''}</div>
-      <div class="tonic-note">這杯的熱量是依您的個人配方算出來的，和別人不一樣。</div>
-    </div>
+  // 兩種檢視共用同一份菜單，不做兩頁 —— 做兩頁的話禁忌邏輯會有兩份，遲早不一致。
+  //   個管師：全部餐廳攤開，不吃的標紅留著（要看得到才知道為什麼不建議）
+  //   客人  ：一次只看一間，不吃的整個不顯示
+  let mode = 'staff';        // staff | guest
+  let pickedSeries = null;   // 客人模式看哪一間
+  let people = 1;            // 幾個人一起吃
 
-    ${d.series.map(s => `
+  const num = (v, unit) => v == null ? '—' : v + ' ' + unit;
+
+  function dishHtml(i) {
+    const bad = avoid.includes(i.protein);
+    if (bad && mode === 'guest') return '';        // 客人模式：不吃的不出現
+    return `
+      <div class="dish${bad ? ' avoid' : ''}">
+        <div class="dish-top">
+          <span class="tag tag-${esc(i.protein)}">${ICON[i.protein] || ''} ${esc(i.protein)}</span>
+          <span class="dish-name">${esc(i.name)}</span>
+          ${bad ? `<span class="avoid-flag">不吃 ${esc(i.avoid_reason || i.protein)}</span>` : ''}
+        </div>
+        <div class="dish-nums">
+          餐盒 ${i.kcal_unknown ? '熱量未提供' : i.kcal + ' 大卡'}${
+            i.estimated ? ' <span class="approx">（約略值）</span>' : ''}
+          ＋ 精力湯 ${tonicKcal != null ? tonicKcal : '—'} 大卡
+          <br>蛋白質 ${num(i.protein_g, '公克')}${
+            i.protein_g == null ? ' <span class="approx">（店家未提供）</span>' : ''}
+        </div>
+        ${i.set_kcal != null ? `<div class="dish-total">整份套餐 ${i.set_kcal} 大卡</div>` : ''}
+      </div>`;
+  }
+
+  function seriesHtml(s) {
+    const dishes = s.items.map(dishHtml).join('');
+    if (!dishes.trim()) return '';                 // 整間都被擋掉就不顯示這一間
+    return `
       <section class="series">
         <h2 class="series-name">${esc(s.name)}</h2>
-        <p class="series-tag">${esc(s.tagline)}</p>
-        ${s.items.map(i => `
-          <div class="dish">
-            <div class="dish-top">
-              <span class="tag tag-${esc(i.protein)}">${ICON[i.protein] || ''} ${esc(i.protein)}</span>
-              <span class="dish-name">${esc(i.name)}</span>
-            </div>
-            <div class="dish-nums">
-              餐盒 ${i.kcal} 大卡${i.estimated ? ' <span class="approx">（約略值）</span>' : ''}
-              ＋ 精力湯 ${tonicKcal != null ? tonicKcal : '—'} 大卡
-            </div>
-            ${i.set_kcal != null ? `<div class="dish-total">整份套餐 ${i.set_kcal} 大卡</div>` : ''}
-          </div>`).join('')}
-      </section>`).join('')}
+        ${s.tagline ? `<p class="series-tag">${esc(s.tagline)}</p>` : ''}
+        ${dishes}
+      </section>`;
+  }
 
-    <p class="foot">
-      熱量為每份的估計值，會因當日食材份量略有增減。<br>
-      有任何飲食上的疑問，請直接告訴我們的護理人員。
-    </p>`;
+  // 幾個人吃 → 要幾盒。個管師當場就要答得出來
+  function shareHtml() {
+    const rs = d.share_ratios || [{ people: 1, boxes: 1 }];
+    const opts = rs.map(r => {
+      const boxes = (r.people <= 1 && r.boxes <= 1)
+        ? people : Math.ceil(people * r.boxes / r.people);
+      const label = (r.people <= 1 && r.boxes <= 1) ? '一人一盒' : `${r.people} 人 ${r.boxes} 盒`;
+      return `<div>${label} → 要 <em>${boxes}</em> 盒</div>`;
+    }).join('');
+    return `
+      <div class="share">
+        <div class="share-q">幾個人一起吃？</div>
+        <div class="share-btns">
+          ${[1, 2, 3, 4, 5, 6].map(n =>
+            `<button aria-pressed="${n === people}" onclick="window.__setPeople(${n})">${n}</button>`).join('')}
+        </div>
+        <div class="share-out">${opts}</div>
+        <div class="none-note">青菜可以另外加買，不佔盒數。</div>
+      </div>`;
+  }
+
+  function render() {
+    const staffBar = `
+      <div class="bar">
+        <span class="bar-title">個管師檢視</span>
+        <span class="bar-sp"></span>
+        <button onclick="window.__print()">存成 PDF</button>
+        <button class="go" onclick="window.__guest()">👁 給客人看</button>
+      </div>`;
+
+    const head = `
+      <header>
+        <h1>調理套餐菜單</h1>
+        ${d.case ? `<div class="who">${esc(d.case.name)} 專屬</div>` : ''}
+      </header>
+
+      <div class="tonic">
+        <div class="tonic-label">每一份套餐都包含</div>
+        <div class="tonic-name">${esc(d.tonic.name)}（${d.tonic.volume_ml} 毫升）</div>
+        <div class="tonic-num">${tonicKcal != null ? tonicKcal + ' 大卡' : '熱量依處方計算'}${
+          d.tonic.protein_g != null ? '　蛋白質 ' + d.tonic.protein_g + ' 公克' : ''}</div>
+        <div class="tonic-note">這杯的熱量是依您的個人配方算出來的，和別人不一樣。</div>
+      </div>`;
+
+    const foot = `
+      <p class="foot">
+        熱量為每份的估計值，會因當日食材份量略有增減。<br>
+        有任何飲食上的疑問，請直接告訴我們的護理人員。
+      </p>`;
+
+    // ── 個管師：全部攤開 ──────────────────────────────────
+    if (mode === 'staff') {
+      const warn = avoid.length
+        ? `<div class="share" style="border-color:var(--pork)">
+             <div class="share-q" style="color:var(--pork)">這位不吃：${avoid.map(esc).join('、')}</div>
+             <div class="none-note">下面標紅的品項，切到「給客人看」時不會出現。
+               ${d.case && d.case.note ? '備註：' + esc(d.case.note) : ''}</div>
+           </div>`
+        : '';
+      root.innerHTML = staffBar + head + warn + shareHtml()
+        + d.series.map(seriesHtml).join('') + foot;
+      return;
+    }
+
+    // ── 客人：先挑一間，一次只看一間 ──────────────────────
+    if (!pickedSeries) {
+      const cards = d.series.map(s => {
+        const n = s.items.filter(i => !avoid.includes(i.protein)).length;
+        if (!n) return '';
+        return `<button onclick="window.__pick(${s.id})">
+          <span class="p-name">${esc(s.name)}</span>
+          ${s.tagline ? `<span class="p-tag">${esc(s.tagline)}</span><br>` : ''}
+          <span class="p-n">${n} 道可選</span>
+        </button>`;
+      }).join('');
+      root.innerHTML = `<button class="back" onclick="window.__staff()">← 回個管師檢視</button>`
+        + head
+        + `<h2 class="series-name">今天想吃哪一種？</h2><div class="pick">${cards}</div>`
+        + foot;
+      return;
+    }
+
+    const s = d.series.find(x => x.id === pickedSeries);
+    root.innerHTML = `<button class="back" onclick="window.__unpick()">← 換一間</button>`
+      + head + shareHtml() + (s ? seriesHtml(s) : '') + foot;
+  }
+
+  window.__guest     = () => { mode = 'guest'; pickedSeries = null; render(); window.scrollTo(0, 0); };
+  window.__staff     = () => { mode = 'staff'; pickedSeries = null; render(); window.scrollTo(0, 0); };
+  window.__pick      = id => { pickedSeries = id; render(); window.scrollTo(0, 0); };
+  window.__unpick    = () => { pickedSeries = null; render(); window.scrollTo(0, 0); };
+  window.__setPeople = n => { people = n; render(); };
+  window.__print     = () => window.print();
+
+  render();
 }
 load();
 </script>
