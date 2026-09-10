@@ -276,7 +276,8 @@ async function load() {
             i.estimated ? ' <span class="approx">（約略值）</span>' : ''}
           ＋ 精力湯 ${tonicKcal != null ? tonicKcal : '—'} 大卡
           <br>蛋白質 ${num(i.protein_g, '公克')}${
-            i.protein_g == null ? ' <span class="approx">（店家未提供）</span>' : ''}
+            i.protein_g == null ? ' <span class="approx">（店家未提供）</span>'
+            : (i.estimated ? ' <span class="approx">（約略值）</span>' : '')}
         </div>
         ${i.set_kcal != null ? `<div class="dish-total">整份套餐 ${i.set_kcal} 大卡</div>` : ''}
         </div>

@@ -1144,12 +1144,46 @@ function installMealPhotos2026_09() {
   console.log('樂芙與七福的內用照已掛上（各兩道；甘露豬與鯖魚沒拍到，留空）');
 }
 
+// 2026-09-10 蛋白盒子三道的熱量與蛋白質。全平台都沒有營養標示，所以是推估的。
+//
+// 熱量：紐奧良雞腿排 476、壽喜牛五花 575 取自同連鎖其他分店對「同名品項」的公告。
+//   薄鹽烤鮭魚沒有任何分店公告 —— 用配菜熱量回推：
+//   雞腿排盒 476 − 去骨雞腿排約 120g（約 250 大卡）＝ 配菜約 225 大卡。
+//   拿這個 225 去驗牛五花：牛五花 100g 約 340 大卡 ＋ 225 ＝ 565，
+//   對得上公告的 575，所以配菜這個基數可信。
+//   鮭魚 130g 約 265 大卡 ＋ 225 ＝ 490。
+//
+// 蛋白質：店家對菲力豬排標「約 22g」，而豬里肌 100g 正好約 22g ——
+//   可見他們報的是主菜那一份，不含配菜。所以照主菜份量推：
+//     去骨雞腿排 120g × 24g/100g ≒ 30g
+//     牛五花    100g × 17g/100g ≒ 17g（五花油脂高，蛋白質相對低）
+//     鮭魚      130g × 21g/100g ≒ 27g
+//
+// 全部標 kcal_source='內部估算'，菜單上會顯示「（約略值）」——
+// 推估值長得跟公告值一樣的話，客人會照著算
+function installProteinBoxNutrition() {
+  if (db.prepare("SELECT 1 FROM settings WHERE key='protein_box_nutrition_2026_09'").get()) return;
+  tx(() => {
+    const asOf = '2026-09-10 內部估算：熱量取同連鎖其他分店同名品項公告（鮭魚以配菜 225 大卡回推）；'
+               + '蛋白質依主菜份量推估，未經店家確認';
+    const up = db.prepare(
+      "UPDATE meal_items SET kcal=?, protein_g=?, kcal_source='內部估算', nutrition_as_of=? WHERE code=?");
+    [['SET-P4-CHICK', 476, 30],
+     ['SET-P4-BEEF',  575, 17],
+     ['SET-P4-FISH',  490, 27]].forEach(([code, kcal, prot]) => up.run(kcal, prot, asOf, code));
+    db.prepare("INSERT OR REPLACE INTO settings (key,value) VALUES ('protein_box_nutrition_2026_09',?)")
+      .run(new Date().toISOString().slice(0, 19).replace('T', ' '));
+  });
+  console.log('蛋白盒子三道的熱量與蛋白質已填（全部為內部估算，菜單標約略值）');
+}
+
 function installMealSeeds() {
   updateFormulaB2026();
   switchLefuToThigh();
   installAbeiSet();
   installProteinBox();
   installMealPhotos2026_09();
+  installProteinBoxNutrition();
 }
 installMealSeeds();
 
