@@ -176,6 +176,36 @@ for (const p of purchases) if (p.note === g1.vendor) await api('/api/meals/purch
 const final = await api('/api/meals/today');
 check('測試資料清乾淨', final.orders.filter(o => String(o.patient_name).startsWith('測試')).length === 0);
 
+line('\n━━ 13. 每一道在賣的菜都要有衛教小卡 ━━');
+// 2026-09 換店家時踩到的：installProteinBox 停用了樂坡三道、開了蛋白盒子三道，
+// 但小卡沒跟著換 —— 新的三道一張小卡都沒有。個案點了紐奧良雞腿排，
+// 隨餐小卡就印不出東西，而且沒有任何地方會報錯，要到列印當下才發現。
+// 順便擋住反過來的情況：覆核清單塞著已停用店家的小卡，看起來永遠有事沒做。
+{
+  const cards = (await api('/api/meals/cards')).cards;
+  const menu  = await api('/api/meals/menu');
+  // 加菜（燙青菜）不算一道菜：跟餐盒一起買、不參與分食、不會單獨交到個案手上
+  const dishes = menu.series.flatMap(s => (s.items || [])
+    .filter(i => i.item_type !== '加菜')
+    .map(i => ({ ...i, series: s.name })));
+  check('前置：抓得到在賣的菜與小卡', dishes.length > 0 && cards.length > 0,
+        `${dishes.length} 道菜、${cards.length} 張小卡`);
+
+  const cardNames = new Set(cards.filter(c => !c.retired).map(c => c.subject_name));
+  const naked = dishes.filter(d => !cardNames.has(d.display_name || d.name));
+  check('每一道都有小卡', naked.length === 0,
+        naked.length ? '★ 沒小卡：' + naked.map(d => d.display_name || d.name).join('、')
+                       + '　（點了會印不出小卡，而且不會報錯）'
+                     : dishes.length + ' 道全部有');
+
+  // 已停用的品項不該被算進待覆核
+  const retiredUnreviewed = cards.filter(c => c.retired && !c.reviewed_at);
+  check('已停用的小卡標得出來', cards.every(c => 'retired' in c),
+        retiredUnreviewed.length
+          ? `有 ${retiredUnreviewed.length} 張屬於已停用品項，介面會排到最後且不計入待覆核`
+          : '目前沒有已停用的小卡');
+}
+
 line(`\n${'─'.repeat(46)}`);
 line(`通過 ${pass} 項，失敗 ${fail} 項`);
 process.exit(fail ? 1 : 0);

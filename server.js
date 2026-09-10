@@ -1214,6 +1214,76 @@ function installQifuNutrition2026_09() {
   console.log('七福三道的蛋白質已填（推估值，菜單標約略值）');
 }
 
+// 2026-09-10 換店家時小卡沒跟著換。
+//
+// installProteinBox() 停用了樂坡的 B3 三道，但 CARD-B3-* 三張小卡還留著，
+// 而新的 P4 三道一張都沒有 —— 個案點了紐奧良雞腿排，隨餐小卡會印不出東西。
+// 覆核清單那邊也會一直顯示「10 張待覆核」，其中 3 張是給已經不合作的店家。
+//
+// 文案裡的公克數全部寫「約」：這三道的營養值是推估的（見
+// installQifuNutrition2026_09 上面那段），跟樂芙的店家公告不同級別。
+// 小卡是要交到個案手上的東西，寫得像實測值不行。
+//
+// 一律留在未覆核狀態。衛教文案要醫師或法遵看過才印得出來，那不是我能代簽的。
+function installProteinBoxCards2026_09() {
+  if (db.prepare("SELECT 1 FROM settings WHERE key='protein_box_cards_2026_09'").get()) return;
+  tx(() => {
+    const ins = db.prepare(
+      `INSERT OR IGNORE INTO nutrition_cards (code,subject_type,subject_id,headline,ratio_line,story)
+         SELECT ?, 'meal_item', id, ?, ?, ? FROM meal_items WHERE code=?`);
+    [['CARD-P4-CHICK', 'SET-P4-CHICK',
+      '水炒輕油・去骨雞腿的完整蛋白',
+      '去骨雞腿排 ｜ 蛋白質約 30 公克 ｜ 全程水炒不過油',
+      '主菜以水炒取代油炸與大火快炒，減少額外用油，同時保留雞腿的水份與嫩度。'
+      + '單盒蛋白質約 30 公克，是這一系列裡蛋白質最高的一道，'
+      + '適合需要維持肌肉量的個案。公克數為內部推估值，未經店家確認。'],
+     ['CARD-P4-BEEF', 'SET-P4-BEEF',
+      '壽喜和風・鐵質與維生素 B12 來源',
+      '壽喜牛五花 ｜ 蛋白質約 17 公克 ｜ 和風壽喜調味',
+      '牛五花油花分布均勻，口感軟嫩、不需久嚼。牛肉是血基質鐵與維生素 B12 的良好來源。'
+      + '要留意五花部位油脂比例高，同一盒的蛋白質會低於雞腿或鮭魚 ——'
+      + '以補蛋白質為主要目的時，建議與另外兩道輪替。公克數為內部推估值，未經店家確認。'],
+     ['CARD-P4-FISH', 'SET-P4-FISH',
+      '深海鮭魚・Omega-3 與優質蛋白',
+      '薄鹽烤鮭魚 ｜ 蛋白質約 27 公克 ｜ 天然 Omega-3',
+      '鮭魚含 EPA 與 DHA 這類 n-3 多元不飽和脂肪酸，肉質柔軟好咀嚼。'
+      + '僅以薄鹽調味烘烤，鈉含量低於一般醬燒做法，適合需要留意鹽份的個案。'
+      + '公克數為內部推估值，未經店家確認。']
+    ].forEach(([code, item, headline, ratio, story]) =>
+      ins.run(code, headline, ratio, story, item));
+    db.prepare("INSERT OR REPLACE INTO settings (key,value) VALUES ('protein_box_cards_2026_09',?)")
+      .run(new Date().toISOString().slice(0, 19).replace('T', ' '));
+  });
+  console.log('蛋白盒子三道的衛教小卡已建立（未覆核，需醫師或法遵確認後才印得出來）');
+}
+
+// 2026-09-10 阿北套餐一直沒有衛教小卡。
+//
+// 它跟樂坡→蛋白盒子那次不同 —— 不是換店家漏掉，是從建立的那天就沒有。
+// 沒有人發現，因為缺小卡不會報錯，要到列印當下才印出空白。
+// 現在 test-meals 第 13 組會擋住這件事。
+//
+// 加菜（燙青菜）不算一道菜，不給小卡：它是跟餐盒一起買的配菜，
+// 不參與分食計算，也不會單獨交到個案手上。
+function installAbeiCard2026_09() {
+  if (db.prepare("SELECT 1 FROM settings WHERE key='abei_card_2026_09'").get()) return;
+  tx(() => {
+    db.prepare(
+      `INSERT OR IGNORE INTO nutrition_cards (code,subject_type,subject_id,headline,ratio_line,story)
+         SELECT 'CARD-A4-PORK', 'meal_item', id, ?, ?, ? FROM meal_items WHERE code='SET-A4-PORK'`
+    ).run(
+      '台式家常・豬血湯的鐵質來源',
+      '小肉飯＋豬血湯加青菜 ｜ 蛋白質約 20 公克 ｜ 熱量約 485 大卡',
+      '豬血是血基質鐵含量很高的食材，吸收率優於植物性鐵質，適合鐵質偏低的個案。'
+      + '整份以半碗飯搭配控肉與燙青菜，是熱量最低的一份套餐。'
+      + '要留意湯品與控肉滷汁的鈉含量偏高，需要控鹽的個案建議少喝湯。'
+      + '熱量與公克數為內部推估值（控肉大小是最大變數），未經店家確認。');
+    db.prepare("INSERT OR REPLACE INTO settings (key,value) VALUES ('abei_card_2026_09',?)")
+      .run(new Date().toISOString().slice(0, 19).replace('T', ' '));
+  });
+  console.log('阿北套餐的衛教小卡已建立（未覆核）');
+}
+
 function installMealSeeds() {
   updateFormulaB2026();
   switchLefuToThigh();
@@ -1222,6 +1292,8 @@ function installMealSeeds() {
   installMealPhotos2026_09();
   installProteinBoxNutrition();
   installQifuNutrition2026_09();
+  installProteinBoxCards2026_09();
+  installAbeiCard2026_09();
 }
 installMealSeeds();
 
@@ -4691,6 +4763,8 @@ function cardRows() {
   return db.prepare(
     `SELECT nc.*,
             CASE WHEN nc.subject_type='meal_item' THEN mi.display_name ELSE p.name END AS subject_name,
+            -- 換店家後舊小卡會留在這裡。標出來，覆核清單才不會要人審已經不出的菜
+            CASE WHEN nc.subject_type='meal_item' AND COALESCE(mi.active,1)=0 THEN 1 ELSE 0 END AS retired,
             ms.name series_name
      FROM nutrition_cards nc
      LEFT JOIN meal_items mi  ON nc.subject_type='meal_item' AND mi.id=nc.subject_id

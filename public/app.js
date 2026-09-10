@@ -4210,18 +4210,30 @@ const App = (() => {
     const d = await api('/api/meals/cards');
     mealCards = d.cards;
 
-    const pending = mealCards.filter(c => !c.reviewed_at).length;
+    // 已停用的品項不必覆核 —— 那些菜不會再出，算進待覆核只會讓人以為還有事沒做
+    const live = mealCards.filter(c => !c.retired);
+    const pending = live.filter(c => !c.reviewed_at).length;
+    const retired = mealCards.length - live.length;
     const warn = pending ? `
       <div class="review-warn">
         還有 ${pending} 張小卡未覆核，這些小卡不會被列印。<br>
         小卡是要交到個案手上的衛教文宣，內容請由醫師或法遵確認過再按「標記已覆核」。
       </div>` : '';
 
-    el.innerHTML = warn + mealCards.map(c => `
-      <div class="nc-card ${c.reviewed_at ? 'reviewed' : 'unreviewed'}">
+    const retiredNote = retired ? `
+      <div class="review-warn" style="background:#F3F4F6;border-color:#D1D5DB;color:#4B5563">
+        另外有 ${retired} 張小卡屬於已停用的品項（換店家前留下的），不必覆核，列在最後。
+      </div>` : '';
+
+    el.innerHTML = warn + retiredNote
+      + [...live, ...mealCards.filter(c => c.retired)].map(c => `
+      <div class="nc-card ${c.retired ? 'reviewed' : (c.reviewed_at ? 'reviewed' : 'unreviewed')}"${
+        c.retired ? ' style="opacity:.55"' : ''}>
         <div class="nc-head">
           <span class="nc-subject">${esc(c.series_name || '核心標配')}｜${esc(c.subject_name || '')}</span>
-          ${c.reviewed_at
+          ${c.retired
+            ? '<span class="badge">已停用的品項</span>'
+            : c.reviewed_at
             ? `<span class="badge badge-green">已覆核 ${esc(c.reviewed_by)} ${esc(c.reviewed_at)}</span>`
             : '<span class="badge badge-orange">待覆核</span>'}
         </div>
