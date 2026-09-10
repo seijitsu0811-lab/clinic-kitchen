@@ -1126,11 +1126,30 @@ function installProteinBox() {
   console.log('第三家已換成蛋白盒子南京復興店（三道；熱量待店家確認、蛋白質未公布）');
 }
 
+// 2026-09-10 樂芙與七福的內用擺盤照。照片是現場拍的，哪一張對哪一道只有
+// 當事人知道 —— 這幾筆是他們指認的，不是我從照片推的。
+// 薑汁味噌甘露豬與極鮮鹽烤鯖魚沒有拍到，photo 留空：菜單就只顯示文字。
+// 放錯照片＝客人看到的不是他會拿到的東西，比沒照片糟
+function installMealPhotos2026_09() {
+  if (db.prepare("SELECT 1 FROM settings WHERE key='meal_photos_2026_09'").get()) return;
+  tx(() => {
+    const up = db.prepare("UPDATE meal_items SET photo=? WHERE code=?");
+    [['l1-chick.jpg', 'SET-L1-CHICK'],
+     ['l1-fish.jpg',  'SET-L1-FISH'],
+     ['j2-pork.jpg',  'SET-J2-PORK'],
+     ['j2-chick.jpg', 'SET-J2-CHICK']].forEach(([f, code]) => up.run(f, code));
+    db.prepare("INSERT OR REPLACE INTO settings (key,value) VALUES ('meal_photos_2026_09',?)")
+      .run(new Date().toISOString().slice(0, 19).replace('T', ' '));
+  });
+  console.log('樂芙與七福的內用照已掛上（各兩道；甘露豬與鯖魚沒拍到，留空）');
+}
+
 function installMealSeeds() {
   updateFormulaB2026();
   switchLefuToThigh();
   installAbeiSet();
   installProteinBox();
+  installMealPhotos2026_09();
 }
 installMealSeeds();
 
@@ -4214,7 +4233,7 @@ app.get('/api/meals/menu', (req, res) => {
   ).all();
   const itemStmt = db.prepare(
     'SELECT * FROM meal_items WHERE series_id=? AND active=1 ORDER BY sort_order, id'
-  );
+  );   // SELECT * 已含 photo
   res.json({
     series: series.map(s => ({ ...s, items: itemStmt.all(s.id) })),
     vendors: db.prepare('SELECT * FROM vendors WHERE active=1 ORDER BY id').all()
@@ -4579,7 +4598,7 @@ app.put('/api/meals/items/:id', (req, res) => {
   db.prepare(
     `UPDATE meal_items SET display_name=?, vendor_item_name=?, kcal=?, protein_g=?,
             kcal_single=?, protein_g_single=?, price_single=?, price_box=?,
-            kcal_source=?, nutrition_as_of=?, default_mode=?, active=? WHERE id=?`
+            kcal_source=?, nutrition_as_of=?, default_mode=?, active=?, photo=? WHERE id=?`
   ).run(
     b.display_name ?? cur.display_name, b.vendor_item_name ?? cur.vendor_item_name,
     b.kcal ?? cur.kcal, b.protein_g ?? cur.protein_g,
@@ -4588,6 +4607,8 @@ app.put('/api/meals/items/:id', (req, res) => {
     b.kcal_source ?? cur.kcal_source, b.nutrition_as_of ?? cur.nutrition_as_of,
     b.default_mode ?? cur.default_mode,
     b.active === undefined ? cur.active : (b.active ? 1 : 0),
+    // 換照片不該需要改程式重新部署
+    b.photo ?? cur.photo ?? '',
     req.params.id
   );
   res.json({ ok: true });
