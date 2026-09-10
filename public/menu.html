@@ -20,6 +20,8 @@
     --chick:    #8A5A08;
     --chick-bg: #FCF2E0;
     --fish:     #14508F;
+    --beef:     #7A2E2E;   /* 對主背景 > 7:1 */
+    --beef-bg:  #F7EDED;
     --fish-bg:  #E8F0FA;
   }
   * { box-sizing: border-box; }
@@ -78,6 +80,9 @@
   .tag-豬 { color: var(--pork);  background: var(--pork-bg); }
   .tag-雞 { color: var(--chick); background: var(--chick-bg); }
   .tag-魚 { color: var(--fish);  background: var(--fish-bg); }
+  /* 牛：2026-09 蛋白盒子的壽喜牛五花進來才有這一類。
+     沒有這個色標的話牛肉那道會變成沒有樣式的白底 */
+  .tag-牛 { color: var(--beef);  background: var(--beef-bg); }
   .dish-name { font-size: 34px; font-weight: 900; line-height: 1.35; }
   .dish-nums { font-size: 21px; color: var(--ink-2); }
   .dish-total {
@@ -121,9 +126,14 @@
     background: var(--card); border: 3px solid var(--line);
     border-radius: 16px; padding: 18px 22px; min-height: 64px;
   }
-  .pick .p-name { font-size: 26px; font-weight: 900; display: block; }
-  .pick .p-tag  { font-size: 18px; color: var(--ink-2); }
-  .pick .p-n    { font-size: 17px; color: var(--green); font-weight: 800; }
+  .pick button { padding: 0; overflow: hidden; }
+  .pick .p-cover {
+    display: block; width: 100%; aspect-ratio: 20 / 9;
+    object-fit: cover; background: var(--line); margin-bottom: 14px;
+  }
+  .pick .p-name { font-size: 26px; font-weight: 900; display: block; padding: 0 22px; }
+  .pick .p-tag  { font-size: 18px; color: var(--ink-2); display: block; padding: 4px 22px 0; }
+  .pick .p-n    { font-size: 17px; color: var(--green); font-weight: 800; display: block; padding: 6px 22px 18px; }
 
   /* 這個人不吃的：個管師看得到、標紅；客人模式整個不顯示 */
   .dish.avoid {
@@ -155,6 +165,33 @@
   .share-out { font-size: 21px; font-weight: 800; line-height: 1.9; }
   .share-out em { font-style: normal; color: var(--green); font-size: 25px; }
 
+  /* ── 照片 ────────────────────────────────────────────
+     客人模式：滿版大圖，一屏一道，看的是「這份餐長什麼樣」
+     個管師模式：縮圖靠左，他要的是資訊密度不是視覺 */
+  .dish { overflow: hidden; padding: 0; }
+  .dish-body { padding: 20px 24px; }
+  .dish-photo {
+    display: block; width: 100%; aspect-ratio: 20 / 9;
+    object-fit: cover; background: var(--line);
+  }
+  .dish.compact { display: flex; align-items: flex-start; gap: 0; }
+  /* 縮圖固定正方形。用 height:auto 會被 flex 拉成細長條，
+     一張 108×426 的照片看不出是什麼菜 */
+  .dish.compact .dish-photo {
+    width: 104px; min-width: 104px; height: 104px; aspect-ratio: 1 / 1;
+  }
+  .dish.compact .dish-body { flex: 1; padding: 14px 16px; }
+
+  /* 客人模式的一道 = 一張卡片，留白拉開，讀起來不擠 */
+  .guest .dish {
+    border-width: 0; border-radius: 20px; margin-bottom: 26px;
+    box-shadow: 0 2px 14px rgba(20,32,26,.08), 0 0 0 1px var(--line);
+  }
+  .guest .dish-name { font-size: 32px; }
+  .guest .dish-body { padding: 22px 24px 24px; }
+  .guest .series-name { border-bottom: 0; padding-bottom: 0; }
+  .guest .series { margin-bottom: 20px; }
+
   .foot { font-size: 18px; color: var(--ink-2); border-top: 2px solid var(--line); padding-top: 20px; }
   .err  { font-size: 22px; color: var(--pork); padding: 40px 0; }
 
@@ -179,7 +216,7 @@
 const qs = new URLSearchParams(location.search);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c =>
   ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
-const ICON = { '豬': '🥩', '雞': '🍗', '魚': '🐟' };
+const ICON = { '豬': '🥓', '雞': '🍗', '魚': '🐟', '牛': '🥩', '蔬菜': '🥗' };
 
 async function load() {
   const root = document.getElementById('root');
@@ -222,8 +259,13 @@ async function load() {
   function dishHtml(i) {
     const bad = avoid.includes(i.protein);
     if (bad && mode === 'guest') return '';        // 客人模式：不吃的不出現
+    const photo = i.photo
+      ? `<img class="dish-photo" src="photos/${encodeURIComponent(i.photo)}"
+             alt="${esc(i.name)}" loading="lazy">` : '';
     return `
-      <div class="dish${bad ? ' avoid' : ''}">
+      <div class="dish${bad ? ' avoid' : ''}${mode === 'staff' ? ' compact' : ''}">
+        ${photo}
+        <div class="dish-body">
         <div class="dish-top">
           <span class="tag tag-${esc(i.protein)}">${ICON[i.protein] || ''} ${esc(i.protein)}</span>
           <span class="dish-name">${esc(i.name)}</span>
@@ -237,6 +279,7 @@ async function load() {
             i.protein_g == null ? ' <span class="approx">（店家未提供）</span>' : ''}
         </div>
         ${i.set_kcal != null ? `<div class="dish-total">整份套餐 ${i.set_kcal} 大卡</div>` : ''}
+        </div>
       </div>`;
   }
 
@@ -320,7 +363,9 @@ async function load() {
       const cards = d.series.map(s => {
         const n = s.items.filter(i => !avoid.includes(i.protein)).length;
         if (!n) return '';
+        const cover = (s.items.find(i => i.photo && !avoid.includes(i.protein)) || {}).photo;
         return `<button onclick="window.__pick(${s.id})">
+          ${cover ? `<img class="p-cover" src="photos/${encodeURIComponent(cover)}" alt="" loading="lazy">` : ''}
           <span class="p-name">${esc(s.name)}</span>
           ${s.tagline ? `<span class="p-tag">${esc(s.tagline)}</span><br>` : ''}
           <span class="p-n">${n} 道可選</span>
@@ -338,8 +383,9 @@ async function load() {
       + head + shareHtml() + (s ? seriesHtml(s) : '') + foot;
   }
 
-  window.__guest     = () => { mode = 'guest'; pickedSeries = null; render(); window.scrollTo(0, 0); };
-  window.__staff     = () => { mode = 'staff'; pickedSeries = null; render(); window.scrollTo(0, 0); };
+  const _syncMode = () => document.body.classList.toggle('guest', mode === 'guest');
+  window.__guest     = () => { mode = 'guest'; pickedSeries = null; _syncMode(); render(); window.scrollTo(0, 0); };
+  window.__staff     = () => { mode = 'staff'; pickedSeries = null; _syncMode(); render(); window.scrollTo(0, 0); };
   window.__pick      = id => { pickedSeries = id; render(); window.scrollTo(0, 0); };
   window.__unpick    = () => { pickedSeries = null; render(); window.scrollTo(0, 0); };
   window.__setPeople = n => { people = n; render(); };

@@ -56,6 +56,19 @@ const staffRx = d.products[0].staff_rx;
 check('抓到今天輪替該用的員工配方', !!staffRx && /^EMP-0[12]$/.test(staffRx.code),
       staffRx && `${staffRx.code} ${staffRx.name}`);
 
+// 上一次跑到一半中斷就會留下 ZZ 單，下一次跑會因為「有 4 筆」而失敗，
+// 看起來像新的問題
+for (const c of ((await api('/api/today')).products[0].cases || [])) {
+  if (String(c.patient_name || '').startsWith('ZZ')) {
+    await api('/api/today/cases/' + c.id, 'DELETE').catch(() => {});
+  }
+}
+for (const o of ((await api('/api/meals/today')).orders || [])) {
+  if (String(o.patient_name || '').startsWith('ZZ')) {
+    await api('/api/meals/orders/' + o.id, 'DELETE').catch(() => {});
+  }
+}
+
 line('\n════ 上午：開個案出單 ════');
 const rxs = await api('/api/prescriptions');
 const solo = rxs.filter(r => !r.is_staff_rx && r.active && !String(r.code).startsWith('ZZ')).slice(0, 2);
@@ -74,8 +87,17 @@ check('兩筆個案出單都在', myCases.length === 2,
 line('\n════ 上午：訂餐盒（含分食）════');
 const menu  = await api('/api/meals/menu');
 const items = menu.series.flatMap(s => s.items);
+// 菜單是會變的資料：2026-09-10 第三家從樂坡換成蛋白盒子，SET-B3-PORK 就停用了，
+// 這一組直接掛掉。改成「隨便挑一家不是阿北的餐盒」——
+// 這一組要驗的是分食算盒數，不是某一款餐盒
 const abei  = items.find(i => i.code === 'SET-A4-PORK');
-const bento = items.find(i => i.code === 'SET-B3-PORK');
+const abeiSeries = menu.series.find(s => (s.items || []).some(i => i.code === 'SET-A4-PORK'));
+const otherSeries = menu.series.find(s =>
+  s.id !== (abeiSeries && abeiSeries.id) &&
+  (s.items || []).some(i => (i.item_type || '餐盒') === '餐盒'));
+const bento = otherSeries && otherSeries.items.find(i => (i.item_type || '餐盒') === '餐盒');
+check('挑得到兩家不同店的餐盒', !!abei && !!bento,
+      bento ? `${bento.display_name}（${otherSeries.name}）＋ 阿北套餐` : '找不到');
 const mkMeal = async (item, people, sp, sb, name) => {
   const r = await api('/api/meals/orders', 'POST',
     { meal_item_id: item.id, qty: people, share_people: sp, share_boxes: sb,

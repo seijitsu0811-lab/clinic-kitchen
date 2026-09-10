@@ -219,6 +219,9 @@ try {
   "ALTER TABLE meal_orders ADD COLUMN share_boxes  INTEGER DEFAULT 1",
   // 加菜跟餐盒一起買、但不參與分食計算
   "ALTER TABLE meal_items ADD COLUMN item_type TEXT DEFAULT '餐盒'",
+  // 內用擺盤的代表照。只存檔名，檔案放 public/photos/ ——
+  // 存絕對路徑的話換機器就全部失效
+  "ALTER TABLE meal_items ADD COLUMN photo TEXT DEFAULT ''",
   "INSERT OR IGNORE INTO settings (key,value) VALUES ('share_ratios','1:1,2:1,3:2')",
   // 水要記在配方裡（備料得知道每杯加多少），但不必盤點也不用採購。
   // 沒有這個旗標的話，採購清單每次都會叫人去買 3850ml 的水
@@ -1018,7 +1021,7 @@ function staffRxFor(date, productId) {
      default_mode TEXT DEFAULT '餐盒',
      -- 這幾欄上面也有 ALTER，但那批跑在建表之前：既有資料庫靠 ALTER 補，
      -- 全新資料庫要靠這裡。少了它，開機時 installAbeiSet 會掛
-     item_type TEXT DEFAULT '餐盒',
+     item_type TEXT DEFAULT '餐盒', photo TEXT DEFAULT '',
      sort_order INTEGER DEFAULT 0, active INTEGER DEFAULT 1,
      FOREIGN KEY (series_id) REFERENCES meal_series(id))`,
 
@@ -1069,10 +1072,65 @@ function staffRxFor(date, productId) {
 // 餐盒相關的資料表到這裡才建好。所有會碰到 vendors／meal_items 的種子
 // 都放在這之後跑 —— 順序錯了，全新資料庫會在開機時就掛掉，
 // 而既有資料庫完全看不出來
+// 2026-09-10 第三家從「樂坡舒肥健康餐」換成「蛋白盒子健康餐盒 The Protein Box
+// 南京復興店」。是換一家店、不是改名，所以新建店家、舊的停用 ——
+// 改名會讓過去的採購單看起來像是在新店買的。
+//
+// 三道全部是新品項（紐奧良雞腿排／壽喜牛五花／薄鹽烤鮭魚），舊的三道停用而不改名：
+// 出單有 snap_* 快照，但品項本身改名會讓歷史紀錄看起來像新品。
+function installProteinBox() {
+  if (db.prepare("SELECT 1 FROM settings WHERE key='protein_box_2026_09'").get()) return;
+  tx(() => {
+    db.prepare(
+      "INSERT OR IGNORE INTO vendors (name,branch,phone,walk_minutes,order_note) VALUES (?,?,?,?,?)"
+    ).run('蛋白盒子健康餐盒 The Protein Box', '南京復興店', '02-2715-0020', 5,
+          '台北市中山區遼寧街149號。招牌是「南京復興店」但店在遼寧街，跟七福食所同一條');
+    const v = db.prepare(
+      "SELECT id FROM vendors WHERE name='蛋白盒子健康餐盒 The Protein Box'").get();
+
+    db.prepare(
+      "INSERT OR IGNORE INTO meal_series (code,vendor_id,name,tagline,sort_order) VALUES (?,?,?,?,?)"
+    ).run('P4', v.id, '水炒輕油高蛋白',
+          '不走水煮路線 —— 獨門水炒鎖住蔬菜營養，選好油、配黑米，一份補足蛋白質', 3);
+    const ser = db.prepare("SELECT id FROM meal_series WHERE code='P4'").get();
+
+    const ins = db.prepare(
+      `INSERT OR IGNORE INTO meal_items
+         (code,series_id,protein,display_name,vendor_item_name,kcal,protein_g,
+          kcal_source,nutrition_as_of,price_single,price_box,default_mode,item_type,sort_order,photo)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+
+    // 熱量：這家菜單上沒標，用的是同連鎖其他分店對同名品項公告的數字，
+    // 所以標「內部估算」。蛋白質店家完全沒公布 → 留 0，菜單會顯示「—（店家未提供）」。
+    // 填估算值會被當成真的，客人照著算 —— 那比不寫更糟
+    const asOf = '2026-09-10 同連鎖其他分店公告';
+    ins.run('SET-P4-CHICK', ser.id, '雞', '紐奧良雞腿排', '紐奧良雞腿排餐盒',
+            476, 0, '內部估算', asOf, 0, 135, '餐盒', '餐盒', 1, 'p4-chick.jpg');
+    ins.run('SET-P4-BEEF',  ser.id, '牛', '壽喜牛五花',   '壽喜牛五花餐盒',
+            575, 0, '內部估算', asOf, 0, 145, '餐盒', '餐盒', 2, 'p4-beef.jpg');
+    // 鮭魚那個數字很可能是同菜單上的「減鹽味噌烤鱸魚」，兩道描述都寫味噌鹽烤，
+    // 分不出來 —— 所以熱量也留 0，寧可顯示「熱量未提供」
+    ins.run('SET-P4-FISH',  ser.id, '魚', '薄鹽烤鮭魚',   '薄鹽烤鮭魚餐盒',
+            0, 0, '待確認', '', 0, 180, '餐盒', '餐盒', 3, 'p4-fish.jpg');
+
+    // 舊的第三家：店家與系列停用，三道品項停用（不改名，歷史才讀得懂）
+    db.prepare("UPDATE vendors SET active=0 WHERE name='樂坡舒肥健康餐'").run();
+    db.prepare("UPDATE meal_series SET active=0 WHERE code='B3'").run();
+    db.prepare(
+      "UPDATE meal_items SET active=0 WHERE series_id=(SELECT id FROM meal_series WHERE code='B3')"
+    ).run();
+
+    db.prepare("INSERT OR REPLACE INTO settings (key,value) VALUES ('protein_box_2026_09',?)")
+      .run(new Date().toISOString().slice(0, 19).replace('T', ' '));
+  });
+  console.log('第三家已換成蛋白盒子南京復興店（三道；熱量待店家確認、蛋白質未公布）');
+}
+
 function installMealSeeds() {
   updateFormulaB2026();
   switchLefuToThigh();
   installAbeiSet();
+  installProteinBox();
 }
 installMealSeeds();
 
@@ -4186,7 +4244,7 @@ app.get('/api/meals/menu/case', (req, res) => {
   ).all();
   const itemStmt = db.prepare(
     `SELECT id, protein, display_name, kcal, protein_g, kcal_single, protein_g_single,
-            kcal_source, default_mode
+            kcal_source, default_mode, COALESCE(photo,'') photo
      FROM meal_items WHERE series_id=? AND active=1 ORDER BY sort_order, id`
   );
 
@@ -4214,6 +4272,7 @@ app.get('/api/meals/menu/case', (req, res) => {
         id:           it.id,
         protein:      it.protein,
         name:         it.display_name,
+        photo:        it.photo || null,
         kcal:         it.kcal,
         kcal_single:  it.kcal_single,
         // 店家沒給就回 null。回 0 的話菜單會寫「蛋白質 0 公克」，

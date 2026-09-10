@@ -79,7 +79,17 @@ const w = f.switch_warning;
 check('有換組預警', !!w, w && `${w.date}（${w.days_ahead} 天後）${w.from} → ${w.to}`);
 check('預警列出屆時會缺什麼', w && Array.isArray(w.missing) && w.missing.length > 0,
       w && `${w.missing.length} 樣不足`);
-check('預警提前超過一週，來得及叫貨', w && w.days_ahead >= 7, w && `${w.days_ahead} 天`);
+// 原本斷言「提前超過 7 天」。方案兩週一換，所以換組前一週之內跑這一組
+// 一定失敗 —— 一個月有一半的日子是紅的，那不是系統的問題。
+// 真正要守的是：預警指向的是「下一次換組那一天」，而且不是當天才講。
+const firstDiff = f.days.find(d => d.plan_code && d.plan_code !== f.plan_today.code);
+check('預警指向的就是下一次換組那一天',
+      !!w && !!firstDiff && w.date === firstDiff.date,
+      w && `預警 ${w.date}／逐日展開第一個不同的是 ${firstDiff && firstDiff.date}`);
+const gap = w ? Math.round(
+  (Date.parse(w.date + 'T00:00:00Z') - Date.parse(f.date + 'T00:00:00Z')) / 86400000) : -1;
+check('天數算得對', !!w && w.days_ahead === gap, w && `${w.days_ahead} 天（實際差 ${gap} 天）`);
+check('換組當天之前就講，不是當天才說', !!w && w.days_ahead >= 1, w && `${w.days_ahead} 天前`);
 
 line('\n━━ 7. 備料區間照盤點日算 ━━');
 check('讀得到盤點日設定', Array.isArray(f.stocktake_dows) && f.stocktake_dows.length > 0,

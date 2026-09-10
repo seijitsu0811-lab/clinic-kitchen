@@ -3478,7 +3478,7 @@ const App = (() => {
   let currentMealTab  = 'today';
   let currentMealView = 'buy';   // buy = 採購清單（上午）｜serve = 出餐核對（中午）
 
-  const PTAG_ICON = { '豬': '🥩', '雞': '🍗', '魚': '🐟' };
+  const PTAG_ICON = { '豬': '🥓', '雞': '🍗', '魚': '🐟', '牛': '🥩', '蔬菜': '🥗' };
   // 一筆餐盒出單的生命週期。點狀態晶片往前推一格，點錯了在編輯視窗改回來
   const STATUS_FLOW = ['待採購', '已採購', '已擺盤', '已出餐'];
 
