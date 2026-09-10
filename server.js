@@ -1177,6 +1177,43 @@ function installProteinBoxNutrition() {
   console.log('蛋白盒子三道的熱量與蛋白質已填（全部為內部估算，菜單標約略值）');
 }
 
+// 2026-09-10 七福三道的蛋白質。全平台都沒有標示，所以是推估的 ——
+// 而且熱量本身就已經是內部估算，這是「拿估算推估算」，可信度比蛋白盒子那三道低一階。
+//
+// 唯一的實測錨點來自樂芙的店家公告（同樣是主菜＋配菜的餐盒結構）：
+//   薑汁味噌豬  單點 250 大卡／30g　餐盒 540 大卡／33g
+//   泰式檸檬鱸魚 單點 240 大卡／32g　餐盒 553 大卡／35g
+// 兩道都是「餐盒比單點只多 3g」—— 可見蛋白質幾乎全在主菜，配菜與飯只加 3g 左右。
+// 所以推估分兩步：先推單點主菜，再 +3 得餐盒。
+//
+// 單點主菜（七福自己標的單點熱量就是主菜本身，這一段比餐盒好推）：
+//   豚福燒肉   230 大卡 ÷ 梅花豬 220 大卡/100g ≒ 105g × 18g/100g ≒ 20g
+//   青檸烤雞腿 260 大卡 ÷ 去骨雞腿 215 大卡/100g ≒ 120g × 23g/100g ≒ 28g
+//   鹽烤鯖魚   290 大卡 ÷ 薄鹽鯖魚 285 大卡/100g ≒ 100g × 21g/100g ≒ 22g
+// 鯖魚油脂高，克數不小但蛋白質相對低 —— 別看熱量最高就以為蛋白質最多。
+//
+// 餐盒 = 單點 +3g。七福的配菜熱量差（餐盒−單點）約 220 大卡，比樂芙的
+// 290～310 還少，所以 +3 已經偏寬鬆，不會低估。
+//
+// kcal_source 維持 '內部估算'，菜單上會顯示「（約略值）」。
+// 哪天問到七福的實際數字，改這裡並把 nutrition_as_of 換成公告日期。
+function installQifuNutrition2026_09() {
+  if (db.prepare("SELECT 1 FROM settings WHERE key='qifu_nutrition_2026_09'").get()) return;
+  tx(() => {
+    const asOf = '2026-09-10 內部估算：蛋白質依單點熱量回推主菜份量，餐盒再依樂芙公告的'
+               + '「餐盒比單點多 3g」加計；熱量本身亦為估算值，未經店家確認';
+    const up = db.prepare(
+      `UPDATE meal_items SET protein_g=?, protein_g_single=?,
+              kcal_source='內部估算', nutrition_as_of=? WHERE code=?`);
+    [['SET-J2-PORK',  23, 20],
+     ['SET-J2-CHICK', 31, 28],
+     ['SET-J2-FISH',  25, 22]].forEach(([code, box, single]) => up.run(box, single, asOf, code));
+    db.prepare("INSERT OR REPLACE INTO settings (key,value) VALUES ('qifu_nutrition_2026_09',?)")
+      .run(new Date().toISOString().slice(0, 19).replace('T', ' '));
+  });
+  console.log('七福三道的蛋白質已填（推估值，菜單標約略值）');
+}
+
 function installMealSeeds() {
   updateFormulaB2026();
   switchLefuToThigh();
@@ -1184,6 +1221,7 @@ function installMealSeeds() {
   installProteinBox();
   installMealPhotos2026_09();
   installProteinBoxNutrition();
+  installQifuNutrition2026_09();
 }
 installMealSeeds();
 
