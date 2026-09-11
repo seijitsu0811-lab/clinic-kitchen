@@ -2803,7 +2803,13 @@ app.put('/api/prescriptions/:id/ingredients', (req, res) => {
 // ════════════════════════════════════════════════════════
 
 app.get('/api/ingredients', (req, res) => {
-  res.json(db.prepare('SELECT * FROM ingredients WHERE active=1 ORDER BY sort_order, category, name').all());
+  // 停用的食材照樣查得到（?include_inactive=1）。沒有這條路的話，
+  // 停用過的名字就再也找不回來 —— 重新啟用只能改資料庫，
+  // 而新建同名的會被唯一索引擋掉，等於那個名字永久消失
+  const all = req.query.include_inactive === '1';
+  res.json(db.prepare(
+    'SELECT * FROM ingredients' + (all ? '' : ' WHERE active=1') +
+    ' ORDER BY sort_order, category, name').all());
 });
 
 app.post('/api/ingredients', (req, res) => {
@@ -2823,9 +2829,30 @@ app.post('/api/ingredients', (req, res) => {
 app.put('/api/ingredients/:id', (req, res) => {
   const { name, unit, category, safety_stock, storage_note, shelf_life_days,
           active, track_stock } = req.body;
+  // 盤點單位與換算比例。原本這兩欄只能靠寫死的遷移設定（只有蘋果與檸檬有），
+  // 要多一樣就得改程式 —— 而採購與盤點的單位換算全靠它們。
+  // 28 樣食材裡只有 2 樣設得起來，難怪「2.2 公斤」那種輸入沒有防線
   const cur = db.prepare('SELECT active, COALESCE(track_stock,1) track_stock FROM ingredients WHERE id=?')
                 .get(req.params.id);
   if (!cur) return res.status(404).json({ error: '找不到這個食材' });
+
+  const curConv = db.prepare(
+    "SELECT COALESCE(count_unit,'') count_unit, COALESCE(count_ratio,1) count_ratio FROM ingredients WHERE id=?"
+  ).get(req.params.id) || { count_unit: '', count_ratio: 1 };
+  const nextCountUnit = req.body.count_unit === undefined
+    ? curConv.count_unit : String(req.body.count_unit || '').trim();
+  const rawRatio = Number(req.body.count_ratio);
+  const nextCountRatio = req.body.count_ratio === undefined
+    ? curConv.count_ratio
+    : (Number.isFinite(rawRatio) && rawRatio > 0 ? rawRatio : 1);
+  // 有換算單位就一定要有比例，否則換算會靜默失效 ——
+  // 採購填「12 顆」會變成 12 公克，而且沒有人會看到錯在哪
+  if (nextCountUnit && !(nextCountRatio > 1))
+    return res.status(400).json({
+      error: `填了盤點單位「${nextCountUnit}」就要填換算比例（1 ${nextCountUnit} = ? ${
+        req.body.unit || ''}），否則採購與盤點會照基本單位算` });
+  db.prepare('UPDATE ingredients SET count_unit=?, count_ratio=? WHERE id=?')
+    .run(nextCountUnit, nextCountUnit ? nextCountRatio : 1, req.params.id);
 
   // 停用是軟停用：歷史採購、消耗紀錄與舊處方都還指向它，不能真的刪掉。
   // 原本只能新增不能停用，換掉的食材（甜椒、蘿蔓生菜）只好寫一次性遷移處理
@@ -2892,8 +2919,65 @@ app.put('/api/inventory/:id', (req, res) => {
 });
 
 // 記錄採購（更新庫存 + 採購記錄）
+// ── 採購的單位換算 ────────────────────────────────────────
+// 庫存一律存基本單位（g / ml / 粒 / 包）。但買的時候講的是別的單位：
+// 蘋果買 2.2 公斤、檸檬買 12 顆。輸入框原本只有一個沒有單位的數字，
+// 打「2.2」就會存成 2.2 公克 —— 庫存加 2.2 克，單價變成 149 元/克。
+// 而平均成本是「總金額 ÷ 總數量」，一筆填錯會污染那樣食材 90 天的均價。
+function toBaseQty(ing, qty, inputUnit) {
+  const n = Number(qty);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  const ratio = Number(ing.count_ratio) || 1;
+  switch (String(inputUnit || 'base')) {
+    case 'count':                                  // 顆、包、盒
+      return ing.count_unit ? n * ratio : null;
+    case 'kg': return ing.unit === 'g'  ? n * 1000 : null;
+    case 'l':  return ing.unit === 'ml' ? n * 1000 : null;
+    default:   return n;                           // 已經是基本單位
+  }
+}
+
+// 這一筆的單價跟過去差幾倍。差一兩倍是行情，差一百倍是單位填錯 ——
+// 後者會把均價永久拉歪，而且看起來只是「有點貴」，不像壞掉
+function oddPriceCheck(ingredientId, baseQty, totalPrice) {
+  const from = costLookbackFrom(getSettings());
+  const rows = from
+    ? db.prepare('SELECT qty, total_price FROM purchase_log WHERE ingredient_id=? AND purchased_at>=?')
+        .all(ingredientId, from)
+    : db.prepare('SELECT qty, total_price FROM purchase_log WHERE ingredient_id=?').all(ingredientId);
+  const tq = rows.reduce((a, r) => a + Number(r.qty || 0), 0);
+  const tp = rows.reduce((a, r) => a + Number(r.total_price || 0), 0);
+  if (rows.length < 1 || tq <= 0 || !(baseQty > 0)) return null;
+  const avg = tp / tq;
+  const now = Number(totalPrice) / baseQty;
+  if (!(avg > 0) || !(now > 0)) return null;
+  const factor = now > avg ? now / avg : avg / now;
+  if (factor < 5) return null;
+  return { avg: Math.round(avg * 1000) / 1000, now: Math.round(now * 1000) / 1000,
+           factor: Math.round(factor * 10) / 10 };
+}
+
 app.post('/api/inventory/purchase', (req, res) => {
-  const { ingredient_id, qty, total_price, purchased_at, user_id, item_type, purpose } = req.body;
+  const { ingredient_id, total_price, purchased_at, user_id, item_type, purpose } = req.body;
+  const ing = db.prepare(
+    `SELECT id, name, unit, COALESCE(count_unit,'') count_unit, COALESCE(count_ratio,1) count_ratio
+       FROM ingredients WHERE id=?`).get(ingredient_id);
+  if (!ing) return res.status(400).json({ error: '找不到這樣食材' });
+
+  const qty = toBaseQty(ing, req.body.qty, req.body.input_unit);
+  if (qty == null)
+    return res.status(400).json({
+      error: `「${req.body.input_unit}」換不成 ${ing.name} 的單位（${ing.unit}）` });
+
+  // 單價離譜就先擋下來。擋錯了按一下確認就過，擋不住的話均價會歪 90 天
+  const odd = oddPriceCheck(ing.id, qty, total_price);
+  if (odd && !req.body.confirm_odd_price)
+    return res.status(409).json({
+      error: `這一筆算出 ${odd.now} 元/${ing.unit}，過去平均是 ${odd.avg} 元/${ing.unit}`
+           + `，差 ${odd.factor} 倍。單位填錯了嗎？（${ing.name} 的庫存單位是 ${ing.unit}`
+           + (ing.count_unit ? `，1 ${ing.count_unit} = ${ing.count_ratio} ${ing.unit}` : '') + '）',
+      odd, needs_confirm: true });
+
   tx(() => {
     db.prepare(
       `INSERT INTO purchase_log (ingredient_id,qty,total_price,purchased_at,user_id,item_type,purpose) VALUES (?,?,?,?,?,?,?)`
@@ -2903,7 +2987,8 @@ app.post('/api/inventory/purchase', (req, res) => {
        ON CONFLICT(ingredient_id) DO UPDATE SET qty=qty+excluded.qty, updated_at=excluded.updated_at`
     ).run(ingredient_id, qty);
   });
-  res.json({ ok: true });
+  res.json({ ok: true, base_qty: qty, unit: ing.unit,
+             unit_price: Math.round(Number(total_price) / qty * 1000) / 1000 });
 });
 
 // ── 採購籃 ──────────────────────────────────────────────
@@ -2972,10 +3057,39 @@ app.post('/api/purchase/commit', (req, res) => {
   const lines = Array.isArray(req.body.lines) ? req.body.lines : [];
   if (!lines.length) return res.status(400).json({ error: '沒有要登記的項目' });
 
+  // 先整批檢查，再整批寫入。一筆單價離譜就整批不寫 ——
+  // 寫一半再報錯的話，人會不知道哪幾樣進去了、哪幾樣沒有，
+  // 然後重按一次，同一批就進了兩次
+  const odds = [];
+  const converted = [];
+  for (const l of lines) {
+    const id = Number(l.ingredient_id);
+    const price = Number(l.total_price);
+    if (!id || l.total_price === '' || l.total_price === null || !(price >= 0)) continue;
+    const ing = db.prepare(
+      `SELECT id, name, unit, COALESCE(count_unit,'') count_unit, COALESCE(count_ratio,1) count_ratio
+         FROM ingredients WHERE id=?`).get(id);
+    if (!ing) continue;
+    const q = toBaseQty(ing, l.qty, l.input_unit);
+    if (q == null) continue;
+    converted.push({ id, qty: q, price, line: l });
+    const odd = oddPriceCheck(id, q, price);
+    if (odd) odds.push({ name: ing.name, unit: ing.unit, ...odd });
+  }
+  if (odds.length && !req.body.confirm_odd_price)
+    return res.status(409).json({
+      error: '有 ' + odds.length + ' 樣的單價跟過去差太多，先確認單位有沒有填錯：'
+           + odds.map(o => `${o.name} ${o.now} 元/${o.unit}（過去 ${o.avg}，差 ${o.factor} 倍）`).join('、'),
+      odds, needs_confirm: true });
+
+  const byId = {};
+  converted.forEach(c => { byId[c.id] = c.qty; });
+
   let saved = 0, skipped = 0;
   tx(() => {
     lines.forEach(l => {
-      const id = Number(l.ingredient_id), qty = Number(l.qty);
+      const id = Number(l.ingredient_id);
+      const qty = byId[id] != null ? byId[id] : Number(l.qty);
       const price = Number(l.total_price);
       // 量或金額沒填就先留著，下次再登記
       if (!id || !(qty > 0) || !(price >= 0) || l.total_price === '' || l.total_price === null) {

@@ -2170,6 +2170,24 @@
       color: var(--primary);
     }
 
+    /* 每週排程：三組星期勾選。原本這幾組只能改 code */
+    .dow-set { margin-bottom: 12px; }
+    .dow-label {
+      font-size: 12.5px; font-weight: 600; margin-bottom: 5px;
+      display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+    }
+    .dow-label small { font-weight: 400; font-size: 11px; color: var(--text3); }
+    .dow-pick { display: flex; gap: 5px; flex-wrap: wrap; }
+    .dow-pick button {
+      min-width: 40px; min-height: 40px; padding: 0 6px;
+      font-size: 13.5px; font-weight: 600; cursor: pointer;
+      border: 1.5px solid var(--border); border-radius: var(--radius-sm);
+      background: var(--card-solid); color: var(--text2);
+    }
+    .dow-pick button.on {
+      background: var(--primary); border-color: var(--primary); color: #fff;
+    }
+
     /* ── 同事訂閱 ── */
     .sub-add {
       display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: flex-end;
@@ -3469,7 +3487,12 @@
     </div>
     <div class="form-group">
       <label>採購量</label>
-      <input id="purchaseQty" type="number" placeholder="如：1500" min="0">
+      <div style="display:flex;gap:6px">
+        <input id="purchaseQty" type="number" step="any" min="0" style="flex:2"
+               placeholder="買到多少" oninput="App.purchaseUnitHint()">
+        <select id="purchaseUnit" style="flex:1" onchange="App.purchaseUnitHint()"></select>
+      </div>
+      <div id="purchaseQtyHint" style="font-size:11px;color:var(--text3);margin-top:4px"></div>
     </div>
     <div class="form-group">
       <label>採購金額（NT$）</label>
@@ -3508,12 +3531,23 @@
   <div class="modal">
     <div class="modal-title" id="editInvTitle">調整庫存</div>
     <input type="hidden" id="editInvId">
-    <input type="hidden" id="editInvCountUnit">
-    <input type="hidden" id="editInvCountRatio">
     <div class="form-group">
       <label id="editInvQtyLabel">目前庫存量</label>
       <input id="editInvQty" type="number" min="0" step="0.1">
       <small id="editInvQtyHint" style="color:var(--text3);font-size:12px;margin-top:4px;display:none"></small>
+    </div>
+    <div class="form-group">
+      <label>盤點單位與換算</label>
+      <div style="display:flex;gap:6px;align-items:center">
+        <span style="font-size:13px;color:var(--text2);white-space:nowrap">1</span>
+        <input id="editInvCountUnit" placeholder="顆／包／盒" style="flex:1">
+        <span style="font-size:13px;color:var(--text2);white-space:nowrap">＝</span>
+        <input id="editInvCountRatio" type="number" step="any" min="0" placeholder="220" style="flex:1">
+        <span id="editInvBaseUnit" style="font-size:13px;color:var(--text2);white-space:nowrap"></span>
+      </div>
+      <small style="color:var(--text3);font-size:11px;margin-top:4px;display:block">
+        買的時候講「顆」、庫存存公克，就填在這裡。採購與盤點都會照這個換算。留空 = 只用基本單位。
+      </small>
     </div>
     <div class="form-group">
       <label>建議使用天數（效期）</label>
@@ -3558,6 +3592,28 @@
     <div class="form-group">
       <label>粉配方定價（NT$）</label>
       <input id="settPowderPrice" type="number" value="280">
+    </div>
+    <div style="border-top:1px solid var(--border);margin-top:6px;padding-top:14px">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+        <strong style="font-size:14px">每週排程</strong>
+      </div>
+      <div style="font-size:11px;color:var(--text3);margin-bottom:10px;line-height:1.7">
+        這三組日子決定系統怎麼排產、什麼時候提醒你盤點、訂閱的杯數怎麼算。
+        改了立刻生效，不用改程式。
+      </div>
+      <div class="dow-set">
+        <div class="dow-label">員工供餐日<small>這幾天才出員工餐</small></div>
+        <div class="dow-pick" id="dowStaffMeal"></div>
+      </div>
+      <div class="dow-set">
+        <div class="dow-label">同事訂閱取餐日<small>訂閱一輪的杯數照這個算</small></div>
+        <div class="dow-pick" id="dowSubscription"></div>
+      </div>
+      <div class="dow-set">
+        <div class="dow-label">盤點日<small>備料要撐到下一個盤點日</small></div>
+        <div class="dow-pick" id="dowStocktake"></div>
+      </div>
+      <div id="dowWarn" style="font-size:11.5px;line-height:1.7;margin-top:6px"></div>
     </div>
     <div style="border-top:1px solid var(--border);margin-top:6px;padding-top:14px">
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">

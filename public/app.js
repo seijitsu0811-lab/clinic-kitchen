@@ -2360,6 +2360,8 @@ const App = (() => {
   function openEditInv(id, name, qty, unit, countUnit, countRatio, shelfLifeDays) {
     document.getElementById('editInvTitle').textContent = `調整庫存：${name}`;
     document.getElementById('editInvId').value = id;
+    _editInvUnit = unit;
+    document.getElementById('editInvBaseUnit').textContent = unit;
     document.getElementById('editInvCountUnit').value = countUnit || '';
     document.getElementById('editInvCountRatio').value = countRatio || 1;
     document.getElementById('editInvShelfLife').value = shelfLifeDays || 0;
@@ -2379,17 +2381,26 @@ const App = (() => {
     openModal('modalEditInv');
   }
 
+  let _editInvUnit = 'g';
+
   async function saveInventory() {
     const id = document.getElementById('editInvId').value;
     const inputQty = parseFloat(document.getElementById('editInvQty').value) || 0;
-    const countUnit = document.getElementById('editInvCountUnit').value;
+    const countUnit = document.getElementById('editInvCountUnit').value.trim();
     const countRatio = parseFloat(document.getElementById('editInvCountRatio').value) || 1;
+    if (countUnit && !(countRatio > 1))
+      return alert(`填了盤點單位「${countUnit}」就要填換算比例（1 ${countUnit} = 幾 ${_editInvUnit}）`);
     const qty = countUnit && countRatio > 1 ? Math.round(inputQty * countRatio * 10) / 10 : inputQty;
     const shelf_life_days = parseInt(document.getElementById('editInvShelfLife').value) || 0;
-    await Promise.all([
-      api(`/api/inventory/${id}`, 'PUT', { qty }),
-      api(`/api/ingredients/${id}`, 'PATCH', { shelf_life_days })
-    ]);
+    try {
+      // 換算比例存在 ingredients 上，庫存量存在 inventory 上 —— 兩張表，一次動作
+      await api(`/api/ingredients/${id}`, 'PUT',
+        { count_unit: countUnit, count_ratio: countRatio, unit: _editInvUnit });
+      await Promise.all([
+        api(`/api/inventory/${id}`, 'PUT', { qty }),
+        api(`/api/ingredients/${id}`, 'PATCH', { shelf_life_days })
+      ]);
+    } catch (e) { return alert(e.message); }
     closeModal('modalEditInv');
     loadInventory();
   }
@@ -2458,7 +2469,7 @@ const App = (() => {
     } catch (e) { alert(e.message); }
   }
 
-  async function commitPurchaseDraft() {
+  async function commitPurchaseDraft(confirmOdd) {
     const rows = [...document.querySelectorAll('#purchaseDraft .pd-row')].map(el => ({
       ingredient_id: Number(el.dataset.ing),
       qty:         el.querySelector('.pd-qty').value,
@@ -2467,11 +2478,18 @@ const App = (() => {
     const willSave = rows.filter(r => r.total_price !== '' && Number(r.qty) > 0);
     if (!willSave.length) return alert('至少要填一樣的金額');
     try {
-      const r = await api('/api/purchase/commit', 'POST', { lines: rows });
+      const r = await api('/api/purchase/commit', 'POST',
+        { lines: rows, confirm_odd_price: !!confirmOdd });
       await _renderPurchaseDraft();
       loadInventory();
       alert(`已登記 ${r.saved} 樣` + (r.skipped ? `，${r.skipped} 樣沒填金額，留在籃子裡。` : '。'));
-    } catch (e) { alert(e.message); }
+    } catch (e) {
+      // 一筆離譜就整批不寫，所以這裡確認完要整批重送，不會只進一半
+      if (/差太多/.test(e.message) && confirm(e.message + '\n\n確定要照這樣整批登記？')) {
+        return commitPurchaseDraft(true);
+      }
+      alert(e.message);
+    }
   }
 
   async function openPurchase() {
@@ -2479,26 +2497,83 @@ const App = (() => {
     const items = await api('/api/inventory');
     const sel = document.getElementById('purchaseIng');
     sel.innerHTML = items.map(i => `<option value="${i.id}">${esc(i.name)}（${i.qty}${i.unit}）</option>`).join('');
+    _purchaseItems = items;
+    sel.onchange = purchaseUnitHint;
+    purchaseUnitHint();
     const today = new Date().toISOString().slice(0,10);
     document.getElementById('purchaseDate').value = today;
     openModal('modalPurchase');
   }
 
-  async function savePurchase() {
+  // 買的時候講的單位跟庫存的單位常常不一樣：蘋果買 2.2 公斤、檸檬買 12 顆，
+  // 但庫存存的是公克。原本這個欄位連單位都沒寫，打「2.2」就會存成 2.2 公克 ——
+  // 庫存加 2.2 克，單價變成 149 元/克，而且會污染那樣食材 90 天的均價
+  let _purchaseItems = [];
+
+  function _purchaseIng() {
+    const id = Number(document.getElementById('purchaseIng').value);
+    return _purchaseItems.find(i => i.id === id) || null;
+  }
+
+  function purchaseUnitHint() {
+    const i = _purchaseIng();
+    const uSel = document.getElementById('purchaseUnit');
+    const hint = document.getElementById('purchaseQtyHint');
+    if (!i || !uSel) return;
+
+    const opts = [{ v: 'base', t: i.unit }];
+    if (i.count_unit && i.count_ratio > 1)
+      opts.push({ v: 'count', t: i.count_unit });
+    if (i.unit === 'g')  opts.push({ v: 'kg', t: '公斤' });
+    if (i.unit === 'ml') opts.push({ v: 'l',  t: '公升' });
+    const keep = uSel.value;
+    uSel.innerHTML = opts.map(o => `<option value="${o.v}">${esc(o.t)}</option>`).join('');
+    if (opts.some(o => o.v === keep)) uSel.value = keep;
+
+    const qty = parseFloat(document.getElementById('purchaseQty').value);
+    const base = _toBase(i, qty, uSel.value);
+    hint.textContent = base == null
+      ? (i.count_unit && i.count_ratio > 1
+          ? `庫存單位是 ${i.unit}；1 ${i.count_unit} = ${i.count_ratio} ${i.unit}`
+          : `庫存單位是 ${i.unit}`)
+      : `= ${Math.round(base * 10) / 10} ${i.unit}　（庫存會加這個數字）`;
+  }
+
+  function _toBase(i, qty, unit) {
+    const n = Number(qty);
+    if (!i || !Number.isFinite(n) || n <= 0) return null;
+    if (unit === 'count') return i.count_unit ? n * (i.count_ratio || 1) : null;
+    if (unit === 'kg')    return i.unit === 'g'  ? n * 1000 : null;
+    if (unit === 'l')     return i.unit === 'ml' ? n * 1000 : null;
+    return n;
+  }
+
+  async function savePurchase(confirmOdd) {
     const ingredient_id = document.getElementById('purchaseIng').value;
     const qty = parseFloat(document.getElementById('purchaseQty').value);
+    const input_unit = document.getElementById('purchaseUnit').value;
     const total_price = parseFloat(document.getElementById('purchasePrice').value);
     const purchased_at = document.getElementById('purchaseDate').value;
     const item_type = document.getElementById('purchaseItemType').value;
     const purpose = document.getElementById('purchasePurpose').value;
     if (!qty || !total_price) return alert('請填寫採購量和金額');
-    await api('/api/inventory/purchase', 'POST', {
-      ingredient_id, qty, total_price, purchased_at, item_type, purpose,
-      user_id: currentUser?.id || null
-    });
-    closeModal('modalPurchase');
-    loadInventory();
-    alert(`進貨記錄已儲存！單價：NT$${(total_price/qty).toFixed(2)}`);
+    try {
+      const r = await api('/api/inventory/purchase', 'POST', {
+        ingredient_id, qty, input_unit, total_price, purchased_at, item_type, purpose,
+        user_id: currentUser?.id || null,
+        confirm_odd_price: !!confirmOdd
+      });
+      closeModal('modalPurchase');
+      loadInventory();
+      alert(`進貨記錄已儲存　${r.base_qty} ${r.unit}　單價 NT$${r.unit_price}`);
+    } catch (e) {
+      // 單價跟過去差五倍以上就會被擋。擋錯了按確認就過 ——
+      // 擋不住的話那樣食材的均價會歪 90 天，而且看起來只是「有點貴」
+      if (/差 [\d.]+ 倍/.test(e.message) && confirm(e.message + '\n\n確定要照這樣登記？')) {
+        return savePurchase(true);
+      }
+      alert(e.message);
+    }
   }
 
   // ── 成本分析 ────────────────────────────────────────────
@@ -3265,6 +3340,7 @@ const App = (() => {
       document.getElementById(id).oninput = _renderLaborPreview;
     });
     _renderLaborPreview();
+    _loadDowSettings(s);
     renderClosures();
     _renderBackups();
     _renderLogs();
@@ -3345,6 +3421,9 @@ const App = (() => {
       labor_min_per_batch:   parseFloat(document.getElementById('settLaborBatch').value),
       labor_min_per_serving: parseFloat(document.getElementById('settLaborServing').value),
       cost_lookback_days:    parseFloat(document.getElementById('settLookback').value),
+      staff_meal_dows:       _dowState.staff_meal_dows.join(','),
+      subscription_dows:     _dowState.subscription_dows.join(','),
+      stocktake_dows:        _dowState.stocktake_dows.join(','),
       full_formula_price:    parseFloat(document.getElementById('settFullPrice').value),
       powder_formula_price:  parseFloat(document.getElementById('settPowderPrice').value)
     });
@@ -4476,6 +4555,65 @@ const App = (() => {
     } catch (e) { alert(e.message); }
   }
 
+  // ── 每週排程（供餐日、訂閱取餐日、盤點日）──────────────
+  // 這三組原本只能改程式。供餐日已經是設定值，但設定畫面上沒有那一欄，
+  // 所以實務上還是得找人改 —— 對現場來說「不能改」和「要改 code」是同一件事
+  const DOWS = ['日', '一', '二', '三', '四', '五', '六'];
+  let _dowState = { staff_meal_dows: [], subscription_dows: [], stocktake_dows: [] };
+
+  const _DOW_FIELDS = [
+    ['dowStaffMeal',    'staff_meal_dows'],
+    ['dowSubscription', 'subscription_dows'],
+    ['dowStocktake',    'stocktake_dows']
+  ];
+
+  function _renderDowPickers() {
+    _DOW_FIELDS.forEach(([elId, key]) => {
+      const el = document.getElementById(elId);
+      if (!el) return;
+      el.innerHTML = DOWS.map((d, i) =>
+        `<button type="button" class="${_dowState[key].includes(i) ? 'on' : ''}"
+                 onclick="App.toggleDow('${key}', ${i})">${d}</button>`).join('');
+    });
+    _renderDowWarn();
+  }
+
+  // 兩組日子撞在一起不是錯，但要講出來 —— 同一天同時出免費員工餐和
+  // 付費訂閱杯，現場要分清楚哪一杯是哪一條線的
+  function _renderDowWarn() {
+    const el = document.getElementById('dowWarn');
+    if (!el) return;
+    const msgs = [];
+    const both = _dowState.staff_meal_dows.filter(d => _dowState.subscription_dows.includes(d));
+    if (both.length)
+      msgs.push(`<div style="color:var(--text2)">週${both.map(d => DOWS[d]).join('、')}
+        同時是員工供餐日和訂閱取餐日 —— 那幾天要分清楚免費與付費兩種杯子。</div>`);
+    if (!_dowState.stocktake_dows.length)
+      msgs.push('<div style="color:#DC2626">沒有盤點日的話，備料區間會固定抓七天，缺料會算不準。</div>');
+    if (!_dowState.subscription_dows.length)
+      msgs.push('<div style="color:#DC2626">沒有訂閱取餐日的話，新開的訂閱會算不出杯數。</div>');
+    el.innerHTML = msgs.join('');
+  }
+
+  function toggleDow(key, dow) {
+    const list = _dowState[key];
+    const i = list.indexOf(dow);
+    if (i >= 0) list.splice(i, 1); else { list.push(dow); list.sort((a, b) => a - b); }
+    _renderDowPickers();
+  }
+
+  async function _loadDowSettings(s) {
+    const parse = v => String(v == null ? '' : v).split(',')
+      .map(x => Number(String(x).trim()))
+      .filter(x => Number.isInteger(x) && x >= 0 && x <= 6);
+    _dowState = {
+      staff_meal_dows:    parse(s.staff_meal_dows    ?? '2,4'),
+      subscription_dows:  parse(s.subscription_dows  ?? '1,3,5'),
+      stocktake_dows:     parse(s.stocktake_dows     ?? '1,2,4')
+    };
+    _renderDowPickers();
+  }
+
   // ── 休診日 ────────────────────────────────────────────
   async function renderClosures() {
     const el = document.getElementById('closureList');
@@ -4670,6 +4808,7 @@ const App = (() => {
     openEditRxIngredients, saveRxIngredients,
     loadInventory, openEditInv, saveInventory, togglePurchaseHistory, movePurchase, deletePurchase,
     openAddIngredient, addIngredient, openPurchase, savePurchase, commitPurchaseDraft,
+    purchaseUnitHint,
     fillPurchaseDraft,
     openShortage, saveShortagePurchase,
     loadCost, switchCostTab, prevCostMonth, nextCostMonth,
@@ -4695,7 +4834,7 @@ const App = (() => {
     openEditNutritionCard, saveNutritionCard, reviewCard, openPrintCards,
     openCaseMenu, showCaseMenu, openCaseMenuFor,
     renderCaseMenuInline, openCaseMenuWindow,
-    renderClosures, addClosure, removeClosure,
+    renderClosures, addClosure, removeClosure, toggleDow,
     loadSubscriptions, subCycle, addSubscription, toggleSubActive, removeSubscription,
     cycleSubPickup, cycleSubPickupToday, shareSubCup
   };
