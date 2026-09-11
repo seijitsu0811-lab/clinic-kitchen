@@ -6,54 +6,81 @@
   <title>診所廚房</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Outfit:wght@400;500;600;700;800&family=Noto+Sans+TC:wght@400;500;700;900&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
+    /* 蘋果那套的底層規則，照它的邏輯而不只是照它的顏色：
+         · 分組底色是灰的、卡片是白的 —— 分隔靠明度差，不靠陰影與描邊
+         · 中性色帶一點主色的色偏，純灰看起來像沒選過
+         · 圓角只有兩級（10 / 14），不是四級
+         · 介面字用系統字（SF Pro / Segoe），中文走 Noto Sans TC
+       主色保留原本的松綠，不換成 iOS 藍 —— 那是這個系統的識別，
+       而且綠色跟蔬果這件事對得上 */
     :root {
-      --primary-hsl: 174, 85%, 35%;
+      --primary-hsl: 172, 62%, 29%;
       --primary: hsl(var(--primary-hsl));
-      --primary-light: hsl(174, 85%, 95%);
-      --primary-dark: hsl(174, 85%, 25%);
-      --primary-grad: linear-gradient(135deg, hsl(174, 85%, 35%) 0%, hsl(210, 85%, 45%) 100%);
-      
-      --blue: #2563EB;
-      --green: #10B981;
-      --red: #EF4444;
-      --orange: #F59E0B;
-      --purple: #6366F1;
-      --gray: #64748B;
-      
-      --bg: #F8FAFC;
-      --card: rgba(255, 255, 255, 0.85);
+      --primary-light: #E6F0ED;
+      --primary-dark: hsl(172, 62%, 21%);
+      /* 漸層留著是為了不動到還在用它的舊規則，但指到單色 */
+      --primary-grad: hsl(172, 62%, 29%);
+
+      --blue: #0B6BCB;
+      --green: #047857;
+      --red: #C7261B;
+      --orange: #B45309;
+      --purple: #6D4AC4;
+      --gray: #6B7671;
+
+      --bg: #F1F2F0;
+      --card: #FFFFFF;
       --card-solid: #FFFFFF;
-      --border: rgba(226, 232, 240, 0.8);
-      --border-focus: hsl(174, 85%, 35%);
-      --text: #0F172A;
-      --text2: #475569;
-      --text3: #94A3B8;
-      
-      --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
-      --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -2px rgba(0, 0, 0, 0.05);
-      --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.04), 0 4px 6px -4px rgba(0, 0, 0, 0.04);
-      --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.06), 0 8px 10px -6px rgba(0, 0, 0, 0.06);
-      
-      --font: 'Inter', -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Helvetica Neue', sans-serif;
-      --font-title: 'Outfit', 'Noto Sans TC', sans-serif;
-      --radius-sm: 8px;
-      --radius-md: 12px;
-      --radius-lg: 16px;
-      --radius-xl: 24px;
+      --border: #DEE2DE;
+      --border-focus: hsl(172, 62%, 29%);
+      --text: #16201B;
+      --text2: #5D6862;
+      --text3: #97A19B;
+
+      /* 陰影收到幾乎沒有。每個區塊都加一層的話層級會被拉平，
+         看起來就是一堆卡片疊在一起 */
+      --shadow-sm: none;
+      --shadow-md: 0 1px 2px rgba(22, 32, 27, .05);
+      --shadow-lg: 0 4px 16px rgba(22, 32, 27, .07);
+      --shadow-xl: 0 12px 32px rgba(22, 32, 27, .10);
+
+      --font: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI',
+              'Noto Sans TC', 'PingFang TC', 'Microsoft JhengHei', sans-serif;
+      --font-title: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI',
+                    'Noto Sans TC', 'PingFang TC', 'Microsoft JhengHei', sans-serif;
+      --radius-sm: 10px;
+      --radius-md: 14px;
+      --radius-lg: 14px;
+      --radius-xl: 20px;
     }
 
     @media (prefers-color-scheme: dark) {
       :root {
-        --bg: #0B0F19;
-        --card: rgba(20, 27, 45, 0.85);
-        --card-solid: #141B2D;
-        --border: rgba(51, 65, 85, 0.5);
-        --text: #F8FAFC;
-        --text2: #94A3B8;
-        --text3: #475569;
-        --primary-light: hsl(174, 85%, 12%);
+        /* 深色照同一套邏輯：底色最暗、卡片亮一階。
+           不是把淺色直接反過來 —— 反過來的對比會過頭 */
+        --bg: #0E1210;
+        --card: #1A211D;
+        --card-solid: #1A211D;
+        --border: #2B332E;
+        --text: #ECF0EE;
+        --text2: #9DA8A2;
+        --text3: #6E7975;
+        --primary: hsl(172, 45%, 58%);
+        --primary-light: #16231F;
+        --primary-dark: hsl(172, 45%, 48%);
+        --primary-grad: hsl(172, 45%, 58%);
+        --border-focus: hsl(172, 45%, 58%);
+        --blue: #6BA6E8;
+        --green: #5FBF9B;
+        --red: #E8837A;
+        --orange: #D99B57;
+        --purple: #A78BE8;
+        --gray: #8A948F;
+        --shadow-md: 0 1px 2px rgba(0, 0, 0, .4);
+        --shadow-lg: 0 4px 16px rgba(0, 0, 0, .5);
+        --shadow-xl: 0 12px 32px rgba(0, 0, 0, .6);
       }
     }
 
@@ -69,9 +96,20 @@
       background: var(--bg);
       color: var(--text);
       min-height: 100vh;
-      line-height: 1.5;
+      /* 廚房是站著操作、手上可能濕的環境 ——
+         字太小的代價比排版不夠緊湊大得多 */
+      font-size: 15px;
+      line-height: 1.55;
+      letter-spacing: -0.1px;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
       transition: background-color 0.3s ease, color 0.3s ease;
     }
+    /* 標題收字距，長標題平衡斷行 */
+    h1, h2, h3, .modal-title { letter-spacing: -0.35px; text-wrap: balance; }
+    /* 數字對齊。杯數、克數、金額排成一欄時，不對齊就要一個一個看 */
+    input[type="number"], .inv-qty, .sub-money, .pa-num,
+    .cal-cups, .cal-day-num { font-variant-numeric: tabular-nums; }
 
     /* Scrollbar */
     ::-webkit-scrollbar {
@@ -97,17 +135,17 @@
       justify-content: center;
       min-height: 100vh;
       padding: 32px 20px;
-      background: radial-gradient(circle at top left, rgba(13, 148, 136, 0.08) 0%, transparent 40%),
-                  radial-gradient(circle at bottom right, rgba(37, 99, 235, 0.08) 0%, transparent 40%);
+      background: var(--bg);
     }
     #screen-user h1 {
       font-family: var(--font-title);
-      font-size: 32px;
-      font-weight: 800;
+      /* iOS 的 Large Title：34px、bold、字距收緊。
+         原本是漸層裁切文字 —— 那是整份介面裡最不像蘋果的一處 */
+      font-size: 34px;
+      font-weight: 700;
+      letter-spacing: -0.8px;
       margin-bottom: 8px;
-      background: var(--primary-grad);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
+      color: var(--text);
     }
     #screen-user p {
       color: var(--text2);
@@ -2170,6 +2208,109 @@
       color: var(--primary);
     }
 
+    /* ── 行事曆 ── */
+    .cal-bar {
+      display: flex; align-items: center; gap: 8px;
+      margin: 14px 0 10px; font-size: 17px;
+    }
+    .cal-bar strong { font-size: 20px; letter-spacing: -0.4px; }
+    .cal-dow {
+      display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px;
+      margin-bottom: 4px; font-size: 11.5px; color: var(--text3);
+      text-align: center; font-weight: 600;
+    }
+    .cal-dow .cal-we { color: var(--text3); opacity: .6; }
+    .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
+    .cal-cell {
+      background: var(--card-solid); border: 1px solid var(--border);
+      border-radius: var(--radius-sm); padding: 6px 5px 5px;
+      min-height: 62px; cursor: pointer; text-align: left;
+      display: flex; flex-direction: column; gap: 2px;
+      font: inherit; color: inherit;
+    }
+    .cal-cell.pad { background: transparent; border-color: transparent; cursor: default; }
+    .cal-cell.we  { background: var(--bg); }
+    .cal-cell.closed { background: repeating-linear-gradient(
+        -45deg, var(--bg), var(--bg) 5px, var(--card-solid) 5px, var(--card-solid) 10px); }
+    .cal-cell.today { border-color: var(--primary); border-width: 2px; padding: 5px 4px 4px; }
+    .cal-cell.sel   { outline: 2px solid var(--primary); outline-offset: 1px; }
+    .cal-day-num { font-size: 13px; font-weight: 600; }
+    .cal-cell.we .cal-day-num { color: var(--text3); }
+    .cal-cups { font-size: 15px; font-weight: 700; line-height: 1.1; }
+    .cal-cups small { font-size: 10px; font-weight: 500; color: var(--text3); }
+    .cal-dots { display: flex; gap: 3px; margin-top: auto; flex-wrap: wrap; }
+    .cal-dots i {
+      width: 6px; height: 6px; border-radius: 50%; display: block;
+    }
+    .k-short, .cal-dots i.short   { background: var(--red); }
+    .k-meal,  .cal-dots i.meal    { background: var(--primary); }
+    .k-sub,   .cal-dots i.sub     { background: var(--purple); }
+    .k-closed,.cal-dots i.closed  { background: var(--text3); }
+    .k-st,    .cal-dots i.st      { background: var(--orange); }
+    .cal-key {
+      display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 12px;
+      font-size: 11.5px; color: var(--text2); align-items: center;
+    }
+    .cal-key i { width: 7px; height: 7px; border-radius: 50%; display: inline-block;
+                 margin-right: 4px; vertical-align: 1px; }
+    .cal-sum {
+      display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px;
+    }
+    .cal-sum span {
+      font-size: 12px; padding: 4px 10px; border-radius: 999px;
+      background: var(--card-solid); border: 1px solid var(--border); color: var(--text2);
+    }
+    .cal-sum span.warn { border-color: var(--red); color: var(--red); }
+    .cal-detail {
+      background: var(--card-solid); border: 1px solid var(--border);
+      border-radius: var(--radius-md); padding: 14px; margin-top: 14px;
+    }
+    .cal-detail h3 { font-size: 17px; margin-bottom: 8px; }
+    .cal-detail .cd-rows { display: flex; flex-direction: column; gap: 4px; font-size: 13.5px; }
+    .cal-detail .cd-rows > div {
+      display: flex; gap: 10px; padding: 5px 0; border-top: 1px solid var(--border);
+    }
+    .cal-detail .cd-rows > div span:last-child {
+      margin-left: auto; font-variant-numeric: tabular-nums; color: var(--text2);
+    }
+    .cal-detail .cd-acts { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+
+    /* ── 更多 ── */
+    .more-list {
+      display: flex; flex-direction: column; margin: 14px 0;
+      background: var(--card-solid); border: 1px solid var(--border);
+      border-radius: var(--radius-md); overflow: hidden;
+    }
+    .more-list button {
+      display: flex; align-items: center; gap: 12px; width: 100%;
+      padding: 14px 16px; background: none; border: none; cursor: pointer;
+      border-top: 1px solid var(--border); text-align: left; font: inherit; color: inherit;
+      min-height: 60px;
+    }
+    .more-list button:first-child { border-top: none; }
+    .more-list button:hover { background: var(--bg); }
+    .more-list .m-ic { font-size: 21px; width: 26px; text-align: center; }
+    .more-list .m-t { display: flex; flex-direction: column; font-size: 16px; font-weight: 500; }
+    .more-list .m-t small {
+      font-size: 12px; font-weight: 400; color: var(--text3); margin-top: 1px;
+    }
+    .more-list .m-go { margin-left: auto; color: var(--text3); font-size: 19px; }
+
+    /* 警告堆疊：只顯示第一個有內容的，其餘收起來。
+       :empty 配得上 innerHTML='' 的那幾個 div（沒有子節點就算 empty），
+       所以哪一張有內容是由渲染決定的，CSS 不必知道是哪一張 */
+    .alert-stack > div:not(:empty) ~ div:not(:empty) { display: none; }
+    .alert-stack.open > div:not(:empty) { display: block !important; }
+    .alert-more {
+      display: block; width: 100%; margin: -2px 0 10px;
+      padding: 9px 12px; font-size: 13px; font-weight: 500;
+      color: var(--text2); background: var(--card-solid);
+      border: 1px solid var(--border); border-radius: var(--radius-sm);
+      cursor: pointer; text-align: left;
+    }
+    .alert-more:hover { color: var(--text); border-color: var(--text3); }
+    .alert-more[hidden] { display: none; }
+
     /* 提前備料：登記「今天為哪一天備了幾杯」。
        料離開冰箱的那天庫存就要掉，不然缺料會少報一天、採購晚一天 */
     .prep-ahead {
@@ -2935,12 +3076,10 @@
     </div>
     <div class="tabs">
       <div class="tab active" data-tab="today">📋 今日</div>
-      <div class="tab" data-tab="rx">💊 處方</div>
+      <div class="tab" data-tab="cal">🗓 行事曆</div>
       <div class="tab" data-tab="inv">📦 庫存 <span id="invWarningBadge" class="inv-warn-tab" style="display:none"></span></div>
-      <div class="tab" data-tab="meal">🍱 套餐</div>
       <div class="tab" data-tab="sub">🎫 訂閱</div>
-      <div class="tab" data-tab="cost">💰 成本</div>
-      <div class="tab" data-tab="sop">🗂 SOP</div>
+      <div class="tab" data-tab="more">⋯ 更多</div>
     </div>
   </div>
 
@@ -2948,10 +3087,20 @@
   <div class="page active" id="page-today">
     <!-- 順序＝急迫性。買便當有截止時間，排最前面；
          自動補扣是過去幾天的帳務更正，排在它後面，而且只佔一行 -->
-    <div id="todayMealAlert"></div>
-    <div id="todayShortage"></div>
-    <div id="apptSyncWarn"></div>
-    <div id="autoSettleAlert"></div>
+    <!-- 打開來先看到四張警告、才看到今天要做什麼 —— 那是「介面太複雜」
+         最明顯的來源。順序改成照工作流程排：
+           1 缺料      今天做不做得出來（做不出來，其他都不用談）
+           2 餐盒採購  有出發時間壓力
+           3 預約同步  資料進不進來
+           4 自動補扣  昨天的帳，可以晚一點看
+         只露第一張，其餘收成一行。收起來的不是不重要，是不必同時看。 -->
+    <div class="alert-stack" id="alertStack">
+      <div id="todayShortage"></div>
+      <div id="todayMealAlert"></div>
+      <div id="apptSyncWarn"></div>
+      <div id="autoSettleAlert"></div>
+    </div>
+    <button class="alert-more" id="alertMore" hidden onclick="App.toggleAlerts()"></button>
     <div class="section-head">
       <h2 style="display:flex;align-items:center;gap:10px;">
         <!-- 編號體系是 A→B→C→D（B 員工批次、C 個案出單、D 預約出單 在 app.js）。
@@ -3037,6 +3186,54 @@
   </div>
 
   <!-- 成本分析 -->
+  <!-- 行事曆。一次看完一個月：哪幾天出幾杯、預約帶進來幾筆、哪天缺料、哪天休診。
+       原本要回答「這個月忙不忙、料夠不夠」只能一天一天點過去 —— 排產、缺料、
+       預約、訂閱四件事各自在不同畫面上，湊不出一張全月的圖。 -->
+  <div class="page" id="page-cal">
+    <div class="cal-bar">
+      <button class="btn btn-ghost btn-sm" onclick="App.calMonth(-1)">←</button>
+      <strong id="calLabel"></strong>
+      <button class="btn btn-ghost btn-sm" onclick="App.calMonth(1)">→</button>
+      <button class="btn btn-ghost btn-sm" style="margin-left:auto" onclick="App.calMonth(0)">本月</button>
+    </div>
+    <div id="calTotals"></div>
+    <div class="cal-dow">
+      <span>一</span><span>二</span><span>三</span><span>四</span><span>五</span>
+      <span class="cal-we">六</span><span class="cal-we">日</span>
+    </div>
+    <div class="cal-grid" id="calGrid"></div>
+    <div id="calDetail"></div>
+    <div class="cal-key">
+      <span><i class="k-short"></i>缺料</span>
+      <span><i class="k-meal"></i>員工餐</span>
+      <span><i class="k-sub"></i>訂閱取餐</span>
+      <span><i class="k-closed"></i>休診</span>
+      <span><i class="k-st"></i>盤點日</span>
+    </div>
+  </div>
+
+  <!-- 更多。每天用不到的東西收在這裡 —— 分頁列從七個收到五個，
+       現場平常只會點前三個。 -->
+  <div class="page" id="page-more">
+    <div class="more-list">
+      <button onclick="App.switchTab('rx')">
+        <span class="m-ic">💊</span><span class="m-t">處方<small>個案與員工的配方、用料、異動紀錄</small></span><span class="m-go">›</span>
+      </button>
+      <button onclick="App.switchTab('meal')">
+        <span class="m-ic">🍱</span><span class="m-t">套餐<small>今日餐盒、菜單維護、衛教小卡、給客人看的菜單</small></span><span class="m-go">›</span>
+      </button>
+      <button onclick="App.switchTab('cost')">
+        <span class="m-ic">💰</span><span class="m-t">成本<small>每杯食材與工時成本、月結</small></span><span class="m-go">›</span>
+      </button>
+      <button onclick="App.switchTab('sop')">
+        <span class="m-ic">🗂</span><span class="m-t">SOP<small>標準流程與品質確認</small></span><span class="m-go">›</span>
+      </button>
+      <button onclick="App.openSettings()">
+        <span class="m-ic">⚙️</span><span class="m-t">設定<small>每週排程、休診日、成本參數、備份、操作紀錄</small></span><span class="m-go">›</span>
+      </button>
+    </div>
+  </div>
+
   <!-- 同事訂閱。兩週一輪、取餐日走週一三五、一杯 150 元。
        輪的邊界沿用蔬果方案的輪替基準，所以一輪剛好等於一個方案期。 -->
   <div class="page" id="page-sub">
@@ -3179,29 +3376,21 @@
       <span class="tb-icon">📋</span>
       <span>今日</span>
     </div>
-    <div class="tb-item" data-tab="rx" onclick="App.switchTab('rx')">
-      <span class="tb-icon">💊</span>
-      <span>處方</span>
+    <div class="tb-item" data-tab="cal" onclick="App.switchTab('cal')">
+      <span class="tb-icon">🗓</span>
+      <span>行事曆</span>
     </div>
     <div class="tb-item" data-tab="inv" onclick="App.switchTab('inv')">
       <span class="tb-icon">📦</span>
       <span>庫存</span>
     </div>
-    <div class="tb-item" data-tab="meal" onclick="App.switchTab('meal')">
-      <span class="tb-icon">🍱</span>
-      <span>套餐</span>
-    </div>
     <div class="tb-item" data-tab="sub" onclick="App.switchTab('sub')">
       <span class="tb-icon">🎫</span>
       <span>訂閱</span>
     </div>
-    <div class="tb-item" data-tab="cost" onclick="App.switchTab('cost')">
-      <span class="tb-icon">💰</span>
-      <span>成本</span>
-    </div>
-    <div class="tb-item" data-tab="sop" onclick="App.switchTab('sop')">
-      <span class="tb-icon">🗂</span>
-      <span>SOP</span>
+    <div class="tb-item" data-tab="more" onclick="App.switchTab('more')">
+      <span class="tb-icon">⋯</span>
+      <span>更多</span>
     </div>
   </nav>
 </div>

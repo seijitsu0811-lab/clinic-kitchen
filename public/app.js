@@ -91,12 +91,18 @@ const App = (() => {
   }
 
   // ── Tab 切換 ────────────────────────────────────────────
+  // 處方、套餐、成本、SOP 收進「更多」之後，分頁列上沒有它們的按鈕了 ——
+  // 從「更多」點進去時整排都不會亮，看起來像跳到一個不屬於任何地方的畫面
+  const TAB_OWNER = { rx: 'more', meal: 'more', cost: 'more', sop: 'more' };
+
   function switchTab(tab) {
-    document.querySelectorAll('[data-tab]').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+    const lit = TAB_OWNER[tab] || tab;
+    document.querySelectorAll('[data-tab]').forEach(t => t.classList.toggle('active', t.dataset.tab === lit));
     document.querySelectorAll('.page').forEach(p => p.classList.toggle('active', p.id === 'page-' + tab));
     if (tab === 'today') loadToday();
     if (tab === 'rx')    loadRx();
     if (tab === 'inv')   loadInventory();
+    if (tab === 'cal')   loadCalendar();
     if (tab === 'sub')   loadSubscriptions();
     if (tab === 'cost')  loadCost();
     if (tab === 'meal')  loadMeals();
@@ -833,6 +839,9 @@ const App = (() => {
     document.getElementById('todaySchedule').innerHTML = _renderSchedule(d);
 
     loadPrepAhead().catch(() => {});
+    // 幾張警告是各自非同步填進去的，所以這裡排在後面再數一次
+    setTimeout(_syncAlertMore, 0);
+    setTimeout(_syncAlertMore, 600);
   }
 
   // 用成員組成當識別，不用批次位置。
@@ -3781,18 +3790,20 @@ const App = (() => {
     const box = document.getElementById('modalShortage');
     if (!box) return;
     // 標題也要跟橫幅講一樣的話 —— 一邊寫「7 樣不夠」、一邊分成 2＋5，只會更亂
-    const nBuy = day.short.filter(x => !x.from_pack).length;
-    const nPrep = day.short.length - nBuy;
+    const nBuy = day.short.length;
+    const nPack = day.pack_short_servings || 0;
     document.getElementById('shortHead').textContent =
       `${day.plan_name || ''} ${day.cups} 杯｜` +
-      [nBuy ? `要買 ${nBuy} 樣` : '', nPrep ? `備料 ${nPrep} 樣` : ''].filter(Boolean).join('、');
+      [nBuy ? `要買 ${nBuy} 樣` : '', nPack ? `冷凍包缺 ${nPack} 杯份` : ''].filter(Boolean).join('、');
     _shortDay = day;
     const dt = document.getElementById('shortDate');
     if (dt && !dt.value) dt.value = day.date;
     // 「缺 150g」但冷凍庫裡有 3000g —— 那不是缺料，是備料還沒做。
     // 兩件事寫成同一句話，人就會跑去買已經有的東西
-    const toBuy  = day.short.filter(x => !x.from_pack);
-    const toPrep = day.short.filter(x => x.from_pack);
+    // toPrep 現在一律是空的 —— 冷凍包不足已經不會出現在食材清單裡。
+    // 留著這個變數是為了不動到下面那段渲染；杯份改從 pack_short_servings 讀
+    const toBuy  = day.short;
+    const toPrep = [];
     const buyRow = x => `<div class="sp-row">
         <div class="sp-top">
           <span class="sp-name">${esc(x.name)}</span>
@@ -3897,16 +3908,18 @@ const App = (() => {
     const day = (f.days || []).find(x => x.date === d.date);
     if (!day || day.cups === 0 || day.feasible) { el.innerHTML = ''; return; }
 
-    // 「缺 150g」但冷凍庫裡有 3000g —— 那不是缺料，是備料還沒做
-    const buyN  = day.short.filter(x => !x.from_pack).length;
-    const prepN = day.short.length - buyN;
-    const top = day.short.filter(x => !x.from_pack).slice(0, 5);
+    // 缺料清單裡每一列都是真的要買的生料。
+    // 「冷凍包還沒做」是另一件事 —— 那是進廚房分裝，不是跑一趟市場，
+    // 所以它有自己的數字（杯份），不摻在克數裡
+    const buyN  = day.short.length;
+    const packN = day.pack_short_servings || 0;
+    const top = day.short.slice(0, 5);
     el.innerHTML = `<div class="today-short">
       <div class="ts-head">⚠ 今天的料不齊　<b>${
-        [buyN ? `要買 ${buyN} 樣` : '', prepN ? `備料 ${prepN} 樣` : ''].filter(Boolean).join('、')
+        [buyN ? `要買 ${buyN} 樣` : '', packN ? `冷凍包缺 ${packN} 杯份` : ''].filter(Boolean).join('、')
       }</b></div>
       <div class="ts-sub">${esc(day.plan_name || '')} ${day.cups} 杯做不完整。${
-        buyN ? '要買：' : '生料都在，是冷凍包還沒做。'}</div>
+        buyN ? '要買：' : '生料都在，是冷凍包還沒做 —— 進廚房分裝就好，不用出門。'}</div>
       <div class="ts-chips">
         ${top.map(x => `<span class="ts-chip">${esc(x.name)} 缺 ${x.gap}${esc(x.unit)}</span>`).join('')}
         ${buyN > 5 ? `<span class="ts-chip more">…另 ${buyN - 5} 樣</span>` : ''}
@@ -4557,6 +4570,184 @@ const App = (() => {
     } catch (e) { alert(e.message); }
   }
 
+  // ── 行事曆 ────────────────────────────────────────────
+  // 一次看完一個月。過去的日子看「實際扣了幾杯」，今天以後看「排定幾杯」——
+  // 這兩個數字意思不一樣，混成一欄會讓人以為昨天少做了。
+  let _calMonth = null, _calData = null, _calSel = null;
+
+  function calMonth(delta) {
+    if (delta === 0 || !_calData) _calMonth = null;
+    else _calMonth = delta < 0 ? _calData.prev_month : _calData.next_month;
+    _calSel = null;
+    loadCalendar();
+  }
+
+  async function loadCalendar() {
+    let d;
+    try { d = await api('/api/calendar' + (_calMonth ? '?month=' + _calMonth : '')); }
+    catch (e) { return alert(e.message); }
+    _calData = d;
+    _calMonth = d.month;
+
+    document.getElementById('calLabel').textContent =
+      d.month.slice(0, 4) + ' 年 ' + Number(d.month.slice(5)) + ' 月';
+
+    const t = d.totals;
+    document.getElementById('calTotals').innerHTML = `<div class="cal-sum">
+      <span>排定 ${t.planned_cups} 杯</span>
+      <span>已扣 ${t.served_cups} 杯</span>
+      <span>預約帶入 ${t.appt_cups} 杯</span>
+      ${t.subscription_cups ? `<span>訂閱 ${t.subscription_cups} 杯</span>` : ''}
+      ${t.closed_days ? `<span>休診 ${t.closed_days} 天</span>` : ''}
+      ${t.short_days ? `<span class="warn">${t.short_days} 天缺料</span>` : ''}
+    </div>`;
+
+    // 格子從週一排起。ISO 的週一 = 1，週日 = 0，所以週日要補到最後
+    const firstDow = new Date(d.first + 'T00:00:00').getDay();
+    const pad = (firstDow + 6) % 7;
+    const cells = [];
+    for (let i = 0; i < pad; i++) cells.push('<div class="cal-cell pad"></div>');
+    d.days.forEach(x => {
+      const we = x.dow === 0 || x.dow === 6;
+      const dots = [
+        x.short_count > 0 ? 'short' : '',
+        x.is_staff_meal_day ? 'meal' : '',
+        x.is_subscription_day ? 'sub' : '',
+        x.is_closed ? 'closed' : '',
+        x.is_stocktake_day ? 'st' : ''
+      ].filter(Boolean);
+      // 過去看實扣、今天以後看排定 —— 標籤講清楚是哪一個
+      const n = x.is_past ? x.served_cups : x.planned_cups;
+      const lbl = x.is_past ? '扣' : '排';
+      cells.push(`<button class="cal-cell${we ? ' we' : ''}${x.is_closed ? ' closed' : ''}${
+        x.is_today ? ' today' : ''}${_calSel === x.date ? ' sel' : ''}"
+        onclick="App.calPick('${x.date}')">
+        <span class="cal-day-num">${Number(x.date.slice(8))}</span>
+        ${n > 0 ? `<span class="cal-cups">${n}<small> 杯${lbl}</small></span>` : ''}
+        <span class="cal-dots">${dots.map(c => `<i class="${c}"></i>`).join('')}</span>
+      </button>`);
+    });
+    document.getElementById('calGrid').innerHTML = cells.join('');
+    _renderCalDetail();
+  }
+
+  function calPick(date) {
+    _calSel = _calSel === date ? null : date;
+    loadCalendar();
+  }
+
+  function _renderCalDetail() {
+    const el = document.getElementById('calDetail');
+    if (!el) return;
+    if (!_calSel || !_calData) {
+      el.innerHTML = '<div style="font-size:12.5px;color:var(--text3);margin-top:12px">'
+        + '點一天看細節：那天出幾杯、缺什麼、要不要備料。</div>';
+      return;
+    }
+    const x = _calData.days.find(y => y.date === _calSel);
+    if (!x) { el.innerHTML = ''; return; }
+    const DOW = ['日', '一', '二', '三', '四', '五', '六'];
+    const rows = [];
+    if (x.is_closed) rows.push(['休診', esc(x.closure_reason || '未填原因')]);
+    if (x.plan_name) rows.push(['蔬果方案', esc(x.plan_name)]);
+    rows.push([x.is_past ? '實際扣掉' : '排定要做', (x.is_past ? x.served_cups : x.planned_cups) + ' 杯']);
+    if (!x.is_past && x.served_cups > 0) rows.push(['已經扣掉', x.served_cups + ' 杯']);
+    if (x.prepped_cups > 0) rows.push(['其中提前備料', x.prepped_cups + ' 杯']);
+    if (x.appt_cups) rows.push(['預約帶入', x.appt_cups + ' 杯']);
+    if (x.manual_cups) rows.push(['現場加的', x.manual_cups + ' 杯']);
+    if (x.subscription_cups) rows.push(['同事訂閱', x.subscription_cups + ' 杯']);
+    if (x.pack_short > 0) rows.push(['冷凍包還缺', x.pack_short + ' 杯份（備料，不用出門）']);
+
+    const shortHtml = (x.short || []).length
+      ? `<div style="margin-top:10px">
+           <div style="font-size:12px;color:var(--red);font-weight:600;margin-bottom:4px">
+             缺 ${x.short_count} 樣</div>
+           <div class="ts-chips">${x.short.map(sx =>
+             `<span class="ts-chip">${esc(sx.name)} 缺 ${sx.gap}${esc(sx.unit)}</span>`).join('')}
+             ${x.short_count > 6 ? `<span class="ts-chip more">…另 ${x.short_count - 6} 樣</span>` : ''}
+           </div></div>`
+      : (x.short_count === 0 ? '<div style="font-size:12.5px;color:var(--green);margin-top:8px">料齊，做得出來。</div>' : '');
+
+    el.innerHTML = `<div class="cal-detail">
+      <h3>${esc(x.date)} 週${DOW[x.dow]}${x.is_today ? '（今天）' : ''}</h3>
+      <div class="cd-rows">${rows.map(r =>
+        `<div><span>${r[0]}</span><span>${r[1]}</span></div>`).join('')}</div>
+      ${shortHtml}
+      ${x.is_past ? '<div style="font-size:11.5px;color:var(--text3);margin-top:8px">'
+        + '過去的日子不算缺料 —— 缺料是拿現在的庫存推的，回頭套用只會得到假的紅字。</div>' : ''}
+      <div class="cd-acts">
+        ${x.is_today ? '<button class="btn btn-ghost btn-sm" onclick="App.switchTab(\'today\')">去今日工作單</button>' : ''}
+        ${!x.is_past && !x.is_closed && x.planned_cups > 0
+          ? `<button class="btn btn-ghost btn-sm" onclick="App.calPrep('${x.date}')">為這天備料</button>` : ''}
+        ${!x.is_past && !x.is_closed
+          ? `<button class="btn btn-ghost btn-sm" onclick="App.calClose('${x.date}')">標成休診</button>`
+          : (x.is_closed ? `<button class="btn btn-ghost btn-sm" onclick="App.calOpen('${x.date}')">取消休診</button>` : '')}
+      </div>
+    </div>`;
+  }
+
+  // 從月曆直接跳去備料那一段，不用自己回今日再選日期
+  function calPrep(date) {
+    switchTab('today');
+    setTimeout(() => {
+      const sel = document.getElementById('prepAheadDate');
+      if (sel && [...sel.options].some(o => o.value === date)) {
+        sel.value = date;
+        loadPrepAhead();
+        document.getElementById('prepAheadBlock').scrollIntoView({ block: 'center' });
+      } else {
+        alert('備料只做未來七天內的日期，' + date + ' 超出範圍。');
+      }
+    }, 400);
+  }
+
+  async function calClose(date) {
+    const reason = prompt(date + ' 為什麼不開工？（例如 中秋節）');
+    if (reason === null) return;
+    try {
+      await api('/api/closures', 'POST', { date, reason: reason.trim() });
+      await loadCalendar();
+    } catch (e) { alert(e.message); }
+  }
+
+  async function calOpen(date) {
+    if (!confirm(date + ' 不再算休診日？那天會重新排產與扣庫存。')) return;
+    try {
+      await api('/api/closures/' + date, 'DELETE');
+      await loadCalendar();
+    } catch (e) { alert(e.message); }
+  }
+
+  // ── 警告堆疊 ──────────────────────────────────────────
+  // 四張警告同時出現時，畫面上第一眼看到的是警告而不是工作。
+  // 這裡只讓第一張留著（CSS 負責），其餘收成一行可展開。
+  let _alertsOpen = false;
+
+  function _syncAlertMore() {
+    const stack = document.getElementById('alertStack');
+    const btn = document.getElementById('alertMore');
+    if (!stack || !btn) return;
+    const filled = [...stack.children].filter(el => el.children.length > 0);
+    const hidden = Math.max(0, filled.length - 1);
+    if (!hidden) { btn.hidden = true; _alertsOpen = false; stack.classList.remove('open'); return; }
+    btn.hidden = false;
+    // 講出收起來的是什麼，不然「另有 2 件」等於叫人自己去點開才知道
+    const names = { todayShortage: '缺料', todayMealAlert: '餐盒採購',
+                    apptSyncWarn: '預約同步', autoSettleAlert: '自動補扣' };
+    const rest = filled.slice(1).map(el => names[el.id] || '').filter(Boolean);
+    btn.textContent = _alertsOpen
+      ? `收起 ${hidden} 件`
+      : `另有 ${hidden} 件要注意：${rest.join('、')}　▾`;
+  }
+
+  function toggleAlerts() {
+    const stack = document.getElementById('alertStack');
+    if (!stack) return;
+    _alertsOpen = !_alertsOpen;
+    stack.classList.toggle('open', _alertsOpen);
+    _syncAlertMore();
+  }
+
   // ── 提前備料 ──────────────────────────────────────────
   // 週一為週二備料的時候，料那天就離開冰箱了。原本系統只在出餐日扣，
   // 所以週一晚上帳面上還有那些料 —— 缺料少報一天、採購晚一天。
@@ -4941,7 +5132,8 @@ const App = (() => {
     openEditNutritionCard, saveNutritionCard, reviewCard, openPrintCards,
     openCaseMenu, showCaseMenu, openCaseMenuFor,
     renderCaseMenuInline, openCaseMenuWindow,
-    renderClosures, addClosure, removeClosure, toggleDow,
+    renderClosures, addClosure, removeClosure, toggleDow, toggleAlerts,
+    loadCalendar, calMonth, calPick, calPrep, calClose, calOpen,
     loadPrepAhead, savePrepAhead,
     loadSubscriptions, subCycle, addSubscription, toggleSubActive, removeSubscription,
     cycleSubPickup, cycleSubPickupToday, shareSubCup

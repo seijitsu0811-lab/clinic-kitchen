@@ -3246,6 +3246,117 @@ app.post('/api/inventory/consume', (req, res) => {
   res.json({ ok: true, id: logId });
 });
 
+// ── 月曆 ──────────────────────────────────────────────────
+// 一次看完一個月：哪幾天出幾杯、預約帶進來幾筆、哪天缺料、哪天休診。
+//
+// 現在要回答「這個月忙不忙、料夠不夠」只能一天一天點過去。
+// 排產、缺料、預約、訂閱四件事各自在不同畫面上，湊不出一張全月的圖。
+//
+// 過去的日子看「實際扣了幾杯」，今天以後看「排定幾杯」——
+// 這兩個數字意思不一樣，混成一個欄位會讓人以為昨天少做了
+app.get('/api/calendar', (req, res) => {
+  const m = String(req.query.month || '').match(/^(\d{4})-(\d{2})$/);
+  const now = today();
+  const year  = m ? Number(m[1]) : Number(now.slice(0, 4));
+  const month = m ? Number(m[2]) : Number(now.slice(5, 7));
+  const first = `${year}-${String(month).padStart(2, '0')}-01`;
+  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  const last = `${year}-${String(month).padStart(2, '0')}-${String(daysInMonth).padStart(2, '0')}`;
+
+  // 缺料是拿「現在的庫存」去推的，所以只有今天以後算得出來。
+  // 過去的日子拿今天的庫存去算缺料，只會得到一堆假的紅字
+  const horizonDays = Math.max(7, Math.min(60,
+    Math.round((Date.parse(last + 'T00:00:00Z') - Date.parse(now + 'T00:00:00Z')) / 86400000) + 1));
+  let fc = { days: [] };
+  if (last >= now) { try { fc = buildForecast(horizonDays); } catch (e) {} }
+  const fcByDate = {};
+  (fc.days || []).forEach(d => { fcByDate[d.date] = d; });
+
+  const closures = {};
+  closuresBetween(first, last).forEach(c => { closures[c.date] = c.reason || ''; });
+
+  // 預約帶進來的出單有 source_key，手動建的沒有 —— 分開數才看得出
+  // 「今天的量」是預約來的還是現場加的
+  const orders = {};
+  db.prepare(
+    `SELECT co.date, co.cups, COALESCE(co.source_key,'') source_key
+       FROM case_orders co WHERE co.date>=? AND co.date<=?`
+  ).all(first, last).forEach(r => {
+    const o = orders[r.date] || (orders[r.date] = { from_appt: 0, manual: 0, cups: 0 });
+    o.cups += r.cups;
+    if (r.source_key) o.from_appt += r.cups; else o.manual += r.cups;
+  });
+
+  const served = {};
+  db.prepare(
+    `SELECT date, SUM(cups) c FROM consumption_log
+      WHERE date>=? AND date<=? AND COALESCE(reversed_at,'')=''
+      GROUP BY date`
+  ).all(first, last).forEach(r => { served[r.date] = r.c; });
+
+  const prepped = {};
+  db.prepare(
+    `SELECT date, SUM(cups) c FROM consumption_log
+      WHERE date>=? AND date<=? AND COALESCE(reversed_at,'')=''
+        AND COALESCE(prep_date,'')<>'' GROUP BY date`
+  ).all(first, last).forEach(r => { prepped[r.date] = r.c; });
+
+  const subDows = parseDows(rotationSetting('subscription_dows', '1,3,5'), [1, 3, 5]);
+  const stDows  = stocktakeDows();
+
+  const days = [];
+  for (let i = 0; i < daysInMonth; i++) {
+    const date = addDays(first, i);
+    const dow  = dowOf(date);
+    const closed = Object.prototype.hasOwnProperty.call(closures, date);
+    const plan = activePlanFor('主方案', date);
+    const planned = closed ? 0 : cupsOnDate(date).reduce((a, b) => a + b.cups, 0);
+    const f = fcByDate[date];
+    const subCups = closed ? 0
+      : subscriptionCupsOnDate(date).reduce((a, b) => a + b.cups, 0);
+
+    days.push({
+      date, dow,
+      is_past: date < now,
+      is_today: date === now,
+      is_closed: closed,
+      closure_reason: closed ? closures[date] : '',
+      plan_name: plan ? plan.name : null,
+      is_staff_meal_day: !closed && isStaffMealDay(dow),
+      is_subscription_day: !closed && subDows.includes(dow),
+      is_stocktake_day: stDows.includes(dow),
+      planned_cups: Math.round(planned * 10) / 10,
+      served_cups: Math.round((served[date] || 0) * 10) / 10,
+      prepped_cups: Math.round((prepped[date] || 0) * 10) / 10,
+      subscription_cups: subCups,
+      appt_cups:   orders[date] ? orders[date].from_appt : 0,
+      manual_cups: orders[date] ? orders[date].manual : 0,
+      // 缺料只在今天以後有意義
+      short_count: f ? f.short.length : null,
+      pack_short:  f ? f.pack_short_servings : null,
+      short: f ? f.short.slice(0, 6) : []
+    });
+  }
+
+  const sum = k => days.reduce((a, d) => a + (Number(d[k]) || 0), 0);
+  res.json({
+    month: `${year}-${String(month).padStart(2, '0')}`,
+    first, last, today: now,
+    prev_month: addDays(first, -1).slice(0, 7),
+    next_month: addDays(last, 1).slice(0, 7),
+    totals: {
+      planned_cups: Math.round(sum('planned_cups') * 10) / 10,
+      served_cups:  Math.round(sum('served_cups') * 10) / 10,
+      appt_cups:    sum('appt_cups'),
+      manual_cups:  sum('manual_cups'),
+      subscription_cups: sum('subscription_cups'),
+      closed_days:  days.filter(d => d.is_closed).length,
+      short_days:   days.filter(d => d.short_count > 0).length
+    },
+    days
+  });
+});
+
 // ── 提前備料 ──────────────────────────────────────────────
 // 現場的做法是週一為週二的員工餐做大量備料。料週一就離開冰箱，
 // 但系統原本只在出餐日扣 —— 所以週一晚上帳面上還有那些料，
