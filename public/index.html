@@ -2170,6 +2170,65 @@
       color: var(--primary);
     }
 
+    /* ── 同事訂閱 ── */
+    .sub-add {
+      display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: flex-end;
+      background: var(--card-solid); border: 1px solid var(--border);
+      border-radius: var(--radius-md); padding: 12px 14px; margin: 14px 0;
+    }
+    .sub-add label {
+      display: flex; flex-direction: column; gap: 3px; flex: 1 1 150px;
+      font-size: 12px; color: var(--text2);
+    }
+    .sub-add select {
+      font-size: 15px; padding: 9px 10px; border: 1px solid var(--border);
+      border-radius: var(--radius-sm); background: var(--card-solid); color: var(--text);
+    }
+    .sub-row {
+      background: var(--card-solid); border: 1px solid var(--border);
+      border-radius: var(--radius-md); padding: 12px 14px; margin-bottom: 10px;
+    }
+    .sub-row.off { opacity: .55; }
+    .sub-head {
+      display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 12px;
+      margin-bottom: 8px;
+    }
+    .sub-who { font-size: 15px; font-weight: 700; }
+    .sub-rx  { font-size: 12px; color: var(--text2); }
+    .sub-money {
+      margin-left: auto; font-size: 14px; font-weight: 700;
+      font-variant-numeric: tabular-nums;
+    }
+    .sub-tally { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+    .sub-tally span {
+      font-size: 11.5px; padding: 2px 8px; border-radius: 999px;
+      background: var(--bg); color: var(--text2);
+    }
+    .sub-tally .t-miss { background: rgba(239,68,68,.12); color: #DC2626; font-weight: 600; }
+    .sub-tally .t-share { background: rgba(37,99,235,.12); color: #1D4ED8; }
+    .sub-days { display: flex; flex-wrap: wrap; gap: 6px; }
+    .sub-day {
+      font-size: 12px; padding: 6px 9px; border-radius: var(--radius-sm);
+      border: 1px solid var(--border); background: var(--bg);
+      cursor: pointer; font-variant-numeric: tabular-nums; min-height: 40px;
+      display: flex; flex-direction: column; justify-content: center; line-height: 1.35;
+    }
+    .sub-day small { display: block; font-size: 10.5px; color: var(--text3); }
+    .sub-day.picked { background: rgba(16,185,129,.14); border-color: #10B981; }
+    .sub-day.missed { background: rgba(239,68,68,.12);  border-color: #EF4444; }
+
+    /* 今日那一頁的訂閱晶片。刻意跟員工、個案的晶片不同色 ——
+       要並排看得到，但也要看得出這一杯是哪一條線的 */
+    .sub-chip {
+      position: relative; border: 2px solid #7C3AED; border-radius: var(--radius-md);
+      background: rgba(124,58,237,.08); padding: 9px 12px; min-width: 118px;
+      cursor: pointer; min-height: 56px;
+    }
+    .sub-chip.picked { background: rgba(16,185,129,.14); border-color: #10B981; }
+    .sub-chip.missed { background: rgba(239,68,68,.12);  border-color: #EF4444; }
+    .sub-chip .sname { font-size: 14px; font-weight: 700; }
+    .sub-chip .chip-sub { font-size: 11px; color: var(--text2); margin-top: 2px; }
+
     /* 客人看的菜單：挑人那一排＋嵌進來的菜單本體。
        iframe 高度由內容決定（同源，量得到），所以整頁一起滾，
        不會變成頁面裡再有一個小捲軸 —— 站著用手機的時候那很難操作 */
@@ -2827,6 +2886,7 @@
       <div class="tab" data-tab="rx">💊 處方</div>
       <div class="tab" data-tab="inv">📦 庫存 <span id="invWarningBadge" class="inv-warn-tab" style="display:none"></span></div>
       <div class="tab" data-tab="meal">🍱 套餐</div>
+      <div class="tab" data-tab="sub">🎫 訂閱</div>
       <div class="tab" data-tab="cost">💰 成本</div>
       <div class="tab" data-tab="sop">🗂 SOP</div>
     </div>
@@ -2915,6 +2975,33 @@
   </div>
 
   <!-- 成本分析 -->
+  <!-- 同事訂閱。兩週一輪、取餐日走週一三五、一杯 150 元。
+       輪的邊界沿用蔬果方案的輪替基準，所以一輪剛好等於一個方案期。 -->
+  <div class="page" id="page-sub">
+    <div class="section-head" style="margin-bottom:12px">
+      <h2 style="font-size:15px">同事訂閱</h2>
+      <div style="display:flex;gap:6px;align-items:center">
+        <button class="btn btn-ghost btn-sm" onclick="App.subCycle(-1)">← 上一輪</button>
+        <span id="subCycleLabel" style="font-size:13px;font-variant-numeric:tabular-nums"></span>
+        <button class="btn btn-ghost btn-sm" onclick="App.subCycle(1)">下一輪 →</button>
+      </div>
+    </div>
+    <div id="subSummary"></div>
+    <div class="sub-add">
+      <label><span>誰</span><select id="subUser"></select></label>
+      <label><span>吃哪一份配方</span><select id="subRx"></select></label>
+      <label><span>包裝</span>
+        <select id="subPowder">
+          <option value="內用">內用</option>
+          <option value="袋裝">袋裝</option>
+          <option value="全配方外帶">全配方外帶</option>
+        </select>
+      </label>
+      <button class="btn btn-primary btn-sm" onclick="App.addSubscription()">＋ 開一輪</button>
+    </div>
+    <div id="subList"></div>
+  </div>
+
   <div class="page" id="page-cost">
     <div class="cost-subtabs" style="margin-top:8px">
       <button class="cost-tab active" data-ctab="today"   onclick="App.switchCostTab('today')">今日成本</button>
@@ -3041,6 +3128,10 @@
     <div class="tb-item" data-tab="meal" onclick="App.switchTab('meal')">
       <span class="tb-icon">🍱</span>
       <span>套餐</span>
+    </div>
+    <div class="tb-item" data-tab="sub" onclick="App.switchTab('sub')">
+      <span class="tb-icon">🎫</span>
+      <span>訂閱</span>
     </div>
     <div class="tb-item" data-tab="cost" onclick="App.switchTab('cost')">
       <span class="tb-icon">💰</span>

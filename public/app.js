@@ -97,6 +97,7 @@ const App = (() => {
     if (tab === 'today') loadToday();
     if (tab === 'rx')    loadRx();
     if (tab === 'inv')   loadInventory();
+    if (tab === 'sub')   loadSubscriptions();
     if (tab === 'cost')  loadCost();
     if (tab === 'meal')  loadMeals();
     if (tab === 'sop')   loadSOP();
@@ -802,6 +803,30 @@ const App = (() => {
     groupsHtml += chipGroup(fullPackageCases, 'full',   '📦 全配方外帶' + soloNote);
     groupsHtml += chipGroup(freshCases,       'fresh',  '現打精力湯' + soloNote);
     groupsHtml += chipGroup(powderCases,      'powder', '粉配方' + soloNote);
+
+    // 同事訂閱。在自己那一頁管，但出餐時要跟員工、個案並排 ——
+    // 分成兩個畫面的話，做餐的人得記得去看第二個地方，遲早會漏一杯
+    const subs = (d.subscriptions || []);
+    if (subs.length) {
+      const chips = subs.map(x => {
+        const label = x.picked_by_name ? x.user_name + ' → ' + x.picked_by_name : x.user_name;
+        const mark = x.status === 'picked' ? ' ✓' : (x.status === 'missed' ? ' ✗' : '');
+        return `<div class="sub-chip ${esc(x.status)}"
+                 onclick="App.cycleSubPickupToday(${x.subscription_id}, '${esc(d.date)}', '${esc(x.status)}')">
+          <button class="chip-edit" title="這一杯讓給別人喝"
+                  onclick="event.stopPropagation();App.shareSubCup(${x.subscription_id}, '${esc(d.date)}')">⇄</button>
+          <div class="sname">${esc(label)}${mark}</div>
+          <div class="chip-sub">${esc(x.rx_code)} · ${esc(x.powder_type)}</div>
+        </div>`;
+      }).join('');
+      groupsHtml += `<div class="today-group">
+        <div class="today-group-label">🎫 同事訂閱
+          <span class="grp-note">已預收，每個取餐日都會做 —— 原訂的人不拿就按 ⇄ 讓給別人</span>
+        </div>
+        <div class="chips-row">${chips}</div>
+      </div>`;
+    }
+
     document.getElementById('caseChips').innerHTML = groupsHtml;
 
     // 右側：出餐順序
@@ -4271,6 +4296,186 @@ const App = (() => {
     openModal('modalNutritionCard');
   }
 
+  // ── 同事訂閱 ──────────────────────────────────────────
+  // 兩週一輪、取餐日走週一三五、一杯 150 元。
+  // 輪的邊界沿用蔬果方案的輪替基準，所以一輪剛好等於一個方案期。
+  let subCycleStart = null;
+  const SUBDOW = ['日', '一', '二', '三', '四', '五', '六'];
+
+  function subCycle(delta) {
+    if (!_subData) return;
+    subCycleStart = delta < 0 ? _subData.prev_cycle : _subData.next_cycle;
+    loadSubscriptions();
+  }
+
+  let _subData = null;
+
+  async function loadSubscriptions() {
+    const q = subCycleStart ? '?cycle_start=' + subCycleStart : '';
+    let d;
+    try { d = await api('/api/subscriptions' + q); } catch (e) { return alert(e.message); }
+    _subData = d;
+    subCycleStart = d.cycle_start;
+
+    document.getElementById('subCycleLabel').textContent =
+      d.cycle_start + ' ～ ' + d.cycle_end;
+
+    // 挑人與配方的選單。只建一次，不然每次切輪都把選好的重設掉
+    const uSel = document.getElementById('subUser');
+    if (!uSel.options.length) {
+      try {
+        const users = await api('/api/users');
+        uSel.innerHTML = users.map(u => `<option value="${u.id}">${esc(u.name)}</option>`).join('');
+      } catch (e) {}
+    }
+    const rSel = document.getElementById('subRx');
+    if (!rSel.options.length) {
+      if (!allPrescriptions.length) {
+        try { allPrescriptions = await api('/api/prescriptions'); } catch (e) {}
+      }
+      // 「跟著大家」＝員工配方，排在最前面；其餘是各自的處方
+      const act = allPrescriptions.filter(p => p.active);
+      const shared = act.filter(p => p.is_staff_rx);
+      const own    = act.filter(p => !p.is_staff_rx);
+      rSel.innerHTML =
+        shared.map(p => `<option value="${p.id}">跟著大家：${esc(p.name)}（${esc(p.code)}）</option>`).join('')
+        + own.map(p => `<option value="${p.id}">${esc(p.name)}（${esc(p.code)}）</option>`).join('');
+    }
+
+    _renderSubSummary(d);
+    _renderSubList(d);
+  }
+
+  function _renderSubSummary(d) {
+    const subs = d.subscriptions.filter(x => x.active);
+    const cups  = subs.reduce((a, x) => a + x.entitled_cups, 0);
+    const money = subs.reduce((a, x) => a + x.charge, 0);
+    const miss  = subs.reduce((a, x) => a + x.missed, 0);
+    const share = subs.reduce((a, x) => a + x.shared_cups, 0);
+    const closed = d.closed_pickup_days || [];
+
+    const closedNote = closed.length
+      ? `<div class="review-warn" style="margin:10px 0">
+           這一輪有 ${closed.length} 個取餐日休診，杯數已經先扣掉：
+           ${closed.map(c => esc(c.date) + '（' + esc(c.reason || '未填原因') + '）').join('、')}
+         </div>`
+      : '';
+
+    document.getElementById('subSummary').innerHTML = closedNote + `
+      <div class="tally-row" style="display:flex;flex-wrap:wrap;gap:8px;margin:10px 0">
+        <span class="fc-chip">取餐日 週${d.pickup_dows.map(x => SUBDOW[x]).join('、')}</span>
+        <span class="fc-chip">${subs.length} 人訂</span>
+        <span class="fc-chip">共 ${cups} 杯</span>
+        <span class="fc-chip">收 ${money} 元</span>
+        ${share ? `<span class="fc-chip">讓杯 ${share} 杯</span>` : ''}
+        ${miss ? `<span class="fc-chip short">沒人喝 ${miss} 杯</span>` : ''}
+      </div>`;
+  }
+
+  function _renderSubList(d) {
+    const el = document.getElementById('subList');
+    if (!d.subscriptions.length) {
+      el.innerHTML = '<div style="color:var(--text3);font-size:13px">這一輪還沒有人訂。</div>';
+      return;
+    }
+    el.innerHTML = d.subscriptions.map(ss => {
+      const days = ss.pickups.map(p => {
+        const dow = SUBDOW[new Date(p.date + 'T00:00:00').getDay()];
+        const who = p.picked_by_name && p.picked_by_user_id !== ss.user_id
+          ? p.picked_by_name + ' 代' : (p.status === 'picked' ? '已喝' : '');
+        const mark = p.status === 'missed' ? '沒人喝' : who;
+        return `<button class="sub-day ${esc(p.status)}"
+                  onclick="App.cycleSubPickup(${ss.id}, '${esc(p.date)}', '${esc(p.status)}')">
+          ${esc(p.date.slice(5))} ${dow}<small>${esc(mark || '未標')}</small>
+        </button>`;
+      }).join('');
+      return `<div class="sub-row ${ss.active ? '' : 'off'}">
+        <div class="sub-head">
+          <span class="sub-who">${esc(ss.user_name)}</span>
+          <span class="sub-rx">${ss.is_staff_rx ? '跟著大家' : '個人配方'}・${esc(ss.rx_code)} ${esc(ss.rx_name)}・${esc(ss.powder_type)}</span>
+          <span class="sub-money">${ss.entitled_cups} 杯　${ss.charge} 元</span>
+        </div>
+        <div class="sub-tally">
+          <span>已喝 ${ss.picked}</span>
+          <span>剩 ${ss.remaining}</span>
+          ${ss.shared_cups ? `<span class="t-share">讓給別人 ${ss.shared_cups}</span>` : ''}
+          ${ss.missed ? `<span class="t-miss">沒人喝 ${ss.missed}</span>` : ''}
+          <span style="margin-left:auto">
+            <button class="btn btn-ghost btn-sm"
+              onclick="App.toggleSubActive(${ss.id}, ${ss.active ? 0 : 1})">${ss.active ? '停訂' : '恢復'}</button>
+            ${ss.picked + ss.missed === 0
+              ? `<button class="btn btn-ghost btn-sm" onclick="App.removeSubscription(${ss.id})">刪除</button>`
+              : ''}
+          </span>
+        </div>
+        <div class="sub-days">${days}</div>
+      </div>`;
+    }).join('');
+  }
+
+  // 點一下輪替：未標 → 已喝 → 沒人喝 → 未標。
+  // 「沒人喝」不是懲罰誰，是記浪費 —— 那杯做出來了，成本花掉了
+  async function cycleSubPickup(subId, date, cur) {
+    const next = cur === 'pending' ? 'picked' : (cur === 'picked' ? 'missed' : 'pending');
+    try {
+      const r = await api('/api/subscriptions/' + subId + '/pickup', 'PUT', { date, status: next });
+      if (r.warning) alert(r.warning);
+      await loadSubscriptions();
+    } catch (e) { alert(e.message); }
+  }
+
+  // 讓杯：原訂的人把那一杯給別人喝。權利與付費還是原訂的人的
+  async function cycleSubPickupToday(subId, date, cur) {
+    const next = cur === 'pending' ? 'picked' : (cur === 'picked' ? 'missed' : 'pending');
+    try {
+      const r = await api('/api/subscriptions/' + subId + '/pickup', 'PUT', { date, status: next });
+      if (r.warning) alert(r.warning);
+      await loadToday();
+    } catch (e) { alert(e.message); }
+  }
+
+  async function shareSubCup(subId, date) {
+    let users = [];
+    try { users = await api('/api/users'); } catch (e) { return alert(e.message); }
+    const who = prompt('這一杯給誰喝？\n' + users.map(u => u.id + ' = ' + u.name).join('\n'));
+    if (!who) return;
+    try {
+      const r = await api('/api/subscriptions/' + subId + '/pickup', 'PUT',
+        { date, status: 'picked', picked_by_user_id: Number(who) });
+      if (r.warning) alert(r.warning);
+      await loadToday();
+      if (_subData) await loadSubscriptions();
+    } catch (e) { alert(e.message); }
+  }
+
+  async function addSubscription() {
+    try {
+      const r = await api('/api/subscriptions', 'POST', {
+        user_id: Number(document.getElementById('subUser').value),
+        prescription_id: Number(document.getElementById('subRx').value),
+        powder_type: document.getElementById('subPowder').value,
+        cycle_start: subCycleStart
+      });
+      alert(`開了 ${r.entitled_cups} 杯，收 ${r.charge} 元（${r.entitled_cups} × ${r.unit_price}）`);
+      await loadSubscriptions();
+    } catch (e) { alert(e.message); }
+  }
+
+  async function toggleSubActive(id, active) {
+    try {
+      await api('/api/subscriptions/' + id, 'PUT', { active });
+      await loadSubscriptions();
+    } catch (e) { alert(e.message); }
+  }
+
+  async function removeSubscription(id) {
+    if (!confirm('刪掉這一輪訂閱？還沒有任何杯子有紀錄才刪得掉。')) return;
+    try {
+      await api('/api/subscriptions/' + id, 'DELETE');
+      await loadSubscriptions();
+    } catch (e) { alert(e.message); }
+  }
+
   // ── 休診日 ────────────────────────────────────────────
   async function renderClosures() {
     const el = document.getElementById('closureList');
@@ -4490,6 +4695,8 @@ const App = (() => {
     openEditNutritionCard, saveNutritionCard, reviewCard, openPrintCards,
     openCaseMenu, showCaseMenu, openCaseMenuFor,
     renderCaseMenuInline, openCaseMenuWindow,
-    renderClosures, addClosure, removeClosure
+    renderClosures, addClosure, removeClosure,
+    loadSubscriptions, subCycle, addSubscription, toggleSubActive, removeSubscription,
+    cycleSubPickup, cycleSubPickupToday, shareSubCup
   };
 })();

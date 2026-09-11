@@ -319,6 +319,9 @@ try {
   "ALTER TABLE prescription_ingredients ADD COLUMN prep_stage TEXT DEFAULT ''",
   "INSERT OR IGNORE INTO settings (key,value) VALUES ('rotation_weeks','2')",
   "INSERT OR IGNORE INTO settings (key,value) VALUES ('rotation_anchor','2026-08-31')",
+  // 同事訂閱：取餐日與單價。跟員工供應日（週二四）是兩條不同的線
+  "INSERT OR IGNORE INTO settings (key,value) VALUES ('subscription_dows','1,3,5')",
+  "INSERT OR IGNORE INTO settings (key,value) VALUES ('subscription_price','150')",
   // 廚房不開工的日子。國定假日、颱風、盤點停工都算。
   //
   // 這張表補的是一個既有的洞：系統原本沒有「休診日」的概念，
@@ -330,6 +333,44 @@ try {
      reason TEXT DEFAULT '',
      created_by TEXT DEFAULT '',
      created_at TEXT DEFAULT (datetime('now','localtime')))`,
+  // 同事訂閱。兩週一輪、每輪一列，取餐日走週一三五。
+  //
+  // unit_price 與 entitled_cups 都存在這一列，不是每次讀設定即時算。
+  // 理由是這一列代表「當時實際收了多少錢、賣了幾杯」——
+  // 以後漲價或休診日被補上，已經成立的那一輪不能跟著偷偷變。
+  // schema.sql 的種子把刪掉的處方復活過一次，凡是有金額的都要凍在當下。
+  `CREATE TABLE IF NOT EXISTS staff_subscriptions (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     user_id INTEGER NOT NULL,
+     prescription_id INTEGER NOT NULL,
+     cycle_start TEXT NOT NULL,
+     cycle_weeks INTEGER NOT NULL DEFAULT 2,
+     pickup_dows TEXT NOT NULL DEFAULT '1,3,5',
+     powder_type TEXT NOT NULL DEFAULT '內用',
+     unit_price REAL NOT NULL DEFAULT 150,
+     entitled_cups INTEGER NOT NULL DEFAULT 0,
+     note TEXT DEFAULT '',
+     created_by TEXT DEFAULT '',
+     created_at TEXT DEFAULT (datetime('now','localtime')),
+     active INTEGER DEFAULT 1,
+     UNIQUE(user_id, cycle_start),
+     FOREIGN KEY (user_id) REFERENCES users(id),
+     FOREIGN KEY (prescription_id) REFERENCES prescriptions(id))`,
+  // 一杯一列。這就是「訂了 6 杯、少掉幾杯」的帳。
+  //
+  //   picked  有人喝掉了（picked_by 記實際喝的人，讓杯時不等於訂的人）
+  //   missed  沒人喝 —— 那杯做出來了，成本花掉了，這個數字才是真的浪費
+  //   closed  休診日，不算他沒拿
+  `CREATE TABLE IF NOT EXISTS subscription_pickups (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     subscription_id INTEGER NOT NULL,
+     date TEXT NOT NULL,
+     status TEXT NOT NULL DEFAULT 'pending',
+     picked_by_user_id INTEGER,
+     marked_by TEXT DEFAULT '',
+     marked_at TEXT DEFAULT '',
+     UNIQUE(subscription_id, date),
+     FOREIGN KEY (subscription_id) REFERENCES staff_subscriptions(id))`,
   // 當日工作狀態的單一來源（批次分組、拿取勾選、庫存已扣紀錄）
   `CREATE TABLE IF NOT EXISTS day_state (
      date TEXT PRIMARY KEY, state TEXT NOT NULL DEFAULT '{}',
@@ -2363,9 +2404,32 @@ app.get('/api/today', async (req, res) => {
   // 當日工作狀態隨 /api/today 一起送，前端不必再多打一次
   const stateRow = db.prepare('SELECT state, updated_at, updated_by FROM day_state WHERE date=?').get(date);
 
+  // 今天的訂閱杯。訂閱在自己那一頁管，但出餐時要跟員工、個案並排看得到 ——
+  // 分開兩個畫面的話，做餐的人得記得去看第二個地方，遲早會漏一杯
+  const subsToday = subscriptionsOnDate(date).map(ss => {
+    const pk = db.prepare(
+      `SELECT sp.status, sp.picked_by_user_id, u.name picked_by_name
+         FROM subscription_pickups sp
+         LEFT JOIN users u ON u.id = sp.picked_by_user_id
+        WHERE sp.subscription_id=? AND sp.date=?`).get(ss.id, date);
+    return {
+      subscription_id: ss.id, user_id: ss.user_id, user_name: ss.user_name,
+      prescription_id: ss.prescription_id, rx_code: ss.rx_code, rx_name: ss.rx_name,
+      powder_type: ss.powder_type,
+      status: pk ? pk.status : 'pending',
+      picked_by_user_id: pk ? pk.picked_by_user_id : null,
+      picked_by_name: pk && pk.picked_by_user_id && pk.picked_by_user_id !== ss.user_id
+        ? pk.picked_by_name : null
+    };
+  });
+
   res.json({
     date, staff, attending_count: attendingCount, products: productData,
     leaves: leavesToday, is_meal_day: isMealDay, meals: buildMealDay(date),
+    subscriptions: subsToday,
+    is_closed: isClosed(date),
+    closure_reason: isClosed(date)
+      ? (db.prepare('SELECT reason FROM kitchen_closures WHERE date=?').get(date).reason || '') : '',
     // 供應日只在伺服器定義一次，SOP 說明文字也讀這個，不再各寫一份
     staff_meal_dows:  staffMealDows(),
     staff_meal_label: staffMealDaysLabel(),
@@ -3139,6 +3203,19 @@ function expectedForDate(date) {
     if (ex.anyTap ? !ex.casePicked.has(o.id) : ex.caseMissed.has(o.id)) return;
     out.push({ rxId: o.prescription_id, cups: o.cups, powderType: o.powder_type || '' });
   });
+
+  // 訂閱：照排定的杯數扣，不看誰喝掉。
+  //
+  // 這裡刻意跟員工餐不一樣。員工餐是「點了才算領走」，因為沒人領就不會做。
+  // 訂閱是預先收過錢的，那杯每個取餐日都會做出來 —— 原訂的人不拿就給別人喝，
+  // 不退費。所以料一定用掉了，扣庫存跟「誰喝的」無關。
+  // subscription_pickups 記的是誰喝的與沒人喝（浪費），不是要不要扣料。
+  //
+  // 寫成「只扣有人喝的」會有一個沒人發現的漏洞：那天沒有人去標，
+  // 整天的訂閱杯就從庫存帳上消失，但料早就下鍋了 —— 跟 2026-09-03
+  // 那批漏掉的 4 杯是同一種病。
+  subscriptionCupsOnDate(date).forEach(x =>
+    out.push({ rxId: x.rxId, cups: x.cups, powderType: '' }));
   return out;
 }
 
@@ -3501,6 +3578,61 @@ function nextStocktakeDay(from) {
   return addDays(from, 7);
 }
 
+// ── 同事訂閱 ──────────────────────────────────────────────
+// 輪的邊界沿用蔬果方案的輪替基準（預設 2026-08-31 週一、兩週一輪），
+// 所以一個訂閱輪剛好等於一個方案期 —— 不另立一套日期，
+// 兩套日期遲早會差一天，而差一天就是差一整杯的錢
+function cycleStartFor(date) {
+  const anchor = rotationSetting('rotation_anchor', '2026-08-31');
+  const weeks  = Number(rotationSetting('rotation_weeks', '2')) || 2;
+  const span   = weeks * 7;
+  const diff   = Math.floor(
+    (Date.parse(date + 'T00:00:00Z') - Date.parse(anchor + 'T00:00:00Z')) / 86400000);
+  return addDays(anchor, Math.floor(diff / span) * span);
+}
+
+function parseDows(raw, dflt) {
+  const list = String(raw == null ? '' : raw).split(',')
+    .map(x => Number(String(x).trim()))
+    .filter(x => Number.isInteger(x) && x >= 0 && x <= 6);
+  return list.length ? list : dflt;
+}
+
+// 這一輪實際有幾個取餐日。休診日先扣掉 —— 假日不做，也不該收那一杯的錢
+function cycleDates(cycleStart, weeks, dows) {
+  const out = [];
+  const span = (Number(weeks) || 2) * 7;
+  for (let i = 0; i < span; i++) {
+    const d = addDays(cycleStart, i);
+    if (dows.includes(dowOf(d)) && !isClosed(d)) out.push(d);
+  }
+  return out;
+}
+
+// 某一天有哪些訂閱杯。排產與扣庫存都讀這一支 ——
+// 2026-09-03 那次帳歪掉就是因為兩條路各自算杯數，一邊 20 一邊 16
+function subscriptionsOnDate(date) {
+  if (isClosed(date)) return [];
+  const cs = cycleStartFor(date);
+  return db.prepare(
+    `SELECT ss.*, u.name user_name, p.code rx_code, p.name rx_name
+       FROM staff_subscriptions ss
+       JOIN users u ON u.id = ss.user_id
+       JOIN prescriptions p ON p.id = ss.prescription_id
+      WHERE ss.active = 1 AND ss.cycle_start = ?
+      ORDER BY ss.id`
+  ).all(cs).filter(r => parseDows(r.pickup_dows, [1, 3, 5]).includes(dowOf(date)));
+}
+
+// 某一天訂閱要做幾杯，依處方分組
+function subscriptionCupsOnDate(date) {
+  const by = {};
+  subscriptionsOnDate(date).forEach(r => {
+    by[r.prescription_id] = (by[r.prescription_id] || 0) + 1;
+  });
+  return Object.entries(by).map(([rxId, cups]) => ({ rxId: Number(rxId), cups }));
+}
+
 // 某一天各張處方要幾杯
 function cupsOnDate(date) {
   const out = [];   // { rxId, cups, powderMult, why }
@@ -3508,6 +3640,11 @@ function cupsOnDate(date) {
   // 照樣算的話那天會出現在缺料清單上，叫你為一個不開工的日子買料
   if (isClosed(date)) return out;
   const dow = dowOf(date);
+
+  // 同事訂閱。走自己的取餐日（週一三五），跟員工供應日（週二四）互不相干 ——
+  // 不能掛在 isStaffMealDay 底下，那樣訂閱的日子一杯都不會做
+  subscriptionCupsOnDate(date).forEach(x =>
+    out.push({ rxId: x.rxId, cups: x.cups, powderMult: 1, why: '同事訂閱' }));
 
   // 員工：供應日才有，當天有出席紀錄就用實到人數，否則用名冊
   if (isStaffMealDay(dow)) {
@@ -4848,6 +4985,194 @@ app.put('/api/meals/items/:id', (req, res) => {
     req.params.id
   );
   res.json({ ok: true });
+});
+
+// ── 同事訂閱 ──────────────────────────────────────────────
+
+// 一輪的概況：日期範圍、取餐日、休診扣掉幾天、每個人的杯數帳
+function cycleSummary(cycleStart) {
+  const weeks = Number(rotationSetting('rotation_weeks', '2')) || 2;
+  const cycleEnd = addDays(cycleStart, weeks * 7 - 1);
+  const dows = parseDows(rotationSetting('subscription_dows', '1,3,5'), [1, 3, 5]);
+  const closures = closuresBetween(cycleStart, cycleEnd)
+    .filter(c => dows.includes(dowOf(c.date)));
+
+  const subs = db.prepare(
+    `SELECT ss.*, u.name user_name, p.code rx_code, p.name rx_name, p.is_staff_rx
+       FROM staff_subscriptions ss
+       JOIN users u ON u.id = ss.user_id
+       JOIN prescriptions p ON p.id = ss.prescription_id
+      WHERE ss.cycle_start = ? ORDER BY u.id`
+  ).all(cycleStart);
+
+  const pickStmt = db.prepare(
+    `SELECT sp.date, sp.status, sp.picked_by_user_id, sp.marked_by, sp.marked_at,
+            u.name picked_by_name
+       FROM subscription_pickups sp
+       LEFT JOIN users u ON u.id = sp.picked_by_user_id
+      WHERE sp.subscription_id = ? ORDER BY sp.date`);
+
+  return {
+    cycle_start: cycleStart, cycle_end: cycleEnd, cycle_weeks: weeks,
+    pickup_dows: dows,
+    // 休診扣掉的取餐日。畫面上要看得到為什麼 6 杯變 5 杯
+    closed_pickup_days: closures,
+    subscriptions: subs.map(ss => {
+      const picks = pickStmt.all(ss.id);
+      const picked = picks.filter(p => p.status === 'picked').length;
+      const missed = picks.filter(p => p.status === 'missed').length;
+      // 讓杯：實際喝的人不是訂的人
+      const shared = picks.filter(
+        p => p.status === 'picked' && p.picked_by_user_id && p.picked_by_user_id !== ss.user_id);
+      return {
+        ...ss,
+        charge: Math.round(ss.entitled_cups * ss.unit_price),
+        picked, missed,
+        remaining: Math.max(0, ss.entitled_cups - picked - missed),
+        shared_cups: shared.length,
+        pickups: picks
+      };
+    })
+  };
+}
+
+app.get('/api/subscriptions', (req, res) => {
+  const cs = req.query.cycle_start || cycleStartFor(req.query.date || today());
+  const weeks = Number(rotationSetting('rotation_weeks', '2')) || 2;
+  res.json({
+    ...cycleSummary(cs),
+    prev_cycle: addDays(cs, -weeks * 7),
+    next_cycle: addDays(cs,  weeks * 7),
+    unit_price_default: Number(rotationSetting('subscription_price', '150')) || 150
+  });
+});
+
+// 開一輪訂閱。杯數在這裡算出來就凍住 —— 以後休診日被補上，
+// 已經收過錢的這一輪不會跟著變
+app.post('/api/subscriptions', (req, res) => {
+  const userId = Number(req.body.user_id || 0);
+  const rxId   = Number(req.body.prescription_id || 0);
+  const user = db.prepare('SELECT id, name FROM users WHERE id=?').get(userId);
+  if (!user) return res.status(400).json({ error: '找不到這個人' });
+  const rx = db.prepare('SELECT id, code, name FROM prescriptions WHERE id=? AND active=1').get(rxId);
+  if (!rx) return res.status(400).json({ error: '找不到這張配方' });
+
+  const weeks = Number(rotationSetting('rotation_weeks', '2')) || 2;
+  const cs = req.body.cycle_start || cycleStartFor(today());
+  const dows = parseDows(req.body.pickup_dows
+    || rotationSetting('subscription_dows', '1,3,5'), [1, 3, 5]);
+  const dates = cycleDates(cs, weeks, dows);
+  if (!dates.length)
+    return res.status(400).json({ error: '這一輪沒有任何取餐日（可能全部被標成休診）' });
+
+  const price = Number(req.body.unit_price);
+  const unitPrice = Number.isFinite(price) && price >= 0
+    ? price : (Number(rotationSetting('subscription_price', '150')) || 150);
+
+  try {
+    let id;
+    tx(() => {
+      const r = db.prepare(
+        `INSERT INTO staff_subscriptions
+           (user_id, prescription_id, cycle_start, cycle_weeks, pickup_dows,
+            powder_type, unit_price, entitled_cups, note, created_by)
+         VALUES (?,?,?,?,?,?,?,?,?,?)`
+      ).run(userId, rxId, cs, weeks, dows.join(','),
+            String(req.body.powder_type || '內用'), unitPrice, dates.length,
+            String(req.body.note || '').trim(), req.kitchenUser.name);
+      id = r.lastInsertRowid;
+      // 一杯一列先建好。這樣「訂了幾杯、少掉幾杯」從第一天就查得到，
+      // 不必靠事後回推
+      const ins = db.prepare(
+        'INSERT INTO subscription_pickups (subscription_id, date, status) VALUES (?,?,?)');
+      dates.forEach(d => ins.run(id, d, 'pending'));
+    });
+    res.json({ id, cycle_start: cs, entitled_cups: dates.length,
+               unit_price: unitPrice, charge: Math.round(dates.length * unitPrice),
+               dates });
+  } catch (e) {
+    if (String(e.message).includes('UNIQUE'))
+      return res.status(400).json({ error: user.name + ' 這一輪已經訂過了' });
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.delete('/api/subscriptions/:id', (req, res) => {
+  const id = Number(req.params.id);
+  // 已經有人喝掉的杯子不能整輪刪掉 —— 那是已經發生的事，刪了帳就對不起來。
+  // 要停訂請停用（active=0），杯數帳留著
+  const used = db.prepare(
+    "SELECT COUNT(*) c FROM subscription_pickups WHERE subscription_id=? AND status<>'pending'"
+  ).get(id).c;
+  if (used > 0)
+    return res.status(400).json({
+      error: '這一輪已經有 ' + used + ' 杯有紀錄了，不能刪。要停訂請改成停用，帳要留著' });
+  tx(() => {
+    db.prepare('DELETE FROM subscription_pickups WHERE subscription_id=?').run(id);
+    db.prepare('DELETE FROM staff_subscriptions WHERE id=?').run(id);
+  });
+  res.json({ ok: true });
+});
+
+app.put('/api/subscriptions/:id', (req, res) => {
+  const cur = db.prepare('SELECT * FROM staff_subscriptions WHERE id=?').get(req.params.id);
+  if (!cur) return res.status(404).json({ error: '找不到這一輪訂閱' });
+  db.prepare('UPDATE staff_subscriptions SET active=?, note=? WHERE id=?')
+    .run(req.body.active === undefined ? cur.active : (req.body.active ? 1 : 0),
+         req.body.note === undefined ? cur.note : String(req.body.note).trim(),
+         req.params.id);
+  res.json({ ok: true });
+});
+
+// 標記某一杯：誰喝掉了，或沒人喝。
+//
+// picked_by 可以不是訂的人 —— 原訂的人把權利讓給別人。權利與付費還是
+// 訂的人的，所以兩個欄位分開記，兩邊都查得到。
+app.put('/api/subscriptions/:id/pickup', (req, res) => {
+  const subId = Number(req.params.id);
+  const date  = String(req.body.date || '').trim();
+  const status = String(req.body.status || 'picked');
+  if (!['picked', 'missed', 'pending'].includes(status))
+    return res.status(400).json({ error: 'status 只能是 picked / missed / pending' });
+  const ss = db.prepare(
+    `SELECT ss.*, p.avoid_proteins, p.contraindications, p.code rx_code
+       FROM staff_subscriptions ss JOIN prescriptions p ON p.id=ss.prescription_id
+      WHERE ss.id=?`).get(subId);
+  if (!ss) return res.status(404).json({ error: '找不到這一輪訂閱' });
+  const row = db.prepare(
+    'SELECT 1 FROM subscription_pickups WHERE subscription_id=? AND date=?').get(subId, date);
+  if (!row) return res.status(400).json({ error: date + ' 不是這一輪的取餐日' });
+
+  const byId = req.body.picked_by_user_id == null || req.body.picked_by_user_id === ''
+    ? (status === 'picked' ? ss.user_id : null)
+    : Number(req.body.picked_by_user_id);
+
+  // 讓杯的人跟原訂的人配方不一樣時，比對他自己的禁忌。
+  // 警告但不擋 —— 擋掉會攔到人家根本不在意的情況，但不講就真的會出事：
+  // 代領的人喝到的是「別人的配方」，不是他自己那張
+  let warning = '';
+  if (status === 'picked' && byId && byId !== ss.user_id) {
+    const taker = db.prepare(
+      `SELECT u.name, p.code rx_code, COALESCE(p.avoid_proteins,'') avoid
+         FROM users u LEFT JOIN prescriptions p
+           ON p.id = (SELECT id FROM prescriptions
+                       WHERE active=1 AND is_staff_rx=0 AND name = u.name LIMIT 1)
+        WHERE u.id=?`).get(byId);
+    const avoid = String((taker && taker.avoid) || '').split(',').map(x => x.trim()).filter(Boolean);
+    if (avoid.length)
+      warning = (taker.name || '代領的人') + ' 不吃 ' + avoid.join('、')
+              + '，而這杯是 ' + ss.rx_code + ' 的配方 —— 請確認內容沒有衝突';
+    else if (taker && taker.rx_code && taker.rx_code !== ss.rx_code)
+      warning = (taker.name || '代領的人') + ' 自己的配方是 ' + taker.rx_code
+              + '，這杯是 ' + ss.rx_code + '，內容不一樣';
+  }
+
+  db.prepare(
+    `UPDATE subscription_pickups
+        SET status=?, picked_by_user_id=?, marked_by=?, marked_at=datetime('now','localtime')
+      WHERE subscription_id=? AND date=?`
+  ).run(status, byId, req.kitchenUser.name, subId, date);
+  res.json({ ok: true, warning });
 });
 
 // ── 休診日 ────────────────────────────────────────────────
