@@ -2170,6 +2170,40 @@
       color: var(--primary);
     }
 
+    /* 提前備料：登記「今天為哪一天備了幾杯」。
+       料離開冰箱的那天庫存就要掉，不然缺料會少報一天、採購晚一天 */
+    .prep-ahead {
+      background: var(--card-solid); border: 1px solid var(--border);
+      border-radius: var(--radius-md); padding: 12px 14px; margin-top: 14px;
+    }
+    .pa-head {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px;
+      margin-bottom: 10px; font-size: 14px;
+    }
+    .pa-head select {
+      font-size: 14px; padding: 7px 9px; border: 1px solid var(--border);
+      border-radius: var(--radius-sm); background: var(--card-solid); color: var(--text);
+    }
+    .pa-head span { font-size: 11.5px; color: var(--text3); }
+    .pa-row {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+      padding: 8px 0; border-top: 1px solid var(--border); font-size: 13.5px;
+    }
+    .pa-row .pa-name { flex: 1 1 130px; font-weight: 600; }
+    .pa-row .pa-num {
+      font-size: 12px; color: var(--text2); font-variant-numeric: tabular-nums;
+    }
+    .pa-row input {
+      width: 74px; padding: 7px 8px; font-size: 14px; text-align: right;
+      border: 1.5px solid var(--border); border-radius: var(--radius-sm);
+      background: var(--bg); color: var(--text);
+    }
+    .pa-row.done { opacity: .6; }
+    .pa-done-tag {
+      font-size: 11.5px; padding: 2px 8px; border-radius: 999px;
+      background: rgba(16,185,129,.14); color: #047857; font-weight: 600;
+    }
+
     /* 每週排程：三組星期勾選。原本這幾組只能改 code */
     .dow-set { margin-bottom: 12px; }
     .dow-label {
@@ -2936,6 +2970,16 @@
         <div class="staff-grid" id="staffGrid"></div>
         <div id="todayLeavesAlert" style="display:none;margin-top:10px;background:rgba(239, 68, 68, 0.05);border:1px solid rgba(239, 68, 68, 0.15);border-radius:var(--radius-md);padding:10px 12px;color:var(--red);font-size:13px;font-weight:600;"></div>
         <div id="caseChips"></div>
+      <!-- 提前備料。現場是週一為週二備料，料那天就離開冰箱了 ——
+           登記一次，庫存當下就掉，出餐日不會再扣一次。 -->
+      <div id="prepAheadBlock" class="prep-ahead" hidden>
+        <div class="pa-head">
+          <strong>提前備料</strong>
+          <select id="prepAheadDate" onchange="App.loadPrepAhead()"></select>
+          <span id="prepAheadNote"></span>
+        </div>
+        <div id="prepAheadList"></div>
+      </div>
       </div>
       <div class="today-right-col">
         <div id="todaySchedule"></div>

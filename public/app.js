@@ -831,6 +831,8 @@ const App = (() => {
 
     // 右側：出餐順序
     document.getElementById('todaySchedule').innerHTML = _renderSchedule(d);
+
+    loadPrepAhead().catch(() => {});
   }
 
   // 用成員組成當識別，不用批次位置。
@@ -4555,6 +4557,111 @@ const App = (() => {
     } catch (e) { alert(e.message); }
   }
 
+  // ── 提前備料 ──────────────────────────────────────────
+  // 週一為週二備料的時候，料那天就離開冰箱了。原本系統只在出餐日扣，
+  // 所以週一晚上帳面上還有那些料 —— 缺料少報一天、採購晚一天。
+  //
+  // 登記一次，庫存當下就掉，而且出餐日的自動補扣看得到已經扣過，
+  // 不會再扣第二次。這不是多一件事，是把本來就在做的動作變成系統的輸入。
+  const PA_DOW = ['日', '一', '二', '三', '四', '五', '六'];
+  let _paData = null;
+
+  async function loadPrepAhead() {
+    const block = document.getElementById('prepAheadBlock');
+    if (!block) return;
+    const sel = document.getElementById('prepAheadDate');
+
+    // 日期選單：今天往後七天。只建一次，不然每次重載都跳回第一個
+    if (!sel.options.length) {
+      const base = (lastTodayData && lastTodayData.date) || new Date().toISOString().slice(0, 10);
+      const opts = [];
+      for (let i = 0; i <= 7; i++) {
+        const d = new Date(Date.parse(base + 'T00:00:00Z') + i * 86400000)
+          .toISOString().slice(0, 10);
+        const w = PA_DOW[new Date(d + 'T00:00:00').getDay()];
+        opts.push(`<option value="${d}">${d.slice(5)} 週${w}${i === 0 ? '（今天）' : ''}</option>`);
+      }
+      sel.innerHTML = opts.join('');
+      // 預設不要只是「明天」。明天常常是週六，一打開就寫「這天沒有要出的杯子」，
+      // 等於每次都要自己再點一次。往後找第一個真的有東西要備的日子
+      sel.value = base;
+      for (let i = 1; i <= 7; i++) {
+        const d = new Date(Date.parse(base + 'T00:00:00Z') + i * 86400000)
+          .toISOString().slice(0, 10);
+        try {
+          const probe = await api('/api/prep-ahead?serve_date=' + d);
+          if (!probe.is_closed && probe.lines.some(l => l.left_cups > 0)) { sel.value = d; break; }
+        } catch (e) { break; }
+      }
+    }
+
+    let d;
+    try { d = await api('/api/prep-ahead?serve_date=' + sel.value); }
+    catch (e) { block.hidden = true; return; }
+    _paData = d;
+    block.hidden = false;
+
+    const note = document.getElementById('prepAheadNote');
+    note.textContent = d.is_closed
+      ? '這天是休診日，不出餐'
+      : '登記之後庫存當下就扣，出餐日不會再扣一次';
+
+    const el = document.getElementById('prepAheadList');
+    if (d.is_closed || !d.lines.length) {
+      el.innerHTML = '<div style="font-size:13px;color:var(--text3);padding-top:8px">'
+        + (d.is_closed ? '休診日沒有要備的。' : '這天沒有要出的杯子。') + '</div>';
+      return;
+    }
+    el.innerHTML = d.lines.map(l => `
+      <div class="pa-row ${l.left_cups === 0 ? 'done' : ''}">
+        <span class="pa-name">${esc(l.rx_code)} ${esc(l.rx_name)}</span>
+        <span class="pa-num">要 ${l.need_cups} 杯・已扣 ${l.already_cups}</span>
+        ${l.left_cups === 0
+          ? '<span class="pa-done-tag">已備齊</span>'
+          : `<input type="number" step="any" min="0" max="${l.left_cups}"
+                    value="${l.left_cups}" data-pa="${l.prescription_id}"
+                    data-pt="${esc(l.powder_type || '')}">
+             <span class="pa-num">/ ${l.left_cups} 杯</span>`}
+      </div>`).join('')
+      + (d.lines.some(l => l.left_cups > 0)
+        ? `<button class="btn btn-primary" style="width:100%;margin-top:10px"
+                   onclick="App.savePrepAhead()">登記備料，現在就扣庫存</button>`
+        : '')
+      + (d.prepped.length
+        ? '<div style="font-size:11.5px;color:var(--text3);margin-top:8px;line-height:1.7">已備：'
+          + d.prepped.map(p => esc(p.rx_code) + ' ' + p.cups + ' 杯（'
+            + esc(p.prep_date) + ' 備）').join('、') + '</div>'
+        : '');
+  }
+
+  async function savePrepAhead(confirmOver) {
+    const sel = document.getElementById('prepAheadDate');
+    const lines = [...document.querySelectorAll('[data-pa]')]
+      .map(el => ({ prescription_id: Number(el.dataset.pa),
+                    cups: parseFloat(el.value) || 0,
+                    powder_type: el.dataset.pt }))
+      .filter(l => l.cups > 0);
+    if (!lines.length) return alert('至少要填一張配方的杯數');
+    const total = Math.round(lines.reduce((s, l) => s + l.cups, 0) * 10) / 10;
+    if (!confirmOver &&
+        !confirm(`為 ${sel.value} 備 ${total} 杯？\n\n庫存會現在就扣掉，出餐日不會再扣一次。`))
+      return;
+    try {
+      await api('/api/prep-ahead', 'POST',
+        { serve_date: sel.value, lines, confirm_over: !!confirmOver });
+      await loadPrepAhead();
+      loadToday();
+      loadInventory().catch(() => {});
+    } catch (e) {
+      // 備超過那天要出的杯數會被擋。扣多了要一筆一筆還原，
+      // 而且中間那段時間缺料會虛報
+      if (/最多還能備/.test(e.message) && confirm(e.message + '\n\n還是要照這樣登記？')) {
+        return savePrepAhead(true);
+      }
+      alert(e.message);
+    }
+  }
+
   // ── 每週排程（供餐日、訂閱取餐日、盤點日）──────────────
   // 這三組原本只能改程式。供餐日已經是設定值，但設定畫面上沒有那一欄，
   // 所以實務上還是得找人改 —— 對現場來說「不能改」和「要改 code」是同一件事
@@ -4835,6 +4942,7 @@ const App = (() => {
     openCaseMenu, showCaseMenu, openCaseMenuFor,
     renderCaseMenuInline, openCaseMenuWindow,
     renderClosures, addClosure, removeClosure, toggleDow,
+    loadPrepAhead, savePrepAhead,
     loadSubscriptions, subCycle, addSubscription, toggleSubActive, removeSubscription,
     cycleSubPickup, cycleSubPickupToday, shareSubCup
   };

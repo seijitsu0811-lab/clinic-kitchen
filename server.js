@@ -317,6 +317,11 @@ try {
   "ALTER TABLE prescriptions ADD COLUMN rotation_index INTEGER DEFAULT 0",
   // 備料階段：標成「冷凍包」的用料進每週分裝，其餘出餐當天現秤。一個標記長出兩張表
   "ALTER TABLE prescription_ingredients ADD COLUMN prep_stage TEXT DEFAULT ''",
+  // 提前備料：料離開冰箱的日子，跟這一筆算哪一天的出餐，是兩件事。
+  //   date      = 這批covers 哪一天的出餐（自動補扣是拿這個比對的）
+  //   prep_date = 料實際離開冰箱的日子
+  // 週一為週二備料時，庫存要在週一就掉下去，但週二不能再扣一次
+  "ALTER TABLE consumption_log ADD COLUMN prep_date TEXT DEFAULT ''",
   "INSERT OR IGNORE INTO settings (key,value) VALUES ('rotation_weeks','2')",
   "INSERT OR IGNORE INTO settings (key,value) VALUES ('rotation_anchor','2026-08-31')",
   // 同事訂閱：取餐日與單價。跟員工供應日（週二四）是兩條不同的線
@@ -3216,12 +3221,15 @@ function applyConsumption(rxId, cups, powderType, sign, date) {
   });
 }
 
-function recordConsumption({ date, rxId, cups, powderType, source, note, userId }) {
+function recordConsumption({ date, rxId, cups, powderType, source, note, userId, prepDate }) {
+  // 扣料用的配方要照「出餐那天」算 —— 蔬果方案是會換的，
+  // 用備料當天的方案去扣，換組那一週就會扣錯食材
   applyConsumption(rxId, cups, powderType, -1, date);
   const r = db.prepare(
-    `INSERT INTO consumption_log (date,prescription_id,cups,powder_type,source,note,user_id)
-     VALUES (?,?,?,?,?,?,?)`
-  ).run(date, rxId, cups, powderType || '', source || 'manual', note || '', userId || null);
+    `INSERT INTO consumption_log (date,prescription_id,cups,powder_type,source,note,user_id,prep_date)
+     VALUES (?,?,?,?,?,?,?,?)`
+  ).run(date, rxId, cups, powderType || '', source || 'manual', note || '', userId || null,
+        prepDate || '');
   return r.lastInsertRowid;
 }
 
@@ -3238,9 +3246,126 @@ app.post('/api/inventory/consume', (req, res) => {
   res.json({ ok: true, id: logId });
 });
 
+// ── 提前備料 ──────────────────────────────────────────────
+// 現場的做法是週一為週二的員工餐做大量備料。料週一就離開冰箱，
+// 但系統原本只在出餐日扣 —— 所以週一晚上帳面上還有那些料，
+// 實際上已經在盒子裡。缺料因此少報、採購因此晚一天。
+//
+// 這裡刻意不新開一張表，而是把它記成 consumption_log 的一列：
+//   date      = 覆蓋哪一天的出餐
+//   prep_date = 料實際離開冰箱的日子
+// 這樣隔日自動補扣（settleDay 比對 date）就自動知道那一天已經扣過了，
+// 不會再補一次 —— 不必在 expectedForDate 裡多一條「要扣掉已備料」的規則。
+// 少一條規則，就少一個 2026-09-03 那種兩邊算不一樣的機會。
+
+// 某一天已經提前備了多少杯，依處方分組
+function preppedFor(date) {
+  return db.prepare(
+    `SELECT cl.prescription_id, p.code rx_code, p.name rx_name,
+            SUM(cl.cups) cups, MIN(cl.prep_date) prep_date, cl.powder_type
+       FROM consumption_log cl JOIN prescriptions p ON p.id = cl.prescription_id
+      WHERE cl.date=? AND COALESCE(cl.reversed_at,'')='' AND COALESCE(cl.prep_date,'')<>''
+      GROUP BY cl.prescription_id, cl.powder_type ORDER BY p.code`
+  ).all(date);
+}
+
+// 那一天還沒備的杯數。備料表要照這個開，不是照記憶
+app.get('/api/prep-ahead', (req, res) => {
+  const serve = req.query.serve_date || addDays(today(), 1);
+  const want = {};
+  expectedForDate(serve).forEach(r => {
+    if (!want[r.rxId]) want[r.rxId] = { rxId: r.rxId, cups: 0, powderType: r.powderType || '' };
+    want[r.rxId].cups += r.cups;
+  });
+  const done = {};
+  db.prepare(
+    `SELECT prescription_id, SUM(cups) c FROM consumption_log
+      WHERE date=? AND COALESCE(reversed_at,'')='' GROUP BY prescription_id`
+  ).all(serve).forEach(r => { done[r.prescription_id] = r.c; });
+
+  const rxName = db.prepare('SELECT id, code, name FROM prescriptions');
+  const names = {};
+  rxName.all().forEach(r => { names[r.id] = r; });
+
+  res.json({
+    serve_date: serve,
+    is_closed: isClosed(serve),
+    prepped: preppedFor(serve),
+    lines: Object.values(want).map(w => ({
+      prescription_id: w.rxId,
+      rx_code: names[w.rxId] ? names[w.rxId].code : '',
+      rx_name: names[w.rxId] ? names[w.rxId].name : '',
+      powder_type: w.powderType,
+      need_cups: Math.round(w.cups * 10) / 10,
+      already_cups: Math.round((done[w.rxId] || 0) * 10) / 10,
+      left_cups: Math.round(Math.max(0, w.cups - (done[w.rxId] || 0)) * 10) / 10
+    }))
+  });
+});
+
+// 登記提前備料。扣在按下去的當下，記成出餐日的消耗
+app.post('/api/prep-ahead', (req, res) => {
+  const serve = String(req.body.serve_date || '').trim();
+  const prepDate = String(req.body.prep_date || today()).trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(serve) || !/^\d{4}-\d{2}-\d{2}$/.test(prepDate))
+    return res.status(400).json({ error: '日期格式要是 YYYY-MM-DD' });
+  if (serve < prepDate)
+    return res.status(400).json({ error: '出餐日不能早於備料日' });
+  if (isClosed(serve))
+    return res.status(400).json({ error: serve + ' 是休診日，那天不出餐' });
+
+  const lines = Array.isArray(req.body.lines) ? req.body.lines : [];
+  if (!lines.length) return res.status(400).json({ error: '沒有要登記的項目' });
+
+  // 先整批檢查。備多於那天要出的杯數就擋 —— 扣多了要一筆一筆還原，
+  // 而且中間那段時間缺料會虛報
+  const want = {};
+  expectedForDate(serve).forEach(r => { want[r.rxId] = (want[r.rxId] || 0) + r.cups; });
+  const done = {};
+  db.prepare(
+    `SELECT prescription_id, SUM(cups) c FROM consumption_log
+      WHERE date=? AND COALESCE(reversed_at,'')='' GROUP BY prescription_id`
+  ).all(serve).forEach(r => { done[r.prescription_id] = r.c; });
+
+  const over = [];
+  lines.forEach(l => {
+    const id = Number(l.prescription_id), cups = Number(l.cups);
+    if (!id || !(cups > 0)) return;
+    const room = (want[id] || 0) - (done[id] || 0);
+    if (cups > room + 0.01) {
+      const p = db.prepare('SELECT code FROM prescriptions WHERE id=?').get(id);
+      over.push(`${p ? p.code : id} 那天只要 ${Math.round((want[id] || 0) * 10) / 10} 杯，`
+        + `已經扣過 ${Math.round((done[id] || 0) * 10) / 10} 杯，最多還能備 ${Math.round(room * 10) / 10} 杯`);
+    }
+  });
+  if (over.length && !req.body.confirm_over)
+    return res.status(409).json({ error: over.join('；'), needs_confirm: true });
+
+  const saved = [];
+  tx(() => {
+    lines.forEach(l => {
+      const id = Number(l.prescription_id), cups = Number(l.cups);
+      if (!id || !(cups > 0)) return;
+      const logId = recordConsumption({
+        date: serve, rxId: id, cups,
+        powderType: l.powder_type || '',
+        source: 'prep', prepDate,
+        note: `${prepDate} 提前備料（供 ${serve} 出餐）`,
+        userId: req.kitchenUser.id
+      });
+      saved.push({ id: logId, prescription_id: id, cups });
+    });
+  });
+  res.json({ ok: true, serve_date: serve, prep_date: prepDate, saved });
+});
+
 // ── 隔日自動補扣 ──────────────────────────────────────────
 // 過了那一天之後，比對「那天應該扣的」與「實際扣掉的」，只補差額。
 // 補扣一律標 source='auto' 並且可以整筆還原 —— 自動但看得見、改得回來。
+//
+// 提前備料（source='prep'）記的 date 就是出餐日，所以這裡看得到它，
+// 差額自然是 0，不會補第二次。這是刻意讓兩件事共用同一個比對，
+// 而不是在別處多寫一條「要扣掉已備料」的規則
 
 // 例外管理：排程上的東西預設就是做了、送出去了，只有被明確標記的才是沒發生。
 // 例外和批次狀態存在同一份 day_state（整個廚房共用），這裡讀那一份，不另外算一次。
