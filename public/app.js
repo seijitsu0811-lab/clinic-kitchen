@@ -3504,12 +3504,19 @@ const App = (() => {
 
   function switchMealTab(tab) {
     currentMealTab = tab;
-    document.querySelectorAll('[data-mtab]').forEach(t => t.classList.toggle('active', t.dataset.mtab === tab));
+    document.querySelectorAll('[data-mtab]').forEach(t => {
+      const on = t.dataset.mtab === tab;
+      t.classList.toggle('active', on);
+      // 手機上四個分頁擠不進一行，會橫向滑 —— 選到的那個要自己滑進來，
+      // 不然點了「給客人看」它還被切在螢幕邊緣，看起來像沒點到
+      if (on && t.scrollIntoView) t.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    });
     document.querySelectorAll('.meal-section').forEach(s =>
       s.classList.toggle('active', s.id === 'mealSection-' + tab));
     if (tab === 'today') renderMealToday();
     if (tab === 'menu')  renderMealMenuAdmin();
     if (tab === 'cards') renderMealCards();
+    if (tab === 'case')  renderCaseMenuInline();
   }
 
   async function loadMeals() {
@@ -4299,6 +4306,75 @@ const App = (() => {
     openModal('modalCaseMenu');
   }
 
+  // ── 嵌在套餐頁裡的「給客人看」────────────────────────
+  // 拿的是同一份 menu.html 與同一支 /api/meals/menu/case，不另做一頁 ——
+  // 做兩頁的話禁忌邏輯會有兩份，遲早不一致
+  let _cmObserver = null;
+
+  async function renderCaseMenuInline() {
+    const sel   = document.getElementById('cmRx');
+    const frame = document.getElementById('cmFrame');
+    if (!sel || !frame) return;
+
+    if (!allPrescriptions.length) {
+      try { allPrescriptions = await api('/api/prescriptions'); } catch (e) {}
+    }
+
+    // 選單只重建一次，否則每次切分頁都會把選好的人重設掉
+    if (!sel.options.length) {
+      sel.innerHTML = '<option value="">不指定（只看菜色）</option>'
+        + allPrescriptions.filter(p => p.active)
+            .map(p => `<option value="${p.id}">${esc(p.name)}（${esc(p.code)}）${
+              String(p.avoid_proteins || '') ? ' ・不吃 ' + esc(p.avoid_proteins) : ''}</option>`)
+            .join('');
+    }
+
+    const rxId = sel.value;
+    const rx   = allPrescriptions.find(p => String(p.id) === String(rxId));
+    const note = document.getElementById('cmNote');
+    if (note) {
+      note.textContent = !rxId
+        ? '沒挑人時不會擋掉任何品項，精力湯熱量也算不出來。要讓菜單依這位的禁忌與熱量顯示，先挑人。'
+        : (String(rx && rx.avoid_proteins || '')
+            ? `${rx.name} 不吃 ${rx.avoid_proteins} —— 切到「給客人看」時那幾道不會出現。`
+            : `${rx.name} 沒有設定不吃的蛋白質，所以全部品項都會出現。`);
+    }
+
+    frame.src = _caseMenuUrl(rxId, document.getElementById('cmPowder').value) + '&mode=guest';
+    _cmAutoHeight(frame);
+  }
+
+  // iframe 跟著內容長高，讓整頁一起滾。同源才量得到，量不到就退回固定高度
+  function _cmAutoHeight(frame) {
+    if (_cmObserver) { _cmObserver.disconnect(); _cmObserver = null; }
+    frame.onload = () => {
+      let doc;
+      try { doc = frame.contentDocument; } catch (e) { return; }
+      if (!doc || !doc.body) return;
+      const fit = () => {
+        const h = Math.max(doc.body.scrollHeight, doc.documentElement.scrollHeight);
+        if (h > 0) frame.style.height = (h + 8) + 'px';
+      };
+      fit();
+      if (window.ResizeObserver) {
+        _cmObserver = new ResizeObserver(fit);
+        _cmObserver.observe(doc.body);
+      }
+    };
+  }
+
+  function _caseMenuUrl(prescriptionId, powderType) {
+    return 'menu.html?prescription_id=' + encodeURIComponent(prescriptionId || '')
+         + '&powder_type=' + encodeURIComponent(powderType || '袋裝');
+  }
+
+  // 平板接投影、或想單獨拿一台裝置給客人時用
+  function openCaseMenuWindow() {
+    const rx = document.getElementById('cmRx');
+    const pw = document.getElementById('cmPowder');
+    window.open(_caseMenuUrl(rx ? rx.value : '', pw ? pw.value : '袋裝') + '&mode=guest', '_blank');
+  }
+
   function showCaseMenu() {
     const rx = document.getElementById('caseMenuRx').value;
     const pt = document.getElementById('caseMenuPowder').value;
@@ -4365,6 +4441,7 @@ const App = (() => {
     openVendorPurchase, saveMealPurchase,
     openEditMealItem, saveMealItem,
     openEditNutritionCard, saveNutritionCard, reviewCard, openPrintCards,
-    openCaseMenu, showCaseMenu, openCaseMenuFor
+    openCaseMenu, showCaseMenu, openCaseMenuFor,
+    renderCaseMenuInline, openCaseMenuWindow
   };
 })();

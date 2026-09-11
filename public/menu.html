@@ -250,7 +250,9 @@ async function load() {
   // 兩種檢視共用同一份菜單，不做兩頁 —— 做兩頁的話禁忌邏輯會有兩份，遲早不一致。
   //   個管師：全部餐廳攤開，不吃的標紅留著（要看得到才知道為什麼不建議）
   //   客人  ：一次只看一間，不吃的整個不顯示
-  let mode = 'staff';        // staff | guest
+  // 嵌在套餐頁裡的那一份直接從客人檢視開始 —— 個管師拿手機給客人看的時候，
+  // 不該先看到一頁攤開的個管師檢視再手動切
+  let mode = qs.get('mode') === 'guest' ? 'guest' : 'staff';
   let pickedSeries = null;   // 客人模式看哪一間
   let people = 1;            // 幾個人一起吃
 
@@ -392,6 +394,7 @@ async function load() {
   window.__setPeople = n => { people = n; render(); };
   window.__print     = () => window.print();
 
+  _syncMode();
   render();
 }
 load();

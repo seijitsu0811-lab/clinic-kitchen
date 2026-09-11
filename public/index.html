@@ -2170,13 +2170,45 @@
       color: var(--primary);
     }
 
+    /* 給客人看的菜單：挑人那一排＋嵌進來的菜單本體。
+       iframe 高度由內容決定（同源，量得到），所以整頁一起滾，
+       不會變成頁面裡再有一個小捲軸 —— 站著用手機的時候那很難操作 */
+    .cm-pick {
+      display: flex; flex-wrap: wrap; gap: 10px 16px; margin-bottom: 10px;
+    }
+    .cm-pick label {
+      display: flex; flex-direction: column; gap: 3px; flex: 1 1 180px;
+      font-size: 12px; color: var(--text2);
+    }
+    .cm-pick select {
+      font-size: 15px; padding: 9px 10px;
+      border: 1px solid var(--border); border-radius: var(--radius-sm);
+      background: var(--card-solid); color: var(--text);
+    }
+    .cm-note {
+      margin: 0 0 12px; font-size: 12.5px; color: var(--text2);
+      line-height: 1.6;
+    }
+    #cmFrame {
+      display: block; width: 100%; min-height: 420px;
+      border: 1px solid var(--border); border-radius: var(--radius-sm);
+      /* 客人看的那一頁刻意只有淺色一套（印出來與給人看都是紙的質感），
+         所以這個底色在深色模式下也維持淺色，不跟著系統翻 */
+      background: #FBFAF6;
+    }
+
     /* ── 套餐模組 ── */
+    /* 四個分頁在手機上塞不進一行，換行之後字會斷在半個詞上（「給客人／看」）。
+       改成不換行、擠不下就橫向滑 —— 站著單手操作時滑比看斷詞好認 */
     .meal-subtabs {
       display: flex; align-items: center; gap: 6px;
       margin: 12px 0 20px; border-bottom: 1px solid var(--border);
+      overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch;
     }
+    .meal-subtabs::-webkit-scrollbar { display: none; }
     .meal-tab {
       padding: 10px 18px; font-size: 13px; font-weight: 600;
+      white-space: nowrap; flex: 0 0 auto;
       background: none; border: none; color: var(--text2); cursor: pointer;
       border-bottom: 3px solid transparent; margin-bottom: -1px;
       transition: all 0.2s ease;
@@ -2928,6 +2960,7 @@
       <button class="meal-tab active" data-mtab="today" onclick="App.switchMealTab('today')">今日採購單</button>
       <button class="meal-tab"        data-mtab="menu"  onclick="App.switchMealTab('menu')">菜單維護</button>
       <button class="meal-tab"        data-mtab="cards" onclick="App.switchMealTab('cards')">衛教小卡</button>
+      <button class="meal-tab"        data-mtab="case"  onclick="App.switchMealTab('case')">給客人看</button>
     </div>
 
     <!-- 今日採購單 -->
@@ -2958,6 +2991,31 @@
         <button class="btn btn-ghost btn-sm" onclick="App.openPrintCards()">列印今日小卡</button>
       </div>
       <div id="mealCards"></div>
+    </div>
+
+    <!-- 給客人看的菜單。原本要走「今日採購單 → 個案菜單 → 選處方 → 開新視窗」四步，
+         拿手機給客人看的時候太慢，而且開新視窗會跳出系統 —— 改成直接嵌在這裡。 -->
+    <div id="mealSection-case" class="meal-section">
+      <div class="section-head" style="margin-bottom:10px">
+        <h2 style="font-size:15px">給客人看的菜單</h2>
+        <button class="btn btn-ghost btn-sm" onclick="App.openCaseMenuWindow()">開新視窗</button>
+      </div>
+      <div class="cm-pick">
+        <label>
+          <span>看哪一位</span>
+          <select id="cmRx" onchange="App.renderCaseMenuInline()"></select>
+        </label>
+        <label>
+          <span>精力湯包裝</span>
+          <select id="cmPowder" onchange="App.renderCaseMenuInline()">
+            <option value="袋裝">袋裝</option>
+            <option value="內用">內用</option>
+            <option value="全配方外帶">全配方外帶</option>
+          </select>
+        </label>
+      </div>
+      <p class="cm-note" id="cmNote"></p>
+      <iframe id="cmFrame" title="給客人看的菜單" loading="lazy"></iframe>
     </div>
   </div>
 
