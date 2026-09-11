@@ -319,6 +319,17 @@ try {
   "ALTER TABLE prescription_ingredients ADD COLUMN prep_stage TEXT DEFAULT ''",
   "INSERT OR IGNORE INTO settings (key,value) VALUES ('rotation_weeks','2')",
   "INSERT OR IGNORE INTO settings (key,value) VALUES ('rotation_anchor','2026-08-31')",
+  // 廚房不開工的日子。國定假日、颱風、盤點停工都算。
+  //
+  // 這張表補的是一個既有的洞：系統原本沒有「休診日」的概念，
+  // 預估、採購清單、排產全部假設週一到週五都開工 ——
+  // 中秋節那天照樣叫你買料、照樣算杯數、沒人點選還會照出勤補扣庫存。
+  // 同事訂閱要按假日扣杯，也是靠這張表。
+  `CREATE TABLE IF NOT EXISTS kitchen_closures (
+     date TEXT PRIMARY KEY,
+     reason TEXT DEFAULT '',
+     created_by TEXT DEFAULT '',
+     created_at TEXT DEFAULT (datetime('now','localtime')))`,
   // 當日工作狀態的單一來源（批次分組、拿取勾選、庫存已扣紀錄）
   `CREATE TABLE IF NOT EXISTS day_state (
      date TEXT PRIMARY KEY, state TEXT NOT NULL DEFAULT '{}',
@@ -3077,6 +3088,12 @@ function dayExceptions(date) {
 
 function expectedForDate(date) {
   const out = [];   // { rxId, cups, powderType }
+  // 休診日什麼都沒做，所以什麼都不扣。
+  //
+  // 這一行比排產那邊更要緊。下面「沒有人點過就照出勤與出單補扣」的退路，
+  // 在休診日一定成立 —— 廚房沒開，當然沒有人點 —— 所以少了這道判斷，
+  // 每一個國定假日都會照出勤扣掉一整天的料，而且完全不會報錯。
+  if (isClosed(date)) return out;
   const ex = dayExceptions(date);
   // 出席的人裡面扣掉被標「未領」的。逐一比對 id，不用數量相減 ——
   // 被標未領的人有可能同時也沒出席，相減會扣到兩次
@@ -3458,13 +3475,28 @@ function stocktakeDows() {
 const addDays = (d, n) => new Date(Date.parse(d + 'T00:00:00Z') + n * 86400000).toISOString().slice(0, 10);
 const dowOf   = d => new Date(d + 'T00:00:00').getDay();
 
-// 下一個盤點日（不含今天）。盤點的人不是每天上班，備料區間要照他的班表算
+// ── 休診日 ────────────────────────────────────────────────
+// 只在這裡定義一次。杯數、預估、盤點日、訂閱扣杯全部讀這個 ——
+// 各自寫一份判斷的話，改一邊就會不一致（員工供應日踩過這個坑）
+function isClosed(date) {
+  return !!db.prepare('SELECT 1 FROM kitchen_closures WHERE date=?').get(date);
+}
+// 一段期間內的休診日。訂閱算杯數時一次撈完，不要一天問一次
+function closuresBetween(from, to) {
+  return db.prepare(
+    'SELECT date, reason FROM kitchen_closures WHERE date>=? AND date<=? ORDER BY date'
+  ).all(from, to);
+}
+
+// 下一個盤點日（不含今天）。盤點的人不是每天上班，備料區間要照他的班表算。
+// 休診日跳過 —— 廚房沒開的那天沒有人可以盤點，把備料區間算到那一天
+// 會讓「撐到下一個盤點日」少算一整天的料
 function nextStocktakeDay(from) {
   const dows = stocktakeDows();
   if (!dows.length) return addDays(from, 7);
   for (let i = 1; i <= 14; i++) {
     const d = addDays(from, i);
-    if (dows.includes(dowOf(d))) return d;
+    if (dows.includes(dowOf(d)) && !isClosed(d)) return d;
   }
   return addDays(from, 7);
 }
@@ -3472,6 +3504,9 @@ function nextStocktakeDay(from) {
 // 某一天各張處方要幾杯
 function cupsOnDate(date) {
   const out = [];   // { rxId, cups, powderMult, why }
+  // 廚房沒開就什麼都不做。回空陣列而不是照樣算 ——
+  // 照樣算的話那天會出現在缺料清單上，叫你為一個不開工的日子買料
+  if (isClosed(date)) return out;
   const dow = dowOf(date);
 
   // 員工：供應日才有，當天有出席紀錄就用實到人數，否則用名冊
@@ -4812,6 +4847,40 @@ app.put('/api/meals/items/:id', (req, res) => {
     b.photo ?? cur.photo ?? '',
     req.params.id
   );
+  res.json({ ok: true });
+});
+
+// ── 休診日 ────────────────────────────────────────────────
+// 廚房哪天不開工。杯數、預估、盤點日、訂閱扣杯都讀這張表
+app.get('/api/closures', (req, res) => {
+  const from = req.query.from || addDays(today(), -30);
+  const to   = req.query.to   || addDays(today(), 180);
+  res.json({
+    from, to,
+    closures: db.prepare(
+      `SELECT date, reason, created_by, created_at FROM kitchen_closures
+        WHERE date>=? AND date<=? ORDER BY date`
+    ).all(from, to)
+  });
+});
+
+app.post('/api/closures', (req, res) => {
+  const date = String(req.body.date || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date))
+    return res.status(400).json({ error: '日期格式要是 YYYY-MM-DD' });
+  // 已經收過錢的訂閱輪不能被事後改掉杯數 —— 建立訂閱時就把杯數凍住了，
+  // 所以這裡只擋「已經過去的日子」，避免有人回頭標假日想改歷史
+  if (date < today())
+    return res.status(400).json({ error: '不能把已經過去的日子標成休診（那天做了什麼已經記在帳上了）' });
+  db.prepare(
+    `INSERT INTO kitchen_closures (date, reason, created_by) VALUES (?,?,?)
+       ON CONFLICT(date) DO UPDATE SET reason=excluded.reason`
+  ).run(date, String(req.body.reason || '').trim(), req.kitchenUser.name);
+  res.json({ ok: true, date });
+});
+
+app.delete('/api/closures/:date', (req, res) => {
+  db.prepare('DELETE FROM kitchen_closures WHERE date=?').run(req.params.date);
   res.json({ ok: true });
 });
 

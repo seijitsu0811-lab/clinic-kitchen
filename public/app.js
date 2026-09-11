@@ -3240,6 +3240,7 @@ const App = (() => {
       document.getElementById(id).oninput = _renderLaborPreview;
     });
     _renderLaborPreview();
+    renderClosures();
     _renderBackups();
     _renderLogs();
     openModal('modalSettings');
@@ -4270,6 +4271,52 @@ const App = (() => {
     openModal('modalNutritionCard');
   }
 
+  // ── 休診日 ────────────────────────────────────────────
+  async function renderClosures() {
+    const el = document.getElementById('closureList');
+    if (!el) return;
+    let d;
+    try { d = await api('/api/closures'); } catch (e) { el.textContent = e.message; return; }
+    if (!d.closures.length) {
+      el.innerHTML = '<div style="color:var(--text3)">還沒有標任何休診日 ——'
+        + ' 系統目前把每個平日都當成開工日。</div>';
+      return;
+    }
+    const DOW = ['日', '一', '二', '三', '四', '五', '六'];
+    el.innerHTML = d.closures.map(c => {
+      const dow = DOW[new Date(c.date + 'T00:00:00').getDay()];
+      return `<div style="display:flex;align-items:center;gap:8px;padding:5px 0;
+                    border-bottom:1px solid var(--border)">
+        <span style="font-variant-numeric:tabular-nums">${esc(c.date)} 週${dow}</span>
+        <span style="color:var(--text2)">${esc(c.reason || '')}</span>
+        <span style="margin-left:auto;color:var(--text3);font-size:11px">${esc(c.created_by || '')}</span>
+        <button class="btn btn-ghost btn-sm" onclick="App.removeClosure('${esc(c.date)}')">移除</button>
+      </div>`;
+    }).join('');
+  }
+
+  async function addClosure() {
+    const date = document.getElementById('closureDate').value;
+    if (!date) return alert('請選日期');
+    try {
+      await api('/api/closures', 'POST',
+        { date, reason: document.getElementById('closureReason').value.trim() });
+      document.getElementById('closureReason').value = '';
+      await renderClosures();
+      // 休診日會改變缺料與採購，不是只改這一份清單 —— 重載才看得到
+      if (typeof loadInventory === 'function') loadInventory().catch(() => {});
+    } catch (e) { alert(e.message); }
+  }
+
+  async function removeClosure(date) {
+    if (!confirm(date + ' 不再算休診日？那天會重新排產與扣庫存。')) return;
+    try {
+      await api('/api/closures/' + date, 'DELETE');
+      await renderClosures();
+      if (typeof loadInventory === 'function') loadInventory().catch(() => {});
+    } catch (e) { alert(e.message); }
+  }
+
   async function saveNutritionCard() {
     const id = document.getElementById('ncId').value;
     try {
@@ -4442,6 +4489,7 @@ const App = (() => {
     openEditMealItem, saveMealItem,
     openEditNutritionCard, saveNutritionCard, reviewCard, openPrintCards,
     openCaseMenu, showCaseMenu, openCaseMenuFor,
-    renderCaseMenuInline, openCaseMenuWindow
+    renderCaseMenuInline, openCaseMenuWindow,
+    renderClosures, addClosure, removeClosure
   };
 })();

@@ -3470,6 +3470,21 @@
     </div>
     <div style="border-top:1px solid var(--border);margin-top:6px;padding-top:14px">
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+        <strong style="font-size:14px">休診日</strong>
+      </div>
+      <div style="font-size:11px;color:var(--text3);margin-bottom:8px;line-height:1.7">
+        廚房不開工的日子。標了之後那天不排產、不扣庫存、不列進採購 ——
+        沒標的話系統會把國定假日當成正常工作日，照樣叫你買料、照樣扣掉一整天的料。
+      </div>
+      <div style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap">
+        <input id="closureDate" type="date" style="flex:1 1 140px">
+        <input id="closureReason" placeholder="原因（例如 中秋節）" style="flex:2 1 160px">
+        <button class="btn btn-ghost btn-sm" onclick="App.addClosure()">新增</button>
+      </div>
+      <div id="closureList" style="font-size:12px;max-height:160px;overflow-y:auto"></div>
+    </div>
+    <div style="border-top:1px solid var(--border);margin-top:6px;padding-top:14px">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
         <strong style="font-size:14px">資料備份</strong>
         <button class="btn btn-ghost btn-sm" style="margin-left:auto" onclick="App.runBackupNow()">立即備份</button>
       </div>
