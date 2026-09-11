@@ -206,6 +206,21 @@ line('\n━━ 13. 每一道在賣的菜都要有衛教小卡 ━━');
           : '目前沒有已停用的小卡');
 }
 
+line('\n━━ 14. 小卡寫的數字不能跟菜對不上 ━━');
+// 2026-04 樂芙那道從雞胸換成去骨烤雞腿，蛋白質 37g → 48g。
+// 小卡沒跟著改，五個月來一直寫著「低脂雞胸蛋白質 37g」——
+// 那張要是被覆核印出去，個案手上的衛教卡會是錯的部位、錯的克數。
+// 系統裡沒有任何一致性檢查，所以沒人發現。現在有了。
+{
+  const cards = (await api('/api/meals/cards')).cards;
+  check('前置：小卡帶得出不符清單', cards.every(c => Array.isArray(c.number_issues)),
+        cards.length + ' 張');
+  const bad = cards.filter(c => (c.number_issues || []).length);
+  check('沒有任何小卡的數字跟系統對不上', bad.length === 0,
+        bad.length ? '★ ' + bad.map(c => c.subject_name + '：' + c.number_issues.join('；')).join('｜')
+                   : '全部一致');
+}
+
 line(`\n${'─'.repeat(46)}`);
 line(`通過 ${pass} 項，失敗 ${fail} 項`);
 process.exit(fail ? 1 : 0);

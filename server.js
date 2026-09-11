@@ -1284,6 +1284,62 @@ function installAbeiCard2026_09() {
   console.log('阿北套餐的衛教小卡已建立（未覆核）');
 }
 
+// 2026-09-11 CARD-L1-CHICK 的文案跟菜不一樣。
+//
+// 2026-04 switchLefuToThigh() 把樂芙那道從雞胸換成去骨烤雞腿，
+// 蛋白質從 37g 變 48g —— 小卡沒跟著改，還寫著「低脂雞胸蛋白質 37g」。
+// 如果那張被覆核並印出去，個案手上會拿到寫錯部位、寫錯克數的衛教卡。
+//
+// 沒人發現的原因跟漏建小卡一樣：小卡與品項之間沒有任何一致性檢查。
+// 現在 cardNumberIssues() 會把「文案寫的克數／大卡跟系統不符」算出來，
+// 介面標紅、test-meals 直接失敗。
+function installLefuCardFix2026_09() {
+  if (db.prepare("SELECT 1 FROM settings WHERE key='lefu_card_fix_2026_09'").get()) return;
+  tx(() => {
+    // 改了文案就要撤銷覆核 —— 舊簽核不能蓋到新文字
+    db.prepare(
+      `UPDATE nutrition_cards
+          SET headline=?, ratio_line=?, story=?, reviewed_by='', reviewed_at='',
+              updated_at=datetime('now','localtime')
+        WHERE code='CARD-L1-CHICK'`
+    ).run(
+      '去骨雞腿・高效率肌肉修復',
+      '去骨烤雞腿 蛋白質 48 公克 ｜ 豐富支鏈胺基酸 BCAA ｜ 藜麥多色時蔬',
+      '去骨雞腿肉質細嫩多汁、好咀嚼好入口。每份提供 48 公克優質蛋白質，'
+      + '富含支鏈胺基酸（BCAA），是維持肌肉量與日常體能的基礎營養來源。'
+      + '這是整份菜單裡蛋白質最高的一道，熱量也最高（674 大卡），'
+      + '需要控制熱量的個案請斟酌。');
+    db.prepare("INSERT OR REPLACE INTO settings (key,value) VALUES ('lefu_card_fix_2026_09',?)")
+      .run(new Date().toISOString().slice(0, 19).replace('T', ' '));
+  });
+  console.log('CARD-L1-CHICK 已從「雞胸 37g」改回實際的「去骨雞腿 48g」（覆核狀態已撤銷）');
+}
+
+// 文案寫的數字跟系統裡的品項不符時，把不符之處列出來。
+//
+// 只比對「蛋白質 X 公克」與「熱量 X 大卡」這兩種明確寫法 ——
+// 泛抓所有數字會把「維生素 B12」「Omega-3」當成克數。
+// 蛋白質容許 1 公克誤差（文案寫「約 20 公克」、系統 20.3 是合理的四捨五入），
+// 熱量容許 5 大卡。
+function cardNumberIssues(text, item) {
+  if (!item) return [];
+  const out = [];
+  const grams = [
+    ...text.matchAll(/蛋白質[^0-9]{0,6}(\d+(?:\.\d+)?)\s*(?:g|公克)/g),
+    ...text.matchAll(/(\d+(?:\.\d+)?)\s*(?:g|公克)[^。｜]{0,4}蛋白質/g)
+  ].map(m => Number(m[1]));
+  const kcals = [...text.matchAll(/(\d+(?:\.\d+)?)\s*大卡/g)].map(m => Number(m[1]));
+  grams.forEach(v => {
+    if (item.protein_g > 0 && Math.abs(v - item.protein_g) > 1)
+      out.push(`文案寫蛋白質 ${v} 公克，系統是 ${item.protein_g} 公克`);
+  });
+  kcals.forEach(v => {
+    if (item.kcal > 0 && Math.abs(v - item.kcal) > 5)
+      out.push(`文案寫 ${v} 大卡，系統是 ${item.kcal} 大卡`);
+  });
+  return [...new Set(out)];   // 同一個數字寫兩次，不必報兩次
+}
+
 function installMealSeeds() {
   updateFormulaB2026();
   switchLefuToThigh();
@@ -1294,6 +1350,7 @@ function installMealSeeds() {
   installQifuNutrition2026_09();
   installProteinBoxCards2026_09();
   installAbeiCard2026_09();
+  installLefuCardFix2026_09();
 }
 installMealSeeds();
 
@@ -4765,13 +4822,20 @@ function cardRows() {
             CASE WHEN nc.subject_type='meal_item' THEN mi.display_name ELSE p.name END AS subject_name,
             -- 換店家後舊小卡會留在這裡。標出來，覆核清單才不會要人審已經不出的菜
             CASE WHEN nc.subject_type='meal_item' AND COALESCE(mi.active,1)=0 THEN 1 ELSE 0 END AS retired,
+            mi.kcal item_kcal, mi.protein_g item_protein_g,
             ms.name series_name
      FROM nutrition_cards nc
      LEFT JOIN meal_items mi  ON nc.subject_type='meal_item' AND mi.id=nc.subject_id
      LEFT JOIN meal_series ms ON ms.id=mi.series_id
      LEFT JOIN products p     ON nc.subject_type='product' AND p.id=nc.subject_id
      ORDER BY nc.subject_type DESC, ms.sort_order, mi.sort_order`
-  ).all();
+  ).all().map(c => ({
+    ...c,
+    // 換了菜卻沒改小卡，就是這裡會抓到的。2026-04 樂芙雞胸換雞腿那次沒人發現
+    number_issues: cardNumberIssues(
+      [c.headline, c.ratio_line, c.story].join(' '),
+      c.subject_type === 'meal_item' ? { kcal: c.item_kcal, protein_g: c.item_protein_g } : null)
+  }));
 }
 
 app.get('/api/meals/cards', (req, res) => {

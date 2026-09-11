@@ -4237,6 +4237,10 @@ const App = (() => {
             ? `<span class="badge badge-green">已覆核 ${esc(c.reviewed_by)} ${esc(c.reviewed_at)}</span>`
             : '<span class="badge badge-orange">待覆核</span>'}
         </div>
+        ${(c.number_issues || []).length
+          ? '<div class="review-warn" style="margin:6px 0">數字跟系統不一致，改好之前不要覆核：<br>'
+            + c.number_issues.map(esc).join('<br>') + '</div>'
+          : ''}
         <div class="nc-headline">${esc(c.headline)}</div>
         <div class="nc-ratio">${esc(c.ratio_line)}</div>
         <div class="nc-story">${esc(c.story)}</div>
