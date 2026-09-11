@@ -95,7 +95,7 @@
 
   /* ── 個管師那一條 ──────────────────────────────────────
      最常用的是手機，所以這條要黏在上面、按鈕大顆，單手按得到。
-     切到「給客人看」時整條收起來，螢幕轉過去只剩菜單。 */
+     切到「菜單」時整條收起來，螢幕轉過去只剩菜單。 */
   .bar {
     position: sticky; top: 0; z-index: 20;
     background: var(--ink); color: #fff;
@@ -324,7 +324,7 @@ async function load() {
         <span class="bar-title">個管師檢視</span>
         <span class="bar-sp"></span>
         <button onclick="window.__print()">存成 PDF</button>
-        <button class="go" onclick="window.__guest()">👁 給客人看</button>
+        <button class="go" onclick="window.__guest()">👁 菜單</button>
       </div>`;
 
     const head = `
@@ -352,7 +352,7 @@ async function load() {
       const warn = avoid.length
         ? `<div class="share" style="border-color:var(--pork)">
              <div class="share-q" style="color:var(--pork)">這位不吃：${avoid.map(esc).join('、')}</div>
-             <div class="none-note">下面標紅的品項，切到「給客人看」時不會出現。
+             <div class="none-note">下面標紅的品項，切到「菜單」時不會出現。
                ${d.case && d.case.note ? '備註：' + esc(d.case.note) : ''}</div>
            </div>`
         : '';

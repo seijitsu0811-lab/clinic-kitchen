@@ -2170,7 +2170,7 @@
       color: var(--primary);
     }
 
-    /* 給客人看的菜單：挑人那一排＋嵌進來的菜單本體。
+    /* 客人看的菜單：挑人那一排＋嵌進來的菜單本體。
        iframe 高度由內容決定（同源，量得到），所以整頁一起滾，
        不會變成頁面裡再有一個小捲軸 —— 站著用手機的時候那很難操作 */
     .cm-pick {
@@ -2997,7 +2997,7 @@
          拿手機給客人看的時候太慢，而且開新視窗會跳出系統 —— 改成直接嵌在這裡。 -->
     <div id="mealSection-case" class="meal-section">
       <div class="section-head" style="margin-bottom:10px">
-        <h2 style="font-size:15px">給客人看的菜單</h2>
+        <h2 style="font-size:15px">菜單</h2>
         <button class="btn btn-ghost btn-sm" onclick="App.openCaseMenuWindow()">開新視窗</button>
       </div>
       <div class="cm-pick">
@@ -3015,7 +3015,7 @@
         </label>
       </div>
       <p class="cm-note" id="cmNote"></p>
-      <iframe id="cmFrame" title="給客人看的菜單" loading="lazy"></iframe>
+      <iframe id="cmFrame" title="菜單" loading="lazy"></iframe>
     </div>
   </div>
 
@@ -3262,7 +3262,7 @@
         <label class="avoid-chk"><input type="checkbox" value="蛋">蛋</label>
         <label class="avoid-chk"><input type="checkbox" value="奶">奶</label>
       </div>
-      <small class="avoid-hint">勾起來的類別，個管師的菜單會標紅、給客人看時直接不顯示。
+      <small class="avoid-hint">勾起來的類別，個管師檢視會標紅、切到「菜單」時直接不顯示。
         過敏或宗教因素要勾在這裡 —— 下面那欄是自由備註，系統不會拿它比對。</small>
     </div>
     <div class="form-group">

@@ -3508,7 +3508,7 @@ const App = (() => {
       const on = t.dataset.mtab === tab;
       t.classList.toggle('active', on);
       // 手機上四個分頁擠不進一行，會橫向滑 —— 選到的那個要自己滑進來，
-      // 不然點了「給客人看」它還被切在螢幕邊緣，看起來像沒點到
+      // 不然點了「菜單」它還被切在螢幕邊緣，看起來像沒點到
       if (on && t.scrollIntoView) t.scrollIntoView({ block: 'nearest', inline: 'nearest' });
     });
     document.querySelectorAll('.meal-section').forEach(s =>
@@ -4306,7 +4306,7 @@ const App = (() => {
     openModal('modalCaseMenu');
   }
 
-  // ── 嵌在套餐頁裡的「給客人看」────────────────────────
+  // ── 嵌在套餐頁裡的「菜單」（客人看的那一份）──────────
   // 拿的是同一份 menu.html 與同一支 /api/meals/menu/case，不另做一頁 ——
   // 做兩頁的話禁忌邏輯會有兩份，遲早不一致
   let _cmObserver = null;
@@ -4336,7 +4336,7 @@ const App = (() => {
       note.textContent = !rxId
         ? '沒挑人時不會擋掉任何品項，精力湯熱量也算不出來。要讓菜單依這位的禁忌與熱量顯示，先挑人。'
         : (String(rx && rx.avoid_proteins || '')
-            ? `${rx.name} 不吃 ${rx.avoid_proteins} —— 切到「給客人看」時那幾道不會出現。`
+            ? `${rx.name} 不吃 ${rx.avoid_proteins} —— 切到「菜單」時那幾道不會出現。`
             : `${rx.name} 沒有設定不吃的蛋白質，所以全部品項都會出現。`);
     }
 
