@@ -3498,7 +3498,8 @@ function packStatus(group, asOf) {
       WHERE group_code=? AND COALESCE(reversed_at,'')='' AND date<=?
       ORDER BY date, id`
   ).all(group, upto);
-  if (!batches.length) return { made: 0, used: 0, remaining: 0, since: null, batches: [] };
+  if (!batches.length)
+    return { made: 0, used: 0, remaining: 0, served_without_pack: 0, since: null, batches: [] };
 
   const rxIds = new Set(planRxIds(group));
   const since = batches[0].date;
@@ -3507,8 +3508,15 @@ function packStatus(group, asOf) {
     used += cupsOnDate(d).filter(x => rxIds.has(x.rxId)).reduce((sum, x) => sum + x.cups, 0);
   }
   const made = batches.reduce((sum, b) => sum + b.servings, 0);
+  // used 算的是「自第一批以來出過幾杯方案」，不是「用掉幾份備品」——
+  // 所以它可以大於 made（做了 24 份、期間出了 44 杯，差的 20 杯是當天現做的）。
+  // remaining 夾在 0 以上，但夾掉之後就看不出差多少，
+  // 所以把差額明講出來，不要讓人以為帳壞了
+  const unpacked = Math.max(0, Math.round((used - made) * 10) / 10);
   return { made, used: Math.round(used * 10) / 10,
            remaining: Math.max(0, Math.round((made - used) * 10) / 10),
+           // 這幾杯沒有備品可用，是當天現做的
+           served_without_pack: unpacked,
            since, batches };
 }
 
@@ -3790,26 +3798,36 @@ function buildForecast(daysAhead) {
     const split = needsSplitOnDate(date, packGroupRx);
     Object.entries(n).forEach(([id, q]) => {
       const nid = Number(id);
-      // 冷凍包那一份：備品夠就不缺，不夠才按「缺幾杯份」換算成克數。
-      // 只算吃方案的那幾杯 —— 個案自己處方裡的同一樣食材不吃備品
-      const packQ = packIds.has(nid) ? (split.fromPlan[id] || 0) : 0;
-      let packGap = 0;
-      if (packQ > 0 && packMissing > 0 && planCups) {
-        packGap = Math.round((packQ / planCups) * packMissing * 10) / 10;
-      }
 
-      // 其餘的（個案自己的處方、以及沒進冷凍包的食材）照生料庫存算
-      const rawQ = q - packQ;
+      // 冷凍包不夠的時候，要做的是「補做冷凍包」，而做冷凍包會吃生料。
+      // 所以缺口只有一種幣別：克。
+      //
+      // 原本的寫法把「冷凍包還缺幾杯份」按比例換成克數，加進這一樣食材的缺口，
+      // 但 need / have 兩欄描述的是生料 —— 結果同一列裡混了兩套數字，
+      // 出現過「藍莓 需 505、手上 2250、缺 35」這種算術上不成立的一行。
+      // 五樣冷凍包的料全部報缺 15 克，而生料其實有 500～3200 克。
+      // 那份清單因此沒人相信，而它是每天第一個要看的東西。
+      const perServing = packIds.has(nid) && planCups
+        ? (split.fromPlan[id] || 0) / planCups
+        : 0;
+      // 備品不夠的那幾杯份，要現做，所以那些生料算進今天的需求
+      const packRemake = Math.round(perServing * packMissing * 10) / 10;
+      // 有備品可用的那幾杯不吃生料 —— 料在備料當天就離開冰箱了
+      const fromOwn = q - (split.fromPlan[id] || 0);
+
+      const rawQ = Math.round((fromOwn + packRemake) * 10) / 10;
       const used = cum[id] || 0;                 // 這一天之前已經用掉的
       const left = Math.max(0, (stock[id] || 0) - used);
-      const rawGap = rawQ > 0 ? Math.round((rawQ - left) * 10) / 10 : 0;
+      const gap  = Math.round(Math.max(0, rawQ - left) * 10) / 10;
 
-      const gap = Math.round((packGap + Math.max(0, rawGap)) * 10) / 10;
       if (gap > 0.05 && ingMap[id]) {
         short.push({ id: nid, name: ingMap[id].name, unit: ingMap[id].unit,
-                     need: Math.round(q * 10) / 10,
-                     have: Math.round(Math.min(left, rawQ > 0 ? left : 0) * 10) / 10,
-                     gap, from_pack: packGap > 0 });
+                     // need 與 have 現在講的是同一件事：這一天真的要動用多少生料、手上還有多少
+                     need: rawQ,
+                     have: Math.round(left * 10) / 10,
+                     gap,
+                     // 這一樣有一部分是為了補做冷凍包才要用的
+                     for_pack: packRemake > 0.05 });
       }
     });
     packLeft = Math.max(0, packLeft - packCovered);
@@ -3820,6 +3838,10 @@ function buildForecast(daysAhead) {
                 is_staff_meal_day: isStaffMealDay(dowOf(date)), cups,
                 is_stocktake_day: stocktakeDows().includes(dowOf(date)),
                 packs_left: Math.round(packLeft * 10) / 10,
+                // 備品不夠是一件「要備料」的事，不是「缺料」。
+                // 混在缺料清單裡的話，畫面上會變成五樣食材各缺 15 克 ——
+                // 看起來要跑一趟市場，實際上只要進廚房分裝
+                pack_short_servings: Math.round(packMissing * 10) / 10,
                 feasible: short.length === 0, short });
 
     Object.entries(n).forEach(([id, q]) => {

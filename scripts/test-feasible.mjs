@@ -193,5 +193,43 @@ const leftIng = (await api('/api/ingredients')).find(i => i.name === 'ZZ測試�
 check('測試處方與測試食材都清乾淨', !leftRx && !leftIng,
       `處方 ${leftRx ? '殘留' : '已清'}／食材 ${leftIng ? '殘留' : '已清'}`);
 
+
+line('\n━━ 缺料清單的每一行都要算得通 ━━');
+// 2026-09 抓到的：藍莓那一行寫「需 505、手上 2250、缺 35」——
+// 手上比要用的多四倍，卻說缺。原因是缺口混了兩套幣別：
+// 生料的克數，加上「冷凍包還缺幾杯份」按比例換出來的克數，
+// 而 need / have 兩欄只描述生料。同一列裡兩套數字，講不通。
+//
+// 那份清單是每天第一個要看的東西，一行算不通就整份沒人相信。
+// 現在缺口只有一種幣別（克），所以這條關係必須永遠成立：
+//     缺口 = max(0, 要用 − 手上)
+{
+  const f = await api('/api/inventory/forecast?days=14');
+  const rows = f.days.flatMap(d => (d.short || []).map(s => ({ ...s, date: d.date })));
+  check('前置：抓得到缺料明細', Array.isArray(rows), rows.length + ' 行');
+
+  const bad = rows.filter(s =>
+    Math.abs(s.gap - Math.max(0, s.need - s.have)) > 0.15);
+  check('缺口 = 要用 − 手上', bad.length === 0,
+        bad.length
+          ? '★ ' + bad.slice(0, 3).map(s =>
+              `${s.date} ${s.name} 要用 ${s.need}／手上 ${s.have}／缺 ${s.gap}`).join('｜')
+          : rows.length + ' 行全部算得通');
+
+  const impossible = rows.filter(s => s.have >= s.need + 0.15);
+  check('手上夠的不會出現在缺料清單上', impossible.length === 0,
+        impossible.length
+          ? '★ ' + impossible.slice(0, 3).map(s => `${s.name} 手上 ${s.have} ≥ 要用 ${s.need}`).join('｜')
+          : '沒有這種行');
+
+  // 備品不夠是「要備料」，不是「要跑市場」。兩件事混在一起的時候，
+  // 畫面上會變成五樣食材各缺 15 克 —— 看起來要採購，其實只要分裝
+  check('備品不足單獨報成杯份，不摻進克數',
+        f.days.every(d => typeof d.pack_short_servings === 'number'),
+        '第一天還缺 ' + f.days[0].pack_short_servings + ' 杯份');
+  check('冷凍包出過的杯數對不上做的份數時，差額要講出來',
+        typeof f.packs.served_without_pack === 'number',
+        `做 ${f.packs.made} 份／出過 ${f.packs.used} 杯／其中 ${f.packs.served_without_pack} 杯現做`);
+}
 line(`\n${'─'.repeat(48)}\n通過 ${pass} 項，失敗 ${fail} 項`);
 process.exit(fail ? 1 : 0);
