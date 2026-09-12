@@ -2272,9 +2272,11 @@ app.put('/api/products/:id', (req, res) => {
 // ════════════════════════════════════════════════════════
 
 // powderMultiplier: 1.0 袋裝 / 1.1 罐裝（多備10%防溢）
-function buildPrepAndPowder(rxId, multiplier, unit, powderMultiplier, date) {
+function buildPrepAndPowder(rxId, multiplier, unit, powderMultiplier, date, powderType) {
   powderMultiplier = powderMultiplier || 1.0;
-  const allItems = effectiveItems(rxId, date)
+  // 備料表也要照包裝走。基底粉那幾杯不必秤菜 ——
+  // 秤了也用不到，而且會讓備料的人以為量不對
+  const allItems = servedItems(rxId, date, powderType)
     .map(r => ({ qty_per_cup: r.qty_per_cup, prep_note: r.prep, name: r.name,
                  unit: r.unit, category: r.category }));
   // prep = 鮮食（蔬菜/水果/油/水/其他）。prep_note 是處理方式，備料時要看得到
@@ -2392,7 +2394,8 @@ app.get('/api/today', async (req, res) => {
 
     let staffPrep = [], staffPowder = { per_serving: 0, items: [], batches: [] };
     if (staffRx && totalStaffCups > 0) {
-      const { prep, powder } = buildPrepAndPowder(staffRx.id, totalStaffCups, prod.unit, 1.0, date);
+      // 員工餐一律是完整的一杯，不會只給粉
+      const { prep, powder } = buildPrepAndPowder(staffRx.id, totalStaffCups, prod.unit, 1.0, date, '');
       staffPrep = prep;
       const powderBatches = batches.map(b => ({
         label: `${b.size}${prod.unit}批 ×${b.count}`,
@@ -2403,8 +2406,9 @@ app.get('/api/today', async (req, res) => {
     }
 
     const casesWithPrep = cases.map(c => {
-      const pm = (c.powder_type === '罐裝' || c.powder_type === '全配方') ? 1.1 : 1.0;
-      const { prep, powder, supplements } = buildPrepAndPowder(c.prescription_id, c.cups, prod.unit, pm, date);
+      const pm = powderMultFor(c.powder_type);
+      const { prep, powder, supplements } =
+        buildPrepAndPowder(c.prescription_id, c.cups, prod.unit, pm, date, c.powder_type);
       return { ...c, prep, powder, supplements };
     });
 
@@ -2417,9 +2421,10 @@ app.get('/api/today', async (req, res) => {
        WHERE co.date>? AND p.product_id=? ORDER BY co.date, co.meal_time`
     ).all(date, prod.id);
     const futureCasesWithPrep = futureCases.map(c => {
-      const pm = (c.powder_type === '罐裝' || c.powder_type === '全配方') ? 1.1 : 1.0;
+      const pm = powderMultFor(c.powder_type);
       // 預約出單可能落在下一個方案期，用那一筆自己的日期去查方案
-      const { prep, powder, supplements } = buildPrepAndPowder(c.prescription_id, c.cups, prod.unit, pm, c.date);
+      const { prep, powder, supplements } =
+        buildPrepAndPowder(c.prescription_id, c.cups, prod.unit, pm, c.date, c.powder_type);
       return { ...c, prep, powder, supplements };
     });
 
@@ -3256,13 +3261,18 @@ app.get('/api/day/cups', (req, res) => {
     if (ing) {
       out.ingredient = { id: ing.id, name: ing.name, unit: ing.unit, from: [] };
       cupsOnDate(date).forEach(c => {
-        const it = effectiveItems(c.rxId, date).find(x => x.ingredient_id === ing.id);
+        const it = servedItems(c.rxId, date, c.powderType)
+          .find(x => x.ingredient_id === ing.id);
         if (!it || !(it.qty_per_cup > 0)) return;
         const rx = db.prepare('SELECT code, active FROM prescriptions WHERE id=?').get(c.rxId) || {};
+        // 粉類在罐裝與全配方要 ×1.1。扣庫存那邊有算，這裡原本沒算 ——
+        // 而這個明細正是用來查「為什麼缺這麼多」的地方，兩邊差 10% 就查不出來
+        const mult = FRESH_CATS.has(it.category) ? 1.0 : (c.powderMult || 1.0);
         out.ingredient.from.push({
           code: rx.code, active: rx.active, cups: c.cups,
           per_cup: it.qty_per_cup,
-          total: Math.round(it.qty_per_cup * c.cups * 10) / 10
+          powder_mult: mult,
+          total: Math.round(it.qty_per_cup * c.cups * mult * 10) / 10
         });
       });
     }
@@ -3285,7 +3295,9 @@ app.get('/api/inventory/:id/purchases', (req, res) => {
 function applyConsumption(rxId, cups, powderType, sign, date) {
   const pm = (powderType === '罐裝' || powderType === '全配方') ? 1.1 : 1.0;
   const freshCats = new Set(['蔬菜', '水果', '油水', '油', '水', '其他']);
-  effectiveItems(rxId, date).forEach(r => {
+  // 基底粉只扣粉類。原本這裡扣的是整張處方 ——
+  // 客人只拿粉，蔬果卻照扣，帳面因此一直短少
+  servedItems(rxId, date, powderType).forEach(r => {
     const mult   = freshCats.has(r.category) ? 1.0 : pm;
     const amount = Math.round(r.qty_per_cup * cups * mult * 100) / 100 * sign;
     db.prepare(
@@ -4121,8 +4133,11 @@ function cupsOnDate(date) {
        FROM case_orders co JOIN prescriptions p ON p.id=co.prescription_id
       WHERE co.date=?`
   ).all(date).forEach(c => {
-    const pm = (c.powder_type === '罐裝' || c.powder_type === '全配方') ? 1.1 : 1.0;
-    out.push({ rxId: c.prescription_id, cups: c.cups, powderMult: pm, why: c.name });
+    // 包裝要一起帶出去。下游（排產、缺料、採購）原本只拿到 powderMult，
+    // 分不出「基底粉」和「精力湯」——所以基底粉的單照樣算了一整份蔬果
+    out.push({ rxId: c.prescription_id, cups: c.cups,
+               powderMult: powderMultFor(c.powder_type),
+               powderType: c.powder_type || '', why: c.name });
   });
 
   return out;
@@ -4133,8 +4148,8 @@ const FRESH_CATS = new Set(['蔬菜', '水果', '油水', '油', '水', '其他'
 // 某一天的食材需求（已套用當天的蔬果方案）
 function needsOnDate(date) {
   const need = {};
-  cupsOnDate(date).forEach(({ rxId, cups, powderMult }) => {
-    effectiveItems(rxId, date).forEach(r => {
+  cupsOnDate(date).forEach(({ rxId, cups, powderMult, powderType }) => {
+    servedItems(rxId, date, powderType).forEach(r => {
       const mult = FRESH_CATS.has(r.category) ? 1.0 : powderMult;
       need[r.ingredient_id] = (need[r.ingredient_id] || 0) + r.qty_per_cup * cups * mult;
     });
@@ -4148,9 +4163,9 @@ function needsOnDate(date) {
 // 混在一起算的話，庫存裡明明有 3100g 也會說做不出來。
 function needsSplitOnDate(date, planRxSet) {
   const fromPlan = {}, fromOwn = {};
-  cupsOnDate(date).forEach(({ rxId, cups, powderMult }) => {
+  cupsOnDate(date).forEach(({ rxId, cups, powderMult, powderType }) => {
     const bucket = planRxSet.has(rxId) ? fromPlan : fromOwn;
-    effectiveItems(rxId, date).forEach(r => {
+    servedItems(rxId, date, powderType).forEach(r => {
       const mult = FRESH_CATS.has(r.category) ? 1.0 : powderMult;
       bucket[r.ingredient_id] = (bucket[r.ingredient_id] || 0) + r.qty_per_cup * cups * mult;
     });
@@ -4486,10 +4501,10 @@ app.get('/api/inventory/check', (req, res) => {
 
   // 累計配方需求
   const needs = {};
-  function addRxNeeds(rxId, cups, powderMult, forDate) {
+  function addRxNeeds(rxId, cups, powderMult, forDate, powderType) {
     if (cups <= 0) return;
     powderMult = powderMult || 1.0;
-    effectiveItems(rxId, forDate).forEach(r => {
+    servedItems(rxId, forDate, powderType).forEach(r => {
       const freshCats = new Set(['蔬菜','水果','油水','油','水','其他']);
       const mult = freshCats.has(r.category) ? 1.0 : powderMult;
       needs[r.ingredient_id] = (needs[r.ingredient_id] || 0) + r.qty_per_cup * cups * mult;
@@ -4540,7 +4555,8 @@ app.get('/api/inventory/check', (req, res) => {
        AND p.name != 'AW' AND p.is_staff_rx = 0`
   ).all(t, endStr).forEach(c => {
     const pm = (c.powder_type === '罐裝' || c.powder_type === '全配方') ? 1.1 : 1.0;
-    addRxNeeds(c.prescription_id, c.cups, pm);
+    // 那一筆自己的日期 —— 這個 scope 裡沒有 date，而且出單可能落在下一個方案期
+    addRxNeeds(c.prescription_id, c.cups, pm, c.date, c.powder_type);
   });
 
   // 整合結果（附本週需求說明）
@@ -5005,6 +5021,30 @@ function calcTonicNutrition(rxId, powderMultiplier) {
 
 function powderMultFor(powderType) {
   return (powderType === '罐裝' || powderType === '全配方') ? 1.1 : 1.0;
+}
+
+// ── 基底粉的單只給粉類 ────────────────────────────────────
+//
+// 處方是完整的臨床配方，個案的處方會整張 key 上去。但實際出給他的
+// 可能只有粉 —— 袋裝基底粉、罐裝基底粉就是這種：客人自己回家沖，
+// 不拿菜。拿處方當生產規格，蔬果就會虛高。
+//
+// 2026-09 量過：過去 30 天 112 杯裡有 41 杯是基底粉（37%），
+// 而它們每一杯都照樣扣掉一整份蔬果。9/11 有一張個人處方一次出 21 杯袋裝粉，
+// 就這樣生出 220 g 甜菜根的需求 —— 那樣食材早就換成火龍果了。
+//
+// 只在這裡定義一次。扣庫存、排產、缺料、採購、備料表、成本
+// 六個地方都讀這一支 —— 各寫一份的話改一邊就會不一致，
+// 而「同一個數字兩套算法」是這個系統最貴的那一類 bug。
+const POWDER_ONLY_TYPES = new Set(['袋裝', '罐裝']);
+function isPowderOnly(powderType) {
+  return POWDER_ONLY_TYPES.has(String(powderType || ''));
+}
+// 這一單實際會用到的用料。基底粉只留粉類 ——
+// 蔬菜、水果、油、水、保健品都不出
+function servedItems(rxId, date, powderType) {
+  const items = effectiveItems(rxId, date);
+  return isPowderOnly(powderType) ? items.filter(r => r.category === '粉類') : items;
 }
 
 // 買便當是有時間壓力的事：最早用餐時間往前推來回步行、每間店的取餐等候，

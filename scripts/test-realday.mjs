@@ -169,8 +169,11 @@ const rxIng = (await api('/api/prescriptions/' + solo[1].id + '/ingredients'))
 await api('/api/stocktake', 'POST',
   { note: 'ZZ 模擬：把用料補到已知量', items: rxIng.map(i => ({ ingredient_id: i.id, counted_qty: 1000 })) });
 
+// 包裝用「內用」而不是「袋裝」。袋裝是基底粉，只扣粉類（見 test-powderonly）——
+// 這一組要驗的是自動補扣的量對不對，而它下面檢查的是處方的第一樣用料，
+// 那通常是菜。用袋裝的話那一樣不會動，斷言就變成永遠通不過（或永遠空過）
 const back = await api('/api/today/cases', 'POST',
-  { prescription_id: solo[1].id, cups: 2, meal_time: '1130', powder_type: '袋裝',
+  { prescription_id: solo[1].id, cups: 2, meal_time: '1130', powder_type: '內用',
     patient_name: 'ZZ模擬昨日', notes: '', date: YDAY });
 madeCases.push(back.id);
 const invPre = await invOf();
