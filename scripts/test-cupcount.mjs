@@ -89,12 +89,21 @@ else {
   await clearTaps();
   const exp2 = await expectOf(today);
 
-  // 預設 1 杯 → 開一張 2 杯的單，總數應該只 +1（單取代預設，不是疊加）
+  // 預設 1 杯 → 開一張 2 杯的單，總數應該只 +1（單取代預設，不是疊加）。
+  //
+  // 但「每日固定供應」只在週一到週五生效（cupsOnDate 的 dow>=1 && dow<=5）。
+  // 週六日那個預設本來就沒算進 base，所以開一張 2 杯的單就是 +2 才對。
+  // 原本寫死 2 - daily_cups，週末跑一定失敗 ——
+  // 一週有兩天會紅燈的測試，遲早會被當成雜訊忽略掉。
+  const dow = new Date(today + 'T00:00:00').getDay();
+  const defaultApplies = dow >= 1 && dow <= 5;
+  const expectDelta = 2 - (defaultApplies ? dailyRx.daily_cups : 0);
   const delta = withOrder - base;
   check(`${dailyRx.code} 開單後不會憑空消失`, withOrder >= base,
         `${base} → ${withOrder}` + (withOrder >= base ? '' : ' ★ 那杯照做卻沒人算料'));
-  check('單取代每日預設值，不是疊加', Math.abs(delta - (2 - dailyRx.daily_cups)) < 0.05,
-        `預設 ${dailyRx.daily_cups} 杯、單 2 杯 → 總數 ${delta >= 0 ? '+' : ''}${delta}`);
+  check('單取代每日預設值，不是疊加', Math.abs(delta - expectDelta) < 0.05,
+        `預設 ${dailyRx.daily_cups} 杯${defaultApplies ? '' : '（今天是週末，預設不生效）'}、`
+        + `單 2 杯 → 總數 ${delta >= 0 ? '+' : ''}${delta}，應該是 +${expectDelta}`);
   check('排產與扣庫存仍然一致', Math.abs(withOrder - exp2) < 0.05,
         `做 ${withOrder} 杯／扣 ${exp2} 杯`);
 

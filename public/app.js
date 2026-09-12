@@ -2295,49 +2295,55 @@ const App = (() => {
       if (catItems.length === 0) return;
       html += `<div class="cat-header">${cat}</div>`;
       html += '<div class="card" style="padding:0 16px">';
+      // 一列原本可以疊到六行：名稱＋狀態、安全量、換算、效期、七天需求、
+      // 再加一顆「採購記錄」按鈕。28 樣食材就是一片牆，而真正要看的
+      // 只有「還有多少」和「夠不夠」。
+      //
+      // 現在一列固定兩行：名稱＋數量，底下最多一句話。
+      // 那句話只講最要緊的一件（缺料 > 低於安全量 > 這週還剩多少），
+      // 其餘（換算比例、效期、安全量）搬進編輯視窗 —— 那些是設定，不是每天要看的。
       catItems.forEach(i => {
         const chk = shortageMap[i.id];
-        let statusBadge = '';
-        if (chk) {
-          if (!chk.sufficient) {
-            const short = Math.round((chk.needed - chk.stock) * 10) / 10;
-            statusBadge = `<span class="badge badge-red inv-shortage-badge">🔴 缺 ${short}${i.unit}</span>`;
-          } else {
-            const pct = chk.needed > 0 ? chk.stock / chk.needed : null;
-            if (pct !== null && pct < 1.3) statusBadge = '<span class="badge badge-orange">⚠ 偏低</span>';
-            else if (chk.needed > 0) statusBadge = '<span class="badge badge-green">✅ 充足</span>';
-          }
-        }
-        const needInfo = chk && chk.needed > 0
-          ? `<div class="inv-need-row">7天需求 ${chk.needed}${i.unit}，剩餘 <strong style="color:${chk.sufficient?'var(--green)':'var(--red)'}">${chk.remaining}${i.unit}</strong></div>`
-          : '';
-        // 顆換算：有 count_unit 的食材（蘋果、帶皮檸檬）
         const hasCount = i.count_unit && i.count_ratio > 1;
         const countQty = hasCount ? Math.round(i.qty / i.count_ratio * 10) / 10 : null;
-        const qtyDisplay = hasCount
-          ? `${countQty}<span class="inv-unit"> ${i.count_unit}</span><span style="font-size:11px;color:var(--text3)">（${i.qty}${i.unit}）</span>`
-          : `${i.qty}<span class="inv-unit"> ${i.unit}</span>`;
         const slDays = i.shelf_life_days || 0;
-        const shelfBadge = slDays > 0
-          ? `<span class="shelf-life-badge sl-ok">⏳ ${slDays}天效期</span>` : '';
+
+        // 狀態靠左邊那條色帶，不靠 emoji。28 列都掛一個 🔴 只會變雜訊
+        let tone = '';
+        let note = '';
+        if (chk && !chk.sufficient) {
+          tone = 'short';
+          note = `這週還缺 ${Math.round((chk.needed - chk.stock) * 10) / 10}${i.unit}`;
+        } else if (i.safety_stock > 0 && i.qty < i.safety_stock) {
+          tone = 'low';
+          note = `低於安全量 ${i.safety_stock}${i.unit}`;
+        } else if (chk && chk.needed > 0) {
+          const pct = chk.stock / chk.needed;
+          if (pct < 1.3) { tone = 'low'; note = `這週要 ${chk.needed}${i.unit}，剩 ${chk.remaining}${i.unit}`; }
+          else note = `這週要 ${chk.needed}${i.unit}，剩 ${chk.remaining}${i.unit}`;
+        }
+
+        const qtyDisplay = hasCount
+          ? `${countQty}<span class="inv-unit"> ${i.count_unit}</span>`
+          : `${i.qty}<span class="inv-unit"> ${i.unit}</span>`;
+        // 有換算的食材，第二單位放在數字底下當註腳 ——
+        // 採購講公斤、盤點講顆，兩個都要看得到
+        const qtySub = hasCount ? `<div class="inv-qty-sub">${i.qty} ${i.unit}</div>` : '';
+
         html += `
-          <div class="inv-row${chk && !chk.sufficient ? ' inv-row-shortage' : ''}">
-            <div style="flex:1">
-              <div class="inv-name">${esc(i.name)} ${statusBadge}</div>
-              ${i.safety_stock > 0
-                ? (i.qty < i.safety_stock
-                    ? `<div class="inv-unit inv-below-safety">⚠ 低於安全量（${i.qty}／${i.safety_stock}${i.unit}）</div>`
-                    : `<div class="inv-unit">安全量 ${i.safety_stock}${i.unit}</div>`)
-                : ''}
-              ${hasCount ? `<div class="inv-unit">1${i.count_unit} = ${i.count_ratio}${i.unit}</div>` : ''}
-              ${shelfBadge}
-              ${needInfo}
-              <button class="inv-hist-btn" onclick="App.togglePurchaseHistory(${i.id},this)">📋 採購記錄</button>
-              <div id="ph_${i.id}" style="display:none"></div>
+          <div class="inv-row${tone ? ' tone-' + tone : ''}">
+            <button class="inv-main" onclick="App.togglePurchaseHistory(${i.id},this)">
+              <span class="inv-name">${esc(i.name)}</span>
+              ${note ? `<span class="inv-note">${esc(note)}</span>` : ''}
+            </button>
+            <div class="inv-qty-wrap">
+              <div class="inv-qty">${qtyDisplay}</div>
+              ${qtySub}
             </div>
-            <div class="inv-qty">${qtyDisplay}</div>
-            <div class="inv-edit" onclick="App.openEditInv(${i.id},'${esc(i.name)}',${i.qty},'${i.unit}','${i.count_unit||''}',${i.count_ratio||1},${slDays})">✏️</div>
-          </div>`;
+            <button class="inv-edit" title="調整庫存與設定"
+              onclick="App.openEditInv(${i.id},'${esc(i.name)}',${i.qty},'${i.unit}','${i.count_unit||''}',${i.count_ratio||1},${slDays})">✎</button>
+          </div>
+          <div id="ph_${i.id}" class="inv-hist" style="display:none"></div>`;
       });
       html += '</div>';
     });
@@ -2799,14 +2805,24 @@ const App = (() => {
   async function togglePurchaseHistory(ingId, btn) {
     const box = document.getElementById(`ph_${ingId}`);
     if (!box) return;
-    if (box.style.display !== 'none') { box.style.display = 'none'; btn.textContent = '📋 採購記錄'; return; }
-    btn.textContent = '⏳ 載入中…';
+    // 整列現在就是那顆按鈕，裡面放著名稱與備註 ——
+    // 原本這裡是改 btn.textContent，那會把名稱和數量一起清掉。
+    // 狀態改用 class 表示，文字不動
+    const row = btn.closest ? btn.closest('.inv-row') : null;
+    const mark = open => { if (row) row.classList.toggle('open', open); };
+    if (box.style.display !== 'none') { box.style.display = 'none'; mark(false); return; }
+    mark(true);
     const rows = await api(`/api/inventory/${ingId}/purchases`);
     if (rows.length === 0) {
       box.innerHTML = '<div class="purchase-history"><div style="color:var(--text3);font-size:12px;padding:6px 0">尚無採購記錄</div></div>';
     } else {
       box.innerHTML = `<div class="purchase-history">${rows.map(r => {
-        const uc = r.qty > 0 ? `NT$${(r.total_price/r.qty).toFixed(2)}/${r.qty > 999 ? 'g' : '份'}` : '';
+        // 原本是 r.qty > 999 ? 'g' : '份' —— 拿數量大小猜單位。
+        // 買 800g 會標成「/份」，買 12 顆也標成「/份」，而換算後其實是 2640g。
+        // 單位就在資料裡，不必猜
+        const u = r.unit || '';
+        const uc = r.qty > 0
+          ? `NT$${(r.total_price / r.qty).toFixed(3)}${u ? '/' + u : ''}` : '';
         const purposeTag = r.purpose && r.purpose !== '精力湯'
           ? `<span class="ph-purpose">${esc(r.purpose)}</span>` : '';
         const typeTag = r.item_type === '用具' ? '<span class="ph-purpose" style="background:rgba(175,82,222,.1);color:var(--purple)">用具</span>' : '';
@@ -4600,7 +4616,9 @@ const App = (() => {
       ${t.subscription_cups ? `<span>訂閱 ${t.subscription_cups} 杯</span>` : ''}
       ${t.closed_days ? `<span>休診 ${t.closed_days} 天</span>` : ''}
       ${t.short_days ? `<span class="warn">${t.short_days} 天缺料</span>` : ''}
-    </div>`;
+    </div>
+    <div class="cal-hint">今天以前是<b>實際扣掉</b>的杯數（淡色），今天以後是<b>排定要做</b>的。
+      兩個數字意思不一樣，混成一欄會讓人以為昨天少做了。</div>`;
 
     // 格子從週一排起。ISO 的週一 = 1，週日 = 0，所以週日要補到最後
     const firstDow = new Date(d.first + 'T00:00:00').getDay();
@@ -4616,14 +4634,16 @@ const App = (() => {
         x.is_closed ? 'closed' : '',
         x.is_stocktake_day ? 'st' : ''
       ].filter(Boolean);
-      // 過去看實扣、今天以後看排定 —— 標籤講清楚是哪一個
+      // 過去看實扣、今天以後看排定。原本在格子裡寫「11 杯排」——
+      // 一個後綴塞兩個概念，手機上還會斷成兩行讓格子高低不齊。
+      // 格子只寫杯數，過去的那幾天用淡色表示「這是已經發生的」，
+      // 意思在上面的圖例和點開的細節裡講清楚
       const n = x.is_past ? x.served_cups : x.planned_cups;
-      const lbl = x.is_past ? '扣' : '排';
       cells.push(`<button class="cal-cell${we ? ' we' : ''}${x.is_closed ? ' closed' : ''}${
         x.is_today ? ' today' : ''}${_calSel === x.date ? ' sel' : ''}"
         onclick="App.calPick('${x.date}')">
         <span class="cal-day-num">${Number(x.date.slice(8))}</span>
-        ${n > 0 ? `<span class="cal-cups">${n}<small> 杯${lbl}</small></span>` : ''}
+        ${n > 0 ? `<span class="cal-cups${x.is_past ? ' was' : ''}">${n}<small> 杯</small></span>` : ''}
         <span class="cal-dots">${dots.map(c => `<i class="${c}"></i>`).join('')}</span>
       </button>`);
     });

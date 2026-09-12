@@ -1432,10 +1432,8 @@
       vertical-align: middle;
       box-shadow: 0 2px 6px rgba(239, 68, 68, 0.3);
     }
-    .inv-row-shortage {
-      background: rgba(239, 68, 68, 0.03);
-      border-left: 3px solid var(--red) !important;
-    }
+    /* 缺料改成左邊色帶（.tone-short），不再整條染底 ——
+       一片淡紅底會蓋掉「哪一樣真的缺」的對比 */
     .inv-need-row {
       font-size: 12px;
       color: var(--text2);
@@ -1917,53 +1915,60 @@
     }
 
     /* ── 庫存 ── */
+    /* 一列固定兩行：名稱＋數量，底下最多一句話。
+       狀態靠左邊那條色帶，不靠 emoji —— 28 列各掛一個 🔴 只會變雜訊 */
     .inv-row {
       display: flex;
       align-items: center;
-      gap: 16px;
-      padding: 14px 0;
+      gap: 10px;
+      padding: 10px 0 10px 10px;
       border-bottom: 1px solid var(--border);
+      border-left: 3px solid transparent;
+      margin-left: -13px;
+      min-height: 56px;
     }
-    .inv-row:last-child {
-      border-bottom: none;
+    .inv-row:last-of-type { border-bottom: none; }
+    .inv-row.tone-short { border-left-color: var(--red); }
+    .inv-row.tone-low   { border-left-color: var(--orange); }
+    /* 整列可以點開採購記錄。按鈕做成整塊，不是一顆小字連結 ——
+       站著操作時小連結點不到 */
+    .inv-main {
+      flex: 1; display: flex; flex-direction: column; gap: 1px;
+      background: none; border: none; padding: 4px 0; margin: 0;
+      text-align: left; cursor: pointer; font: inherit; color: inherit;
+      min-height: 40px; justify-content: center;
     }
-    .inv-name {
-      flex: 1;
-      font-size: 15px;
-      font-weight: 700;
-    }
-    .inv-unit {
-      font-size: 12px;
-      color: var(--text2);
-    }
-    .inv-qty {
-      font-family: var(--font-title);
-      font-size: 18px;
-      font-weight: 800;
-      min-width: 80px;
-      text-align: right;
-      color: var(--primary-dark);
-    }
+    .inv-name { font-size: 16px; font-weight: 500; }
+    .inv-note { font-size: 12.5px; color: var(--text2); }
+    .inv-row.tone-short .inv-note { color: var(--red); font-weight: 500; }
+    .inv-row.tone-low   .inv-note { color: var(--orange); }
+    .inv-unit { font-size: 12px; color: var(--text3); font-weight: 400; }
+    .inv-qty-wrap { text-align: right; min-width: 76px; }
+    .inv-qty { font-size: 18px; font-weight: 600; }
+    /* 採購講公斤、盤點講顆 —— 兩個單位都要看得到 */
+    .inv-qty-sub { font-size: 11px; color: var(--text3); }
     .inv-edit {
-      cursor: pointer;
-      color: var(--primary);
-      font-size: 14px;
-      padding: 4px;
-      border-radius: 6px;
-      transition: background-color 0.15s;
+      cursor: pointer; color: var(--text3); font-size: 17px;
+      padding: 8px 6px; border-radius: var(--radius-sm);
+      background: none; border: none; min-width: 36px; min-height: 36px;
     }
-    .inv-edit:hover {
-      background: var(--primary-light);
+    .inv-edit:hover { background: var(--bg); color: var(--text); }
+    .inv-hist { padding-left: 0; }
+    /* 點了整列會展開採購記錄。要有東西告訴人「這一列點得開」*/
+    .inv-main::after {
+      content: '›'; position: absolute; right: 0; top: 50%;
+      transform: translateY(-50%); color: var(--text3); font-size: 15px;
+      opacity: 0; transition: opacity .15s;
     }
+    .inv-main { position: relative; padding-right: 14px; }
+    .inv-row:hover .inv-main::after { opacity: 1; }
+    .inv-row.open .inv-main::after { opacity: 1; transform: translateY(-50%) rotate(90deg); }
     .cat-header {
-      font-family: var(--font-title);
       font-size: 12px;
-      font-weight: 800;
-      color: var(--primary);
-      letter-spacing: 1px;
-      padding: 18px 0 8px;
-      text-transform: uppercase;
-      border-bottom: 1.5px solid var(--primary-light);
+      font-weight: 600;
+      color: var(--text3);
+      letter-spacing: 0.5px;
+      padding: 20px 0 6px;
     }
 
     /* ── 成本 ── */
@@ -2238,6 +2243,12 @@
     .cal-cell.we .cal-day-num { color: var(--text3); }
     .cal-cups { font-size: 15px; font-weight: 700; line-height: 1.1; }
     .cal-cups small { font-size: 10px; font-weight: 500; color: var(--text3); }
+    /* 過去那幾天是「已經發生的」，用淡色跟未來的排定值分開 */
+    .cal-cups.was { color: var(--text2); font-weight: 500; }
+    .cal-hint {
+      font-size: 11.5px; color: var(--text3); line-height: 1.6; margin-bottom: 10px;
+    }
+    .cal-hint b { color: var(--text2); font-weight: 600; }
     .cal-dots { display: flex; gap: 3px; margin-top: auto; flex-wrap: wrap; }
     .cal-dots i {
       width: 6px; height: 6px; border-radius: 50%; display: block;
