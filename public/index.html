@@ -2213,6 +2213,15 @@
       color: var(--primary);
     }
 
+    /* 處方裡有、但廚房沒進過貨的食材。三種意思不一樣，
+       所以標籤顯示的是供應備註本身，沒填才顯示「沒有進貨紀錄」*/
+    .ie-nobuy {
+      font-size: 10.5px; padding: 1px 6px; border-radius: 999px; margin-left: 6px;
+      background: rgba(180, 83, 9, .12); color: var(--orange); font-weight: 600;
+      white-space: nowrap;
+    }
+    .ie-row-nobuy { background: rgba(180, 83, 9, .04); }
+
     /* 單價旁邊的筆數標籤。一個數字看不出穩不穩 ——
        「只 1 筆」跟「6 筆」的可信度差很多，而畫面原本兩者長得一樣 */
     .cb-uc { font-size: 11px; color: var(--text3); margin-left: 4px; }
@@ -3790,6 +3799,14 @@
       <label id="editInvQtyLabel">目前庫存量</label>
       <input id="editInvQty" type="number" min="0" step="0.1">
       <small id="editInvQtyHint" style="color:var(--text3);font-size:12px;margin-top:4px;display:none"></small>
+    </div>
+    <div class="form-group">
+      <label>供應備註</label>
+      <input id="editInvSupplyNote" placeholder="例如 不必進貨／客人自己準備">
+      <small style="color:var(--text3);font-size:11px;margin-top:4px;display:block">
+        這樣食材如果廚房不進貨，寫在這裡。處方頁會照這句話顯示 ——
+        留空就會標成「沒有進貨紀錄」，那是提醒該去登記進貨。
+      </small>
     </div>
     <div class="form-group">
       <label>盤點單位與換算</label>

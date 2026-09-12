@@ -322,6 +322,14 @@ try {
   //   prep_date = 料實際離開冰箱的日子
   // 週一為週二備料時，庫存要在週一就掉下去，但週二不能再扣一次
   "ALTER TABLE consumption_log ADD COLUMN prep_date TEXT DEFAULT ''",
+  // 「處方裡有、但廚房從來沒進過貨」有三種完全不同的意思，
+  // 而畫面上長得一模一樣：
+  //   水       不必進貨
+  //   肉桂粉   該進貨但沒登記 —— 成本因此少算
+  //   甜菜根   客人自己準備；真的要現場出的時候改用別的
+  // 這一欄就是讓它們在處方頁上分得出來。不做成分類是刻意的 ——
+  // 現在只有四樣，硬分類只會逼人把不合的塞進某一格
+  "ALTER TABLE ingredients ADD COLUMN supply_note TEXT DEFAULT ''",
   "INSERT OR IGNORE INTO settings (key,value) VALUES ('rotation_weeks','2')",
   "INSERT OR IGNORE INTO settings (key,value) VALUES ('rotation_anchor','2026-08-31')",
   // 同事訂閱：取餐日與單價。跟員工供應日（週二四）是兩條不同的線
@@ -1397,6 +1405,21 @@ function cardNumberIssues(text, item) {
   return [...new Set(out)];   // 同一個數字寫兩次，不必報兩次
 }
 
+// 2026-09-12 供應備註的起始值。只填 John 明確講過的那兩樣 ——
+// 肉桂粉與黑胡椒留空，因為那兩樣是「該進貨但沒登記」，
+// 留空才會顯示成待處理，填了說明反而會讓人以為處理過了
+function installSupplyNotes2026_09() {
+  if (db.prepare("SELECT 1 FROM settings WHERE key='supply_notes_2026_09'").get()) return;
+  tx(() => {
+    const up = db.prepare('UPDATE ingredients SET supply_note=? WHERE name=? AND COALESCE(supply_note,\'\')=\'\'');
+    up.run('不必進貨', '水');
+    up.run('客人自己準備；真的要現場出內用時改用火龍果', '甜菜根');
+    db.prepare("INSERT OR REPLACE INTO settings (key,value) VALUES ('supply_notes_2026_09',?)")
+      .run(new Date().toISOString().slice(0, 19).replace('T', ' '));
+  });
+  console.log('供應備註已填（水、甜菜根）');
+}
+
 function installMealSeeds() {
   updateFormulaB2026();
   switchLefuToThigh();
@@ -1408,6 +1431,7 @@ function installMealSeeds() {
   installProteinBoxCards2026_09();
   installAbeiCard2026_09();
   installLefuCardFix2026_09();
+  installSupplyNotes2026_09();
 }
 installMealSeeds();
 
@@ -2804,7 +2828,14 @@ app.get('/api/prescriptions/:id/history', (req, res) => {
 function safeParse(t) { try { return JSON.parse(t || 'null'); } catch (e) { return null; } }
 
 app.get('/api/prescriptions/:id/ingredients', (req, res) => {
-  const all = db.prepare('SELECT id, name, unit, category, sort_order FROM ingredients WHERE active=1 ORDER BY sort_order, category, name').all();
+  const all = db.prepare(
+    `SELECT i.id, i.name, i.unit, i.category, i.sort_order,
+            COALESCE(i.supply_note,'') supply_note,
+            COALESCE(inv.qty, 0) stock,
+            (SELECT COUNT(*) FROM purchase_log pl WHERE pl.ingredient_id = i.id) purchase_n
+       FROM ingredients i LEFT JOIN inventory inv ON inv.ingredient_id = i.id
+      WHERE i.active=1 ORDER BY i.sort_order, i.category, i.name`
+  ).all();
   const used = db.prepare(
     `SELECT pi.ingredient_id, pi.qty_per_cup, COALESCE(pi.prep,'') prep,
             COALESCE(pi.prep_stage,'') prep_stage
@@ -2902,6 +2933,9 @@ app.put('/api/ingredients/:id', (req, res) => {
         req.body.unit || ''}），否則採購與盤點會照基本單位算` });
   db.prepare('UPDATE ingredients SET count_unit=?, count_ratio=? WHERE id=?')
     .run(nextCountUnit, nextCountUnit ? nextCountRatio : 1, req.params.id);
+  if (req.body.supply_note !== undefined)
+    db.prepare('UPDATE ingredients SET supply_note=? WHERE id=?')
+      .run(String(req.body.supply_note || '').trim(), req.params.id);
 
   // 停用是軟停用：歷史採購、消耗紀錄與舊處方都還指向它，不能真的刪掉。
   // 原本只能新增不能停用，換掉的食材（甜椒、蘿蔓生菜）只好寫一次性遷移處理

@@ -2008,9 +2008,18 @@ const App = (() => {
       if (catItems.length === 0) return;
       html += `<div class="ie-cat">${cat}</div>`;
       catItems.forEach(i => {
+        // 處方裡有、但廚房從來沒進過貨的。三種意思不一樣，所以講出來：
+        //   有供應備註 → 照備註講（例如「客人自己準備」）
+        //   沒有備註   → 「沒有進貨紀錄」，那是成本算成 0 的原因
+        // 只標「這張處方真的會用到」的（qty>0），否則整張 49 樣會一片灰
+        const noBuy = i.purchase_n === 0 && i.qty_per_cup > 0;
+        const flag = !noBuy ? ''
+          : `<span class="ie-nobuy" title="${esc(i.supply_note
+              || '這樣食材從來沒有登記過採購，所以成本算成 0')}">${
+              esc(i.supply_note ? i.supply_note.slice(0, 14) : '沒有進貨紀錄')}</span>`;
         html += `
-          <div class="ie-row">
-            <span>${esc(i.name)}</span>
+          <div class="ie-row${noBuy ? ' ie-row-nobuy' : ''}">
+            <span>${esc(i.name)}${flag}</span>
             <span style="font-size:12px;color:var(--text2)">${i.unit}/份</span>
             <input type="number" min="0" step="0.1" value="${i.qty_per_cup}"
               data-ing-id="${i.id}" id="ing_${i.id}">
@@ -2274,12 +2283,18 @@ const App = (() => {
   function toggleSwitchAll()   { fcShowAllSwitch = !fcShowAllSwitch; renderForecast(); }
 
   // ── 庫存管理 ────────────────────────────────────────────
+  // 編輯視窗要的欄位（供應備註、換算比例）比列表傳得下去的參數多。
+  // 位置參數已經七個了，再加會變成一串記不住的東西 ——
+  // 所以把整份清單留著，視窗自己去查那一筆
+  let _invRows = [];
+
   async function loadInventory() {
     renderForecast();          // 不等它，庫存清單先出來
     const [items, checkRes] = await Promise.all([
       api('/api/inventory'),
       api('/api/inventory/check')
     ]);
+    _invRows = items;
     // Build shortage map by ingredient_id
     const shortageMap = {};
     (checkRes.check || []).forEach(c => { shortageMap[c.ingredient_id] = c; });
@@ -2379,6 +2394,9 @@ const App = (() => {
     document.getElementById('editInvId').value = id;
     _editInvUnit = unit;
     document.getElementById('editInvBaseUnit').textContent = unit;
+    // 供應備註存在 ingredients 上，列表那邊沒往下傳 —— 直接從清單裡查
+    const row = (_invRows || []).find(r => r.id === id) || {};
+    document.getElementById('editInvSupplyNote').value = row.supply_note || '';
     document.getElementById('editInvCountUnit').value = countUnit || '';
     document.getElementById('editInvCountRatio').value = countRatio || 1;
     document.getElementById('editInvShelfLife').value = shelfLifeDays || 0;
@@ -2412,7 +2430,8 @@ const App = (() => {
     try {
       // 換算比例存在 ingredients 上，庫存量存在 inventory 上 —— 兩張表，一次動作
       await api(`/api/ingredients/${id}`, 'PUT',
-        { count_unit: countUnit, count_ratio: countRatio, unit: _editInvUnit });
+        { count_unit: countUnit, count_ratio: countRatio, unit: _editInvUnit,
+          supply_note: document.getElementById('editInvSupplyNote').value.trim() });
       await Promise.all([
         api(`/api/inventory/${id}`, 'PUT', { qty }),
         api(`/api/ingredients/${id}`, 'PATCH', { shelf_life_days })
