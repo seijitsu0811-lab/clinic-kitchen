@@ -73,8 +73,13 @@ await api('/api/purchase/draft', 'PUT', { ingredient_id: a.id, qty: 820 });
 await api('/api/purchase/draft', 'PUT', { ingredient_id: b.id, qty: 300 });
 
 line('\n━━ 4. 整批登記 ━━');
+// 每次跑都送一樣的數字，所以第二次跑會撞到「同日期同數量同金額」的
+// 重複把關（那道把關是對的，見 test-costavg）。這裡明確帶 confirm_duplicate，
+// 因為從 API 的角度看這就是「我知道，同規格買兩包」那種情況。
+// 不帶的話這支測試會在第二次執行時整支跑不完。
 const before = await inv();
 const r = await api('/api/purchase/commit', 'POST', {
+  confirm_duplicate: true,
   lines: [
     { ingredient_id: a.id, qty: 820, total_price: 410 },
     { ingredient_id: b.id, qty: 300, total_price: 600 }
@@ -94,7 +99,9 @@ line('\n━━ 4.5 昨天買的要記成昨天 ━━');
 const yest = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
 const b45 = await inv();
 await api('/api/purchase/commit', 'POST', {
-  date: yest, lines: [{ ingredient_id: b.id, qty: 50, total_price: 100 }]
+  // 同上：每次跑都送一樣的數字，重複把關會擋，所以明確確認
+  date: yest, confirm_duplicate: true,
+  lines: [{ ingredient_id: b.id, qty: 50, total_price: 100 }]
 });
 // 清單是照日期排的，昨天那筆不會排在最前面 —— 要找剛才建的那一筆
 const h45 = await api(`/api/inventory/${b.id}/purchases`);
@@ -121,6 +128,7 @@ await api('/api/purchase/draft', 'PUT', { ingredient_id: a.id, qty: 100 });
 await api('/api/purchase/draft', 'PUT', { ingredient_id: b.id, qty: 100 });
 const before6 = await inv();
 const r6 = await api('/api/purchase/commit', 'POST', {
+  confirm_duplicate: true,   // 測試每次送一樣的數字，重複把關會擋
   lines: [
     { ingredient_id: a.id, qty: 100, total_price: 50 },
     { ingredient_id: b.id, qty: 100, total_price: '' }      // 還在等發票
@@ -141,6 +149,7 @@ line('\n━━ 6.5 登記錯食材可以改過去 ━━');
 await api('/api/purchase/draft', 'PUT', { ingredient_id: a.id, remove: 1 }).catch(() => {});
 const beforeMove = await inv();
 await api('/api/purchase/commit', 'POST', {
+  confirm_duplicate: true,   // 測試每次送一樣的數字，重複把關會擋
   lines: [{ ingredient_id: a.id, qty: 250, total_price: 125 }]
 });
 const wrong = (await api(`/api/inventory/${a.id}/purchases`))

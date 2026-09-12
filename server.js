@@ -1912,7 +1912,14 @@ function getSettings() {
   // 用 parseFloat 會被悄悄截成 2026 和 1，讀到的人不會發現出了錯
   db.prepare('SELECT key,value FROM settings').all().forEach(r => {
     const raw = String(r.value ?? '').trim();
-    s[r.key] = /^-?d+(.d+)?$/.test(raw) ? parseFloat(raw) : r.value;
+    // 這個 regex 的反斜線曾經掉過（變成 /^-?d+(.d+)?$/），
+    // 那樣 d 是字面上的字母 d、. 配任何字元 —— 結果「90」「250」全部
+    // 留成字串，只有「d」「dxd」會被當成數字。等於這一行從來沒生效。
+    //
+    // 當時沒有算錯任何數字，純粹是運氣：用它的兩個地方一個用 *（會自動轉型）、
+    // 一個有自己的 num()。但下一個寫 settings.full_formula_price + x 的人就會中，
+    // 而同一種 bug 已經讓人工成本被算成 6.6 倍過一次（見 laborParams 的註解）。
+    s[r.key] = /^-?\d+(\.\d+)?$/.test(raw) ? parseFloat(raw) : r.value;
   });
   return s;
 }
@@ -1945,6 +1952,38 @@ function buildUnitCostCache(settings) {
 
 function unitCost(ingredientId) {
   return buildUnitCostCache()[ingredientId] || 0;
+}
+
+// 每樣食材的單價是幾筆採購算出來的。
+//
+// 成本頁原本只給一個數字，看不出它穩不穩。窗口內只剩一筆的時候，
+// 那一筆就決定整份配方的成本 —— 而且它會隨著舊紀錄滑出 90 天窗口
+// 自己跳動（橄欖油 −20%、蛋白粉 +17%，什麼都不做也會變）。
+// 幾筆算出來的，跟數字本身一樣重要。
+function unitCostDetail(settings) {
+  const st = settings || getSettings();
+  const from = costLookbackFrom(st);
+  const out = {};
+  const rowsAll = db.prepare(
+    `SELECT ingredient_id id, COUNT(*) n, SUM(total_price) tp, SUM(qty) tq,
+            MIN(purchased_at) first, MAX(purchased_at) last
+       FROM purchase_log GROUP BY ingredient_id`
+  ).all();
+  rowsAll.forEach(r => {
+    out[r.id] = { price: r.tq > 0 ? r.tp / r.tq : 0, n: r.n,
+                  source: 'history', first: r.first, last: r.last };
+  });
+  if (from) {
+    db.prepare(
+      `SELECT ingredient_id id, COUNT(*) n, SUM(total_price) tp, SUM(qty) tq,
+              MIN(purchased_at) first, MAX(purchased_at) last
+         FROM purchase_log WHERE purchased_at >= ? GROUP BY ingredient_id`
+    ).all(from).forEach(r => {
+      if (r.tq > 0) out[r.id] = { price: r.tp / r.tq, n: r.n,
+                                  source: 'window', first: r.first, last: r.last };
+    });
+  }
+  return { from, detail: out };
 }
 
 // ── 工時 ──────────────────────────────────────────────────
@@ -2942,6 +2981,24 @@ function toBaseQty(ing, qty, inputUnit) {
   }
 }
 
+// 同一張發票被登記兩次。
+//
+// 單價把關抓不到這件事 —— 重複那一筆的單價完全正確。
+// 傷害在兩個地方：庫存被加兩次（帳面多出不存在的貨），
+// 而那個價格點拿到雙倍權重，均價會往它靠。
+//
+// 不擋死，只要確認：同規格同價買兩包是真的會發生的事
+// （2026-08-27 那天蘋果就在同一張單裡出現兩行，數量不同）。
+function duplicateCheck(ingredientId, purchasedAt, baseQty, totalPrice) {
+  const row = db.prepare(
+    `SELECT id, qty, total_price FROM purchase_log
+      WHERE ingredient_id=? AND purchased_at=?
+        AND ABS(qty - ?) < 0.01 AND ABS(total_price - ?) < 0.01
+      LIMIT 1`
+  ).get(ingredientId, purchasedAt, baseQty, totalPrice);
+  return row || null;
+}
+
 // 這一筆的單價跟過去差幾倍。差一兩倍是行情，差一百倍是單位填錯 ——
 // 後者會把均價永久拉歪，而且看起來只是「有點貴」，不像壞掉
 function oddPriceCheck(ingredientId, baseQty, totalPrice) {
@@ -2973,6 +3030,15 @@ app.post('/api/inventory/purchase', (req, res) => {
   if (qty == null)
     return res.status(400).json({
       error: `「${req.body.input_unit}」換不成 ${ing.name} 的單位（${ing.unit}）` });
+
+  // 同一張發票登記兩次。庫存會被加兩次，均價也會往那個價格靠
+  const when = purchased_at || today();
+  const dup = duplicateCheck(ing.id, when, qty, total_price);
+  if (dup && !req.body.confirm_duplicate)
+    return res.status(409).json({
+      error: `${when} 已經有一筆一模一樣的 ${ing.name}（${qty} ${ing.unit}、${total_price} 元）。`
+           + '同規格買兩包的話按確認就好；如果是同一張發票登記兩次，庫存會多算一份。',
+      duplicate_of: dup.id, needs_confirm: true });
 
   // 單價離譜就先擋下來。擋錯了按一下確認就過，擋不住的話均價會歪 90 天
   const odd = oddPriceCheck(ing.id, qty, total_price);
@@ -3065,7 +3131,7 @@ app.post('/api/purchase/commit', (req, res) => {
   // 先整批檢查，再整批寫入。一筆單價離譜就整批不寫 ——
   // 寫一半再報錯的話，人會不知道哪幾樣進去了、哪幾樣沒有，
   // 然後重按一次，同一批就進了兩次
-  const odds = [];
+  const odds = [], dups = [];
   const converted = [];
   for (const l of lines) {
     const id = Number(l.ingredient_id);
@@ -3080,7 +3146,15 @@ app.post('/api/purchase/commit', (req, res) => {
     converted.push({ id, qty: q, price, line: l });
     const odd = oddPriceCheck(id, q, price);
     if (odd) odds.push({ name: ing.name, unit: ing.unit, ...odd });
+    const dup = duplicateCheck(id, date, q, price);
+    if (dup) dups.push({ name: ing.name, unit: ing.unit, qty: q, price, of: dup.id });
   }
+  if (dups.length && !req.body.confirm_duplicate)
+    return res.status(409).json({
+      error: date + ' 已經有一模一樣的紀錄：'
+           + dups.map(d => `${d.name} ${d.qty} ${d.unit} / ${d.price} 元`).join('、')
+           + '。同規格買兩包的話按確認就好；如果是同一張發票登記兩次，庫存會多算一份。',
+      dups, needs_confirm: true });
   if (odds.length && !req.body.confirm_odd_price)
     return res.status(409).json({
       error: '有 ' + odds.length + ' 樣的單價跟過去差太多，先確認單位有沒有填錯：'
@@ -4523,6 +4597,7 @@ app.get('/api/costs', (req, res) => {
   // 處方成本參考表用「攤到每杯」的工時；當日實際成本則走 calcDailyCost
   const laborCostPerCup = laborPerCup(lp, staffProd ? staffProd.batch_size : 3);
   const ucCache = buildUnitCostCache(settings);
+  const ucDetail = unitCostDetail(settings);
 
   // 今日實際成本（按產品）
   const todayCost = calcDailyCost(today(), ucCache, lp);
@@ -4542,9 +4617,15 @@ app.get('/api/costs', (req, res) => {
       const uc = ucCache[it.iid] || 0;
       const cost = uc * it.qty_per_cup;
       ingCost += cost;
+      const d = ucDetail.detail[it.iid];
       return { name: it.name, unit: it.unit, category: it.category,
                qty: it.qty_per_cup, qty_per_cup: it.qty_per_cup,
-               unit_cost: Math.round(uc * 1000) / 1000, cost: Math.round(cost * 10) / 10 };
+               unit_cost: Math.round(uc * 1000) / 1000, cost: Math.round(cost * 10) / 10,
+               // 這個單價是幾筆採購算出來的。1 筆＝很脆，0 筆＝根本沒進過貨
+               price_n: d ? d.n : 0,
+               // window = 窗口內有採購；history = 窗口內沒有，退回用全部歷史（價可能已經過時）
+               price_source: d ? d.source : 'none',
+               price_last: d ? d.last : null };
     });
 
     return {
@@ -4564,6 +4645,9 @@ app.get('/api/costs', (req, res) => {
       batch_size: staffProd ? staffProd.batch_size : 3
     },
     cost_lookback_days: settings.cost_lookback_days || 0,
+    // 窗口起點。畫面上要講得出「只看這天以後的採購」，
+    // 不然單價為什麼跳動沒人說得清
+    cost_window_from: ucDetail.from,
     today: todayCost, prescriptions
   });
 });
@@ -4571,8 +4655,7 @@ app.get('/api/costs', (req, res) => {
 // 月報：某月每日成本 + 月合計
 app.get('/api/costs/monthly', (req, res) => {
   const month = (req.query.month || today().slice(0, 7)).slice(0, 7);
-  const settings = {};
-  db.prepare('SELECT key,value FROM settings').all().forEach(r => { settings[r.key] = parseFloat(r.value); });
+  const settings = getSettings();
   const lp = laborParams(settings);
   const ucCache = buildUnitCostCache(settings);
 

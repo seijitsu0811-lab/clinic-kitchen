@@ -2486,7 +2486,7 @@ const App = (() => {
     } catch (e) { alert(e.message); }
   }
 
-  async function commitPurchaseDraft(confirmOdd) {
+  async function commitPurchaseDraft(confirmOdd, confirmDup) {
     const rows = [...document.querySelectorAll('#purchaseDraft .pd-row')].map(el => ({
       ingredient_id: Number(el.dataset.ing),
       qty:         el.querySelector('.pd-qty').value,
@@ -2496,14 +2496,19 @@ const App = (() => {
     if (!willSave.length) return alert('至少要填一樣的金額');
     try {
       const r = await api('/api/purchase/commit', 'POST',
-        { lines: rows, confirm_odd_price: !!confirmOdd });
+        { lines: rows, confirm_odd_price: !!confirmOdd, confirm_duplicate: !!confirmDup });
       await _renderPurchaseDraft();
       loadInventory();
       alert(`已登記 ${r.saved} 樣` + (r.skipped ? `，${r.skipped} 樣沒填金額，留在籃子裡。` : '。'));
     } catch (e) {
-      // 一筆離譜就整批不寫，所以這裡確認完要整批重送，不會只進一半
+      // 一筆有問題就整批不寫，所以確認完要整批重送，不會只進一半
+      if (/已經有一模一樣的紀錄/.test(e.message)) {
+        if (confirm(e.message + '\n\n確定要整批登記？'))
+          return commitPurchaseDraft(confirmOdd, true);
+        return;
+      }
       if (/差太多/.test(e.message) && confirm(e.message + '\n\n確定要照這樣整批登記？')) {
-        return commitPurchaseDraft(true);
+        return commitPurchaseDraft(true, confirmDup);
       }
       alert(e.message);
     }
@@ -2565,7 +2570,7 @@ const App = (() => {
     return n;
   }
 
-  async function savePurchase(confirmOdd) {
+  async function savePurchase(confirmOdd, confirmDup) {
     const ingredient_id = document.getElementById('purchaseIng').value;
     const qty = parseFloat(document.getElementById('purchaseQty').value);
     const input_unit = document.getElementById('purchaseUnit').value;
@@ -2578,16 +2583,22 @@ const App = (() => {
       const r = await api('/api/inventory/purchase', 'POST', {
         ingredient_id, qty, input_unit, total_price, purchased_at, item_type, purpose,
         user_id: currentUser?.id || null,
-        confirm_odd_price: !!confirmOdd
+        confirm_odd_price: !!confirmOdd,
+        confirm_duplicate: !!confirmDup
       });
       closeModal('modalPurchase');
       loadInventory();
       alert(`進貨記錄已儲存　${r.base_qty} ${r.unit}　單價 NT$${r.unit_price}`);
     } catch (e) {
-      // 單價跟過去差五倍以上就會被擋。擋錯了按確認就過 ——
-      // 擋不住的話那樣食材的均價會歪 90 天，而且看起來只是「有點貴」
+      // 兩種擋法，訊息不一樣，要分開處理：
+      //   單價差五倍以上 → 可能是單位填錯
+      //   同日期同數量同金額 → 可能是同一張發票登記兩次
+      if (/已經有一筆一模一樣/.test(e.message)) {
+        if (confirm(e.message + '\n\n確定要再登記一筆？')) return savePurchase(confirmOdd, true);
+        return;
+      }
       if (/差 [\d.]+ 倍/.test(e.message) && confirm(e.message + '\n\n確定要照這樣登記？')) {
-        return savePurchase(true);
+        return savePurchase(true, confirmDup);
       }
       alert(e.message);
     }
@@ -2759,6 +2770,10 @@ const App = (() => {
     let html = `
       <div class="card" style="margin-bottom:12px">
         <div class="card-title">人工設定</div>
+        <div class="row"><span class="row-label">單價怎麼算</span><span class="row-value">${
+          data.cost_window_from
+            ? `只看 ${esc(data.cost_window_from)} 之後的採購（總金額 ÷ 總數量）`
+            : '用全部歷史的採購（總金額 ÷ 總數量）'}</span></div>
         <div class="row"><span class="row-label">費率</span><span class="row-value">NT$${s.labor_rate||250}/小時</span></div>
         <div class="row"><span class="row-label">製作時間</span><span class="row-value">${s.labor_min_per_cup||15} 分/份 → NT$${data.labor_cost_per_cup}/份</span></div>
       </div>`;
@@ -2783,11 +2798,33 @@ const App = (() => {
               </div>
             </div>
             <div class="cost-breakdown" style="margin-top:10px">
-              ${rx.breakdown.filter(b => b.cost > 0).map(b => `
+              ${rx.breakdown.filter(b => b.cost > 0).map(b => {
+                // 單價本身看不出穩不穩。窗口內只剩一筆的時候，
+                // 那一筆就決定整份配方的成本，而且它會隨著舊紀錄滑出
+                // 90 天窗口自己跳動 —— 什麼都不做，成本也會變。
+                // 所以把「幾筆算出來的」標在旁邊
+                const n = b.price_n;
+                let tag = '', tip = '';
+                if (b.price_source === 'none' || !n) {
+                  tag = '<span class="cb-warn">沒有進貨紀錄</span>';
+                  tip = '這一樣從來沒有登記過採購，所以成本算成 0';
+                } else if (b.price_source === 'history') {
+                  tag = `<span class="cb-warn">窗口外・${esc(b.price_last || '')}</span>`;
+                  tip = '回溯期間內沒有採購，用的是全部歷史的舊價';
+                } else if (n === 1) {
+                  tag = '<span class="cb-thin">只 1 筆</span>';
+                  tip = '回溯期間內只有一筆採購，這個單價由那一筆決定，會隨它滑出窗口而跳動';
+                } else {
+                  tag = `<span class="cb-n">${n} 筆</span>`;
+                }
+                return `
                 <div class="cb-row">
-                  <span style="color:var(--text2)">${esc(b.name)} ×${b.qty}${b.unit}</span>
+                  <span style="color:var(--text2)" ${tip ? `title="${esc(tip)}"` : ''}>${
+                    esc(b.name)} ×${b.qty}${b.unit}
+                    <span class="cb-uc">${b.unit_cost} 元/${esc(b.unit)}</span> ${tag}</span>
                   <span>NT$${b.cost}</span>
-                </div>`).join('')}
+                </div>`;
+              }).join('')}
               <div class="cb-row" style="font-weight:700">
                 <span>食材小計</span><span>NT$${rx.ingredient_cost}</span>
               </div>

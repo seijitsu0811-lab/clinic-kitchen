@@ -2213,6 +2213,17 @@
       color: var(--primary);
     }
 
+    /* 單價旁邊的筆數標籤。一個數字看不出穩不穩 ——
+       「只 1 筆」跟「6 筆」的可信度差很多，而畫面原本兩者長得一樣 */
+    .cb-uc { font-size: 11px; color: var(--text3); margin-left: 4px; }
+    .cb-n, .cb-thin, .cb-warn {
+      font-size: 10.5px; padding: 1px 6px; border-radius: 999px; margin-left: 4px;
+      white-space: nowrap;
+    }
+    .cb-n    { background: var(--bg); color: var(--text3); }
+    .cb-thin { background: rgba(180, 83, 9, .12); color: var(--orange); font-weight: 600; }
+    .cb-warn { background: rgba(199, 38, 27, .10); color: var(--red); font-weight: 600; }
+
     /* ── 行事曆 ── */
     .cal-bar {
       display: flex; align-items: center; gap: 8px;
