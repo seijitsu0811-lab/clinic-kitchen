@@ -84,11 +84,16 @@ const users = rxs.filter(r => r.produce_plan_group);
 check('有處方引用這個方案', users.length > 0, users.map(r => r.code).join('、'));
 if (users.length) {
   const n = await api('/api/nutrition/prescription/' + users[0].id);
-  const cur = (await plans()).find(p => p.code === 'PLAN-A');
+  // 要比的是「今天真正生效的那個方案」，不是寫死的 PLAN-A。
+  // 方案兩週一輪，所以有一半的日子生效的是 PLAN-B ——
+  // 寫死 PLAN-A 的話，那些日子會把 B 獨有的用料全部報成「缺了」。
+  // 這一組驗的是「改方案會影響到引用它的人」，跟是哪一個方案無關。
+  const activeCode = (await api('/api/rotation/plan')).plan.code;
+  const cur = (await plans()).find(p => p.code === activeCode);
   const planNames = new Set(cur.items.filter(i => i.qty_per_cup > 0).map(i => i.name));
   const got = new Set(n.breakdown.filter(b => (b.qty ?? b.qty_per_cup) > 0).map(b => b.name));
   const missing = [...planNames].filter(x => !got.has(x));
-  check('方案的每一樣都出現在他的有效配方裡', missing.length === 0,
+  check(`${cur.name}（今天生效）的每一樣都出現在他的有效配方裡`, missing.length === 0,
         missing.join('、') || `${users[0].code} 湊出 ${got.size} 樣`);
 }
 

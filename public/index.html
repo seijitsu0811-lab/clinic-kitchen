@@ -2213,6 +2213,13 @@
       color: var(--primary);
     }
 
+    /* 採購列的備註。寫下當下才知道的事：哪個品牌、幾包、是不是補登的 */
+    .ph-note {
+      font-size: 10.5px; padding: 1px 6px; border-radius: 999px;
+      background: var(--bg); color: var(--text2); white-space: nowrap;
+      max-width: 160px; overflow: hidden; text-overflow: ellipsis;
+    }
+
     /* 處方裡有、但廚房沒進過貨的食材。三種意思不一樣，
        所以標籤顯示的是供應備註本身，沒填才顯示「沒有進貨紀錄」*/
     .ie-nobuy {

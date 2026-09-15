@@ -2882,8 +2882,12 @@ const App = (() => {
         const purposeTag = r.purpose && r.purpose !== '精力湯'
           ? `<span class="ph-purpose">${esc(r.purpose)}</span>` : '';
         const typeTag = r.item_type === '用具' ? '<span class="ph-purpose" style="background:rgba(175,82,222,.1);color:var(--purple)">用具</span>' : '';
+        // 備註是這一筆的出處。沒有它的話，兩筆一樣的紀錄事後分不出
+        // 「買兩包」和「登記兩次」—— 鳳梨那組就是這樣
+        const noteTag = r.note
+          ? `<span class="ph-note" title="${esc(r.note)}">${esc(r.note.slice(0, 20))}</span>` : '';
         return `<div class="ph-row" id="phr_${r.id}">
-          <span class="ph-date">${r.purchased_at}</span>
+          <span class="ph-date">${r.purchased_at}</span>${noteTag}
           <span class="ph-qty">${r.qty}${r.unit||''}</span>
           <span class="ph-price">NT$${r.total_price}</span>
           <span class="ph-uc">${uc}</span>

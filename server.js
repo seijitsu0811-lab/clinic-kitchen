@@ -330,6 +330,10 @@ try {
   // 這一欄就是讓它們在處方頁上分得出來。不做成分類是刻意的 ——
   // 現在只有四樣，硬分類只會逼人把不合的塞進某一格
   "ALTER TABLE ingredients ADD COLUMN supply_note TEXT DEFAULT ''",
+  // 一列採購沒有出處，事後就分不清它是什麼。
+  // 2026-08-27 那兩筆一模一樣的鳳梨就是這樣 —— 是買兩包，還是同一張發票
+  // 登記了兩次，誰也講不出來。有備註的話當下寫一句就省掉後來的考古
+  "ALTER TABLE purchase_log ADD COLUMN note TEXT DEFAULT ''",
   "INSERT OR IGNORE INTO settings (key,value) VALUES ('rotation_weeks','2')",
   "INSERT OR IGNORE INTO settings (key,value) VALUES ('rotation_anchor','2026-08-31')",
   // 同事訂閱：取餐日與單價。跟員工供應日（週二四）是兩條不同的線
@@ -3059,7 +3063,7 @@ function oddPriceCheck(ingredientId, baseQty, totalPrice) {
 }
 
 app.post('/api/inventory/purchase', (req, res) => {
-  const { ingredient_id, total_price, purchased_at, user_id, item_type, purpose } = req.body;
+  const { ingredient_id, total_price, purchased_at, user_id, item_type, purpose, note } = req.body;
   const ing = db.prepare(
     `SELECT id, name, unit, COALESCE(count_unit,'') count_unit, COALESCE(count_ratio,1) count_ratio
        FROM ingredients WHERE id=?`).get(ingredient_id);
@@ -3090,8 +3094,10 @@ app.post('/api/inventory/purchase', (req, res) => {
 
   tx(() => {
     db.prepare(
-      `INSERT INTO purchase_log (ingredient_id,qty,total_price,purchased_at,user_id,item_type,purpose) VALUES (?,?,?,?,?,?,?)`
-    ).run(ingredient_id, qty, total_price, purchased_at || today(), user_id||null, item_type||'食材', purpose||'精力湯');
+      `INSERT INTO purchase_log (ingredient_id,qty,total_price,purchased_at,user_id,item_type,purpose,note)
+       VALUES (?,?,?,?,?,?,?,?)`
+    ).run(ingredient_id, qty, total_price, purchased_at || today(), user_id||null,
+          item_type||'食材', purpose||'精力湯', String(note || '').trim());
     db.prepare(
       `INSERT INTO inventory (ingredient_id,qty,updated_at) VALUES (?,?,datetime('now','localtime'))
        ON CONFLICT(ingredient_id) DO UPDATE SET qty=qty+excluded.qty, updated_at=excluded.updated_at`
@@ -3214,10 +3220,10 @@ app.post('/api/purchase/commit', (req, res) => {
         skipped++; return;
       }
       db.prepare(
-        `INSERT INTO purchase_log (ingredient_id,qty,total_price,purchased_at,user_id,item_type,purpose)
-         VALUES (?,?,?,?,?,?,?)`
+        `INSERT INTO purchase_log (ingredient_id,qty,total_price,purchased_at,user_id,item_type,purpose,note)
+         VALUES (?,?,?,?,?,?,?,?)`
       ).run(id, qty, price, date, req.kitchenUser ? req.kitchenUser.id : null,
-            l.item_type || '食材', l.purpose || '精力湯');
+            l.item_type || '食材', l.purpose || '精力湯', String(l.note || '').trim());
       db.prepare(
         `INSERT INTO inventory (ingredient_id,qty,updated_at) VALUES (?,?,datetime('now','localtime'))
          ON CONFLICT(ingredient_id) DO UPDATE SET qty=qty+excluded.qty, updated_at=excluded.updated_at`

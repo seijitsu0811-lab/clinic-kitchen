@@ -32,6 +32,13 @@ const rxs = await api('/api/prescriptions');
 let target = null, veg = null, pow = null;
 for (const r of rxs) {
   if (r.is_staff_rx) continue;
+  // 「每日固定供應」與「每週攤平」那兩種不能挑：cupsOnDate 對它們的規則是
+  // 「有單就以單為準」，所以加一張 4 杯的單，總數只會多 3 杯（單取代預設）。
+  // 那樣量出來的差值就不是我要驗的東西。
+  //
+  // 原本沒有這道過濾，於是這支測試只在週末會過 —— 週末每日供應不生效，
+  // 差值剛好乾淨。一週有五天會紅燈的測試，遲早被當成雜訊。
+  if ((r.daily_cups || 0) > 0 || (r.weekly_cups || 0) > 0) continue;
   const items = (await api('/api/prescriptions/' + r.id + '/ingredients'))
     .filter(i => i.qty_per_cup > 0);
   const v = items.find(i => i.category === '蔬菜' || i.category === '水果');
@@ -98,19 +105,23 @@ line('\n━━ 2. 袋裝基底粉：只算粉，不算菜 ━━');
 
 line('\n━━ 3. 罐裝基底粉也一樣，而且粉要 ×1.1 ━━');
 {
+  // 比的是「這張單造成的差值」，不是當天的總數。
+  // 總數裡含著員工那幾杯的粉，那部分不乘 1.1 ——
+  // 拿總數去算比例，員工杯數一多，比例就會被稀釋成 1.07、1.03…
   const v0 = await needOf(today, veg.name);
+  const pBase = await needOf(today, pow.name);
   const pBag = await (async () => {
     const o = await mk('袋裝');
     const n = await needOf(today, pow.name);
     await api('/api/today/cases/' + (o.id || o.order_id), 'DELETE');
-    return n;
+    return n - pBase;
   })();
   const oCan = await mk('罐裝');
   const v1 = await needOf(today, veg.name);
-  const pCan = await needOf(today, pow.name);
+  const pCan = (await needOf(today, pow.name)) - pBase;
   check('罐裝也不算菜', Math.abs(v1 - v0) < 0.5, `${veg.name} ${v0} → ${v1}`);
-  check('罐裝的粉是袋裝的 1.1 倍', Math.abs(pCan / pBag - 1.1) < 0.02,
-        `袋裝 ${pBag} → 罐裝 ${pCan}（${(pCan / pBag).toFixed(2)} 倍）`);
+  check('罐裝的粉是袋裝的 1.1 倍', pBag > 0 && Math.abs(pCan / pBag - 1.1) < 0.02,
+        `這張單貢獻：袋裝 ${pBag} → 罐裝 ${pCan}（${pBag > 0 ? (pCan / pBag).toFixed(2) : '?'} 倍）`);
   await api('/api/today/cases/' + (oCan.id || oCan.order_id), 'DELETE');
 }
 
