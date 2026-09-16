@@ -115,6 +115,38 @@ line('\n━━ 5. 挑店選單算的是主餐數 ━━');
         app.includes("'&series=' + encodeURIComponent(sr.value) + '&lock=1'"),
         '遞出去的那台裝置才是真正要鎖的');
 }
+line('\n━━ 6. 店名只能出現在個管師那一面 ━━');
+// 店名是個管師要的（他口頭說「這是蛋白盒子那家」，畫面上要對得上），
+// 但客人那一支 API 從頭到尾不回傳 vendor —— 那是後端守的界線。
+//
+// 所以店名得從管理端那一支另外抓。而鎖定的那一份是遞到客人手上的：
+// 資料一旦進了那個頁面的記憶體，界線就只剩「畫面上沒顯示」在守，那不算守。
+// 這一組驗的是「鎖定時根本不去抓」，不是「抓了但沒顯示」。
+{
+  const html = await page('?mode=staff');
+  check('個管師那一面會去抓店名',
+        html.includes("await fetch('/api/meals/menu', { headers })"),
+        '從管理端那一支拿');
+  const guarded = /if \(!locked\) \{[\s\S]{0,400}?\/api\/meals\/menu'/.test(html);
+  check('抓店名這件事掛在「沒鎖定」之下', guarded,
+        guarded ? '鎖定的那一份不去抓 —— 資料不進頁面，才叫守住'
+                : '★ 沒守住：店名會進到遞出去的那個頁面');
+  check('還有第二道：客人模式一律不顯示店名',
+        html.includes('body.guest .vendor { display: none; }'),
+        'CSS 那一層擋，萬一哪天邏輯被改壞還有一層');
+  check('店名只在個管師模式才渲染',
+        html.includes("mode === 'staff' && vendorOf[s.id]"),
+        '不是「抓了再用 CSS 藏起來」');
+
+  // 客人那一支 API 仍然一家店名都不能有。test-casemenu 也在盯這件事，
+  // 但鎖定這次動了那支 API 的回傳欄位（多了 item_type），所以再確認一次
+  const blob = JSON.stringify(await api('/api/meals/menu/case'));
+  const vendors = (await api('/api/meals/menu')).vendors.map(v => v.name);
+  const leaked = vendors.filter(v => blob.includes(v));
+  check('客人的資料裡一家店名都沒有', leaked.length === 0,
+        leaked.join('、') || vendors.length + ' 家都沒出現');
+}
+
 
 line(`\n${'─'.repeat(48)}\n通過 ${pass} 項，失敗 ${fail} 項`);
 process.exit(fail ? 1 : 0);

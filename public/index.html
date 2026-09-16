@@ -2401,6 +2401,27 @@
       background: var(--primary); border-color: var(--primary); color: #fff;
     }
 
+    /* 遞給客人：把個管師看的東西收起來。
+       挑人那一排上面寫著個案的名字和店名 —— 手機遞出去就被看到了 */
+    .handover-end { display: none; }
+    #mealSection-case.handover .section-head,
+    #mealSection-case.handover .cm-pick,
+    #mealSection-case.handover .cm-note { display: none; }
+    /* 遞出去之後畫面上只剩菜單。分頁列、子分頁、頂部那一條全部收起來 ——
+       留著任何一顆按鈕，客人就按得進庫存或處方 */
+    body.handover .topbar-head,
+    body.handover .tabs,
+    body.handover .tabbar,
+    body.handover .meal-subtabs { display: none !important; }
+    body.handover .page { padding-top: 0; }
+    #mealSection-case.handover .handover-end {
+      display: block; margin: 0 0 8px; padding: 5px 10px;
+      font-size: 11.5px; color: var(--text3);
+      background: none; border: 1px solid var(--border);
+      border-radius: var(--radius-sm); cursor: pointer;
+    }
+    #mealSection-case.handover #cmFrame { border: none; }
+
     /* ── 同事訂閱 ── */
     .sub-add {
       display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: flex-end;
@@ -3382,8 +3403,14 @@
     <div id="mealSection-case" class="meal-section">
       <div class="section-head" style="margin-bottom:10px">
         <h2 style="font-size:15px">菜單</h2>
-        <button class="btn btn-ghost btn-sm" onclick="App.openCaseMenuWindow()">開新視窗</button>
+        <div style="display:flex;gap:6px">
+          <button class="btn btn-ghost btn-sm" onclick="App.openCaseMenuWindow()">開新視窗</button>
+          <button class="btn btn-primary btn-sm" onclick="App.handToCase()">遞給客人</button>
+        </div>
       </div>
+      <!-- 遞出去之後畫面上只剩菜單。結束那一顆刻意做小、放左上角 ——
+           客人不會去按，個管師知道它在哪 -->
+      <button class="handover-end" onclick="App.endHandover()">結束，回個管師檢視</button>
       <div class="cm-pick">
         <label>
           <span>看哪一位</span>

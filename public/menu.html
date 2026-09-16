@@ -36,6 +36,16 @@
   }
   .wrap { max-width: 860px; margin: 0 auto; padding: 0 20px 80px; }
 
+  /* 店名只出現在個管師檢視。客人那一面從資料層就沒有這個欄位 ——
+     個管師口頭說「這是蛋白盒子那家」的時候，畫面上要找得到對應 */
+  .vendor {
+    display: inline-block; font-size: 15px; font-weight: 500;
+    color: var(--ink-2); background: var(--green-bg);
+    padding: 2px 10px; border-radius: 999px; margin-left: 10px;
+    vertical-align: 3px;
+  }
+  body.guest .vendor { display: none; }
+
   /* 加菜：點好主餐之後的加購，不是第三個選項。
      跟主餐一樣大的話，客人會以為那也是一道 */
   .extras {
@@ -259,9 +269,6 @@ async function load() {
   const tonicKcal = d.tonic.kcal;
   const avoid = (d.case && d.case.avoid) || [];
 
-  // 兩種檢視共用同一份菜單，不做兩頁 —— 做兩頁的話禁忌邏輯會有兩份，遲早不一致。
-  //   個管師：全部餐廳攤開，不吃的標紅留著（要看得到才知道為什麼不建議）
-  //   客人  ：一次只看一間，不吃的整個不顯示
   // 嵌在套餐頁裡的那一份直接從客人檢視開始 —— 個管師拿手機給客人看的時候，
   // 不該先看到一頁攤開的個管師檢視再手動切
   //
@@ -274,6 +281,28 @@ async function load() {
   const locked = lockedSeries != null && qs.get('lock') === '1';
   if (locked) mode = 'guest';
   let pickedSeries = lockedSeries;   // 客人模式看哪一間
+
+  // 店名只給個管師看。客人那一支 API（/api/meals/menu/case）從頭到尾
+  // 不回傳 vendor —— 那是後端守的界線，test-casemenu 也在盯。
+  // 所以店名得另外從管理端那一支拿。
+  //
+  // 鎖定的時候完全不抓：那一份是遞到客人手上的，資料進了這一頁的記憶體，
+  // 界線就只剩「畫面上沒顯示」在守，那不算守。
+  const vendorOf = {};
+  if (!locked) {
+    try {
+      const av = await fetch('/api/meals/menu', { headers });
+      if (av.ok) {
+        (await av.json()).series.forEach(s => {
+          vendorOf[s.id] = [s.vendor_name, s.vendor_branch].filter(Boolean).join('・');
+        });
+      }
+    } catch (e) { /* 抓不到就不顯示，不影響菜單本身 */ }
+  }
+
+  // 兩種檢視共用同一份菜單，不做兩頁 —— 做兩頁的話禁忌邏輯會有兩份，遲早不一致。
+  //   個管師：全部餐廳攤開，不吃的標紅留著（要看得到才知道為什麼不建議）
+  //   客人  ：一次只看一間，不吃的整個不顯示
   let people = 1;            // 幾個人一起吃
 
   const num = (v, unit) => v == null ? '—' : v + ' ' + unit;
@@ -322,7 +351,9 @@ async function load() {
       </div>` : '';
     return `
       <section class="series">
-        <h2 class="series-name">${esc(s.name)}</h2>
+        <h2 class="series-name">${esc(s.name)}${
+          mode === 'staff' && vendorOf[s.id]
+            ? `<span class="vendor">${esc(vendorOf[s.id])}</span>` : ''}</h2>
         ${s.tagline ? `<p class="series-tag">${esc(s.tagline)}</p>` : ''}
         ${dishes}
         ${extraHtml}

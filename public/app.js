@@ -5103,11 +5103,21 @@ const App = (() => {
     const sSel = document.getElementById('cmSeries');
     if (sSel && !sSel.options.length) {
       try {
-        const m = await api('/api/meals/menu/case');
+        // 客人那一份沒有店名（後端不回傳），但個管師要對得上自己口頭說的那一家 ——
+        // 所以選單這裡從管理端那一支拿店名。這個選單在客人的畫面上不會出現
+        const [m, adm] = await Promise.all([
+          api('/api/meals/menu/case'),
+          api('/api/meals/menu').catch(() => ({ series: [] }))
+        ]);
+        const vend = {};
+        (adm.series || []).forEach(s => {
+          vend[s.id] = [s.vendor_name, s.vendor_branch].filter(Boolean).join('・');
+        });
         sSel.innerHTML = '<option value="">不指定（讓客人自己挑）</option>'
           + (m.series || []).map(s => {
               const n = (s.items || []).filter(i => i.item_type !== '加菜').length;
-              return `<option value="${s.id}">${esc(s.name)}（${n} 道）</option>`;
+              const v = vend[s.id] ? esc(vend[s.id]) + '・' : '';
+              return `<option value="${s.id}">${esc(s.name)}（${v}${n} 道）</option>`;
             }).join('');
       } catch (e) {}
     }
@@ -5156,6 +5166,27 @@ const App = (() => {
   function _caseMenuUrl(prescriptionId, powderType) {
     return 'menu.html?prescription_id=' + encodeURIComponent(prescriptionId || '')
          + '&powder_type=' + encodeURIComponent(powderType || '袋裝');
+  }
+
+  // 遞給客人之前要把個管師看的東西收起來。
+  //
+  // 挑人那一排上面寫著個案的名字、挑的是哪一家（含店名）——
+  // 手機就這樣遞出去，客人看得到別人的名字和店名。
+  // 我剛把菜單頁裡的兩條退路關掉，如果工具列還留著，等於白關。
+  function handToCase() {
+    const page = document.getElementById('mealSection-case');
+    if (!page) return;
+    page.classList.add('handover');
+    // 底部分頁列與套餐的子分頁也要收起來 —— 那幾顆按鈕跟菜單頁裡
+    // 「換一間」是同一種漏洞：客人一按就進庫存、處方、成本。
+    // 所以 handover 是整頁的狀態，不只是這個區塊的
+    document.body.classList.add('handover');
+    window.scrollTo(0, 0);
+  }
+  function endHandover() {
+    const page = document.getElementById('mealSection-case');
+    if (page) page.classList.remove('handover');
+    document.body.classList.remove('handover');
   }
 
   // 平板接投影、或想單獨拿一台裝置給客人時用
@@ -5237,7 +5268,7 @@ const App = (() => {
     openEditMealItem, saveMealItem,
     openEditNutritionCard, saveNutritionCard, reviewCard, openPrintCards,
     openCaseMenu, showCaseMenu, openCaseMenuFor,
-    renderCaseMenuInline, openCaseMenuWindow,
+    renderCaseMenuInline, openCaseMenuWindow, handToCase, endHandover,
     renderClosures, addClosure, removeClosure, toggleDow, toggleAlerts,
     loadCalendar, calMonth, calPick, calPrep, calClose, calOpen,
     loadPrepAhead, savePrepAhead,
