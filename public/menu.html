@@ -36,6 +36,18 @@
   }
   .wrap { max-width: 860px; margin: 0 auto; padding: 0 20px 80px; }
 
+  /* 加菜：點好主餐之後的加購，不是第三個選項。
+     跟主餐一樣大的話，客人會以為那也是一道 */
+  .extras {
+    border: 2px dashed var(--line); border-radius: 14px;
+    padding: 16px 18px; margin-top: 18px; background: var(--card);
+  }
+  .extras-label {
+    font-size: 17px; font-weight: 700; color: var(--ink-2); margin-bottom: 8px;
+  }
+  .extra-row { font-size: 20px; padding: 4px 0; }
+  .extra-row span { font-size: 16px; color: var(--ink-2); }
+
   header {
     padding: 34px 0 24px;
     border-bottom: 3px solid var(--ink);
@@ -252,8 +264,16 @@ async function load() {
   //   客人  ：一次只看一間，不吃的整個不顯示
   // 嵌在套餐頁裡的那一份直接從客人檢視開始 —— 個管師拿手機給客人看的時候，
   // 不該先看到一頁攤開的個管師檢視再手動切
+  //
+  // 現場的做法是「個管師先選好一家，再把手機遞過去」，客人一次只看一家的三道。
+  // 所以 series 指定看哪一家、lock 把它鎖住：鎖住之後畫面上沒有「換一間」
+  // 也沒有「回個管師檢視」—— 那兩顆按鈕在遞出去的手機上就是漏洞，
+  // 客人一按就看到全部四家。
   let mode = qs.get('mode') === 'guest' ? 'guest' : 'staff';
-  let pickedSeries = null;   // 客人模式看哪一間
+  const lockedSeries = Number(qs.get('series')) || null;
+  const locked = lockedSeries != null && qs.get('lock') === '1';
+  if (locked) mode = 'guest';
+  let pickedSeries = lockedSeries;   // 客人模式看哪一間
   let people = 1;            // 幾個人一起吃
 
   const num = (v, unit) => v == null ? '—' : v + ' ' + unit;
@@ -286,14 +306,26 @@ async function load() {
       </div>`;
   }
 
+  const isMain = i => i.item_type !== '加菜';
+
   function seriesHtml(s) {
-    const dishes = s.items.map(dishHtml).join('');
+    // 加菜（燙青菜）不是一道主餐，是點好之後的加購 ——
+    // 跟主餐混在一起列，客人會以為那是第三個選項
+    const dishes = s.items.filter(isMain).map(dishHtml).join('');
     if (!dishes.trim()) return '';                 // 整間都被擋掉就不顯示這一間
+    const extras = s.items.filter(i => !isMain(i) && !avoid.includes(i.protein));
+    const extraHtml = extras.length ? `
+      <div class="extras">
+        <div class="extras-label">可以另外加買</div>
+        ${extras.map(i => `<div class="extra-row">${esc(i.name)}${
+          i.kcal > 0 ? ` <span>${i.kcal} 大卡</span>` : ''}</div>`).join('')}
+      </div>` : '';
     return `
       <section class="series">
         <h2 class="series-name">${esc(s.name)}</h2>
         ${s.tagline ? `<p class="series-tag">${esc(s.tagline)}</p>` : ''}
         ${dishes}
+        ${extraHtml}
       </section>`;
   }
 
@@ -364,7 +396,8 @@ async function load() {
     // ── 客人：先挑一間，一次只看一間 ──────────────────────
     if (!pickedSeries) {
       const cards = d.series.map(s => {
-        const n = s.items.filter(i => !avoid.includes(i.protein)).length;
+        // 加菜不算一道。阿北只有 1 道主餐，卡上就該寫「1 道可選」
+        const n = s.items.filter(i => isMain(i) && !avoid.includes(i.protein)).length;
         if (!n) return '';
         const cover = (s.items.find(i => i.photo && !avoid.includes(i.protein)) || {}).photo;
         return `<button onclick="window.__pick(${s.id})">
@@ -374,7 +407,7 @@ async function load() {
           <span class="p-n">${n} 道可選</span>
         </button>`;
       }).join('');
-      root.innerHTML = `<button class="back" onclick="window.__staff()">← 回個管師檢視</button>`
+      root.innerHTML = (locked ? '' : `<button class="back" onclick="window.__staff()">← 回個管師檢視</button>`)
         + head
         + `<h2 class="series-name">今天想吃哪一種？</h2><div class="pick">${cards}</div>`
         + foot;
@@ -382,7 +415,9 @@ async function load() {
     }
 
     const s = d.series.find(x => x.id === pickedSeries);
-    root.innerHTML = `<button class="back" onclick="window.__unpick()">← 換一間</button>`
+    // 鎖住的時候不放「換一間」。這一份是遞到客人手上的 ——
+    // 留著那顆按鈕，個管師「今天只給你看這一家」就形同虛設
+    root.innerHTML = (locked ? '' : `<button class="back" onclick="window.__unpick()">← 換一間</button>`)
       + head + shareHtml() + (s ? seriesHtml(s) : '') + foot;
   }
 

@@ -5097,6 +5097,21 @@ const App = (() => {
             .join('');
     }
 
+    // 現場的做法是「個管師先選好一家，再把手機遞過去」，客人一次只看一家。
+    // 選了哪一家就把畫面鎖住 —— 鎖住之後沒有「換一間」也沒有「回個管師檢視」，
+    // 留著那兩顆按鈕，「今天只給你看這一家」就形同虛設
+    const sSel = document.getElementById('cmSeries');
+    if (sSel && !sSel.options.length) {
+      try {
+        const m = await api('/api/meals/menu/case');
+        sSel.innerHTML = '<option value="">不指定（讓客人自己挑）</option>'
+          + (m.series || []).map(s => {
+              const n = (s.items || []).filter(i => i.item_type !== '加菜').length;
+              return `<option value="${s.id}">${esc(s.name)}（${n} 道）</option>`;
+            }).join('');
+      } catch (e) {}
+    }
+
     const rxId = sel.value;
     const rx   = allPrescriptions.find(p => String(p.id) === String(rxId));
     const note = document.getElementById('cmNote');
@@ -5108,7 +5123,14 @@ const App = (() => {
             : `${rx.name} 沒有設定不吃的蛋白質，所以全部品項都會出現。`);
     }
 
-    frame.src = _caseMenuUrl(rxId, document.getElementById('cmPowder').value) + '&mode=guest';
+    const lockTo = sSel ? sSel.value : '';
+    frame.src = _caseMenuUrl(rxId, document.getElementById('cmPowder').value)
+      + '&mode=guest' + (lockTo ? '&series=' + encodeURIComponent(lockTo) + '&lock=1' : '');
+    if (note && lockTo) {
+      const label = sSel.options[sSel.selectedIndex].textContent;
+      note.textContent = `已鎖定 ${label}　—— 客人看不到其他家，也沒有「換一間」。`
+        + (rxId ? '' : '（沒挑人，所以不會擋掉任何品項。）');
+    }
     _cmAutoHeight(frame);
   }
 
@@ -5140,7 +5162,11 @@ const App = (() => {
   function openCaseMenuWindow() {
     const rx = document.getElementById('cmRx');
     const pw = document.getElementById('cmPowder');
-    window.open(_caseMenuUrl(rx ? rx.value : '', pw ? pw.value : '袋裝') + '&mode=guest', '_blank');
+    const sr = document.getElementById('cmSeries');
+    // 鎖定要跟著帶過去 —— 遞出去的那台裝置才是真正需要鎖住的
+    const lock = sr && sr.value ? '&series=' + encodeURIComponent(sr.value) + '&lock=1' : '';
+    window.open(_caseMenuUrl(rx ? rx.value : '', pw ? pw.value : '袋裝')
+      + '&mode=guest' + lock, '_blank');
   }
 
   function showCaseMenu() {

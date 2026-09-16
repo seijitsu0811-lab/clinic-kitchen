@@ -5171,7 +5171,8 @@ app.get('/api/meals/menu/case', (req, res) => {
   ).all();
   const itemStmt = db.prepare(
     `SELECT id, protein, display_name, kcal, protein_g, kcal_single, protein_g_single,
-            kcal_source, default_mode, COALESCE(photo,'') photo
+            kcal_source, default_mode, COALESCE(photo,'') photo,
+            COALESCE(item_type,'餐盒') item_type
      FROM meal_items WHERE series_id=? AND active=1 ORDER BY sort_order, id`
   );
 
@@ -5207,6 +5208,9 @@ app.get('/api/meals/menu/case', (req, res) => {
         protein_g:        it.protein_g > 0 ? it.protein_g : null,
         protein_g_single: it.protein_g_single > 0 ? it.protein_g_single : null,
         kcal_unknown:     !(it.kcal > 0),
+        // 加菜不是一道主餐。阿北那一家只有 1 道主餐＋1 道加菜，
+        // 算成兩道會讓「一家三個選項」那張卡寫錯數字
+        item_type:    it.item_type,
         estimated:    it.kcal_source === '內部估算',
         // 這個人不吃這一類。比對的是明確勾選的類別，不是拿備註猜關鍵字
         avoid:        avoidSet.has(it.protein),

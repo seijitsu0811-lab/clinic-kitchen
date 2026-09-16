@@ -3397,6 +3397,10 @@
             <option value="全配方外帶">全配方外帶</option>
           </select>
         </label>
+        <label>
+          <span>給客人看哪一家</span>
+          <select id="cmSeries" onchange="App.renderCaseMenuInline()"></select>
+        </label>
       </div>
       <p class="cm-note" id="cmNote"></p>
       <iframe id="cmFrame" title="菜單" loading="lazy"></iframe>
