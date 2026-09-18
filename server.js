@@ -3292,7 +3292,8 @@ app.get('/api/day/cups', (req, res) => {
   ).all(date);
 
   const out = { date, dow: dowOf(date),
-                total_cups: rows.reduce((t, r) => t + r.cups, 0), rows, orders };
+                total_cups: rows.reduce((t, r) => t + r.cups, 0),
+                split: cupsSplitOnDate(date), rows, orders };
 
   // 指定食材時，列出這一天是誰要用它
   const want = String(req.query.ingredient || '').trim();
@@ -3452,6 +3453,7 @@ app.get('/api/calendar', (req, res) => {
       is_subscription_day: !closed && subDows.includes(dow),
       is_stocktake_day: stDows.includes(dow),
       planned_cups: Math.round(planned * 10) / 10,
+      split: closed ? null : cupsSplitOnDate(date),
       served_cups: Math.round((served[date] || 0) * 10) / 10,
       prepped_cups: Math.round((prepped[date] || 0) * 10) / 10,
       subscription_cups: subCups,
@@ -3691,7 +3693,7 @@ function expectedForDate(date) {
   // 整天的訂閱杯就從庫存帳上消失，但料早就下鍋了 —— 跟 2026-09-03
   // 那批漏掉的 4 杯是同一種病。
   subscriptionCupsOnDate(date).forEach(x =>
-    out.push({ rxId: x.rxId, cups: x.cups, powderType: '' }));
+    out.push({ rxId: x.rxId, cups: x.cups, powderType: x.powderType }));
   return out;
 }
 
@@ -4110,11 +4112,40 @@ function subscriptionsOnDate(date) {
 
 // 某一天訂閱要做幾杯，依處方分組
 function subscriptionCupsOnDate(date) {
+  // 依「處方＋包裝」分組，不是只依處方。訂閱可以選袋裝粉 ——
+  // 只依處方分的話包裝就丟了，下游的 servedItems 會把袋裝粉當全配方算，
+  // 蔬果又虛報一份（跟 9/11 那 220g 甜菜根是同一種病）
   const by = {};
   subscriptionsOnDate(date).forEach(r => {
-    by[r.prescription_id] = (by[r.prescription_id] || 0) + 1;
+    const k = r.prescription_id + '|' + (r.powder_type || '');
+    if (!by[k]) by[k] = { rxId: r.prescription_id, powderType: r.powder_type || '', cups: 0 };
+    by[k].cups += 1;
   });
-  return Object.entries(by).map(([rxId, cups]) => ({ rxId: Number(rxId), cups }));
+  return Object.values(by);
+}
+
+// ── 一天的杯數，拆成內用與外帶 ────────────────────────────
+// 「11 杯」一個數字把兩種杯子混在一起：9/21 那天其實是內用 5 杯、
+// 外帶 6 杯（罐裝基底粉）—— 看數字會以為要備 11 杯的菜。
+//
+// 外帶再分兩種，因為它們對廚房是完全不同的事：
+//   全配方外帶  整杯做好帶走，要用菜
+//   基底粉      袋裝／罐裝，客人回家自己沖，只給粉
+// 過去 30 天全配方佔 21%，所以不能把「外帶」當成「不用菜」。
+//
+// with_veg 就是「要打幾杯（要用菜）」，備菜看這個
+function cupsSplitOnDate(date) {
+  let dine = 0, full = 0, powder = 0;
+  cupsOnDate(date).forEach(c => {
+    const pt = c.powderType || '';
+    if (isPowderOnly(pt)) powder += c.cups;
+    else if (pt === '全配方') full += c.cups;
+    else dine += c.cups;   // 內用、員工、訂閱、每日供應 —— 都是在這裡現打的
+  });
+  const r = x => Math.round(x * 10) / 10;
+  return { dine_in: r(dine), takeaway: r(full + powder),
+           takeaway_full: r(full), takeaway_powder: r(powder),
+           with_veg: r(dine + full) };
 }
 
 // 某一天各張處方要幾杯
@@ -4128,7 +4159,8 @@ function cupsOnDate(date) {
   // 同事訂閱。走自己的取餐日（週一三五），跟員工供應日（週二四）互不相干 ——
   // 不能掛在 isStaffMealDay 底下，那樣訂閱的日子一杯都不會做
   subscriptionCupsOnDate(date).forEach(x =>
-    out.push({ rxId: x.rxId, cups: x.cups, powderMult: 1, why: '同事訂閱' }));
+    out.push({ rxId: x.rxId, cups: x.cups, powderMult: powderMultFor(x.powderType),
+               powderType: x.powderType, why: '同事訂閱' }));
 
   // 員工：供應日才有，當天有出席紀錄就用實到人數，否則用名冊
   if (isStaffMealDay(dow)) {
@@ -4317,6 +4349,7 @@ function buildForecast(daysAhead) {
                 is_staff_meal_day: isStaffMealDay(dowOf(date)), cups,
                 is_stocktake_day: stocktakeDows().includes(dowOf(date)),
                 packs_left: Math.round(packLeft * 10) / 10,
+                split: cupsSplitOnDate(date),
                 // 備品不夠是一件「要備料」的事，不是「缺料」。
                 // 混在缺料清單裡的話，畫面上會變成五樣食材各缺 15 克 ——
                 // 看起來要跑一趟市場，實際上只要進廚房分裝

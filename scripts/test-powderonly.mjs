@@ -180,6 +180,36 @@ line('\n━━ 6. 缺料與採購也跟著 ━━');
   await api('/api/today/cases/' + (o.id || o.order_id), 'DELETE');
 }
 
+line('\n━━ 6.5 當天杯數拆成內用與外帶 ━━');
+// 「11 杯」一個數字把兩種杯子混在一起。9/21 那天是內用 5 杯、
+// 外帶 6 杯（罐裝粉）—— 看總數會以為要備 11 杯的菜。
+// 外帶再分全配方（要用菜）與基底粉（不用菜），外帶不等於不用菜
+{
+  const sp = async () => (await api('/api/day/cups?date=' + today)).split;
+  const s0 = await sp();
+  check('當日杯數帶得出拆分', s0 && typeof s0.with_veg === 'number', JSON.stringify(s0));
+
+  const oCan = await mk('罐裝');
+  const s1 = await sp();
+  check('罐裝算進外帶・基底粉', Math.abs((s1.takeaway_powder - s0.takeaway_powder) - CUPS) < 0.05,
+        `基底粉 ${s0.takeaway_powder} → ${s1.takeaway_powder}`);
+  check('罐裝不增加要用菜的杯數', Math.abs(s1.with_veg - s0.with_veg) < 0.05,
+        `要用菜 ${s0.with_veg} → ${s1.with_veg}　—— 這就是「11 杯」會誤導的地方`);
+  await api('/api/today/cases/' + (oCan.id || oCan.order_id), 'DELETE');
+
+  const oFull = await mk('全配方');
+  const s2 = await sp();
+  check('全配方算外帶，但要用菜', Math.abs((s2.takeaway_full - s0.takeaway_full) - CUPS) < 0.05
+        && Math.abs((s2.with_veg - s0.with_veg) - CUPS) < 0.05,
+        `全配方 +${s2.takeaway_full - s0.takeaway_full}、要用菜 +${s2.with_veg - s0.with_veg}　—— 外帶不等於不用菜`);
+  await api('/api/today/cases/' + (oFull.id || oFull.order_id), 'DELETE');
+
+  const s3 = await sp();
+  check('內用＋外帶＝總杯數', Math.abs((s3.dine_in + s3.takeaway)
+        - (await api('/api/day/cups?date=' + today)).total_cups) < 0.05,
+        `內用 ${s3.dine_in} ＋ 外帶 ${s3.takeaway}`);
+}
+
 line('\n━━ 7. 收尾 ━━');
 await cleanup();
 {

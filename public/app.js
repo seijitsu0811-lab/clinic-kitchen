@@ -2245,6 +2245,8 @@ const App = (() => {
                  title="${d.cups > 0 && !d.feasible ? '缺 ' + d.short.length + ' 樣' : ''}">
               <b>${_fcMd(d.date)}</b>週${_fcDow(d.dow)}
               <div>${d.cups ? d.cups + '杯' : '—'}</div>
+              ${d.split && d.split.takeaway_powder
+                ? `<small class="fc-veg">打 ${d.split.with_veg}</small>` : ''}
             </div>`).join('')}
         </div>
       </div>`);
@@ -4691,6 +4693,12 @@ const App = (() => {
     const t = d.totals;
     document.getElementById('calTotals').innerHTML = `<div class="cal-sum">
       <span>排定 ${t.planned_cups} 杯</span>
+      ${(() => {
+        const s = d.days.filter(y => !y.is_past && y.split);
+        const dine = s.reduce((a, y) => a + y.split.dine_in, 0);
+        const take = s.reduce((a, y) => a + y.split.takeaway, 0);
+        return take ? `<span>今天起 內用 ${Math.round(dine)}・外帶 ${Math.round(take)}</span>` : '';
+      })()}
       <span>已扣 ${t.served_cups} 杯</span>
       <span>預約帶入 ${t.appt_cups} 杯</span>
       ${t.subscription_cups ? `<span>訂閱 ${t.subscription_cups} 杯</span>` : ''}
@@ -4751,6 +4759,13 @@ const App = (() => {
     if (x.is_closed) rows.push(['休診', esc(x.closure_reason || '未填原因')]);
     if (x.plan_name) rows.push(['蔬果方案', esc(x.plan_name)]);
     rows.push([x.is_past ? '實際扣掉' : '排定要做', (x.is_past ? x.served_cups : x.planned_cups) + ' 杯']);
+    if (!x.is_past && x.split && x.planned_cups > 0) {
+      rows.push(['內用', x.split.dine_in + ' 杯']);
+      if (x.split.takeaway_full)   rows.push(['外帶・全配方（要用菜）', x.split.takeaway_full + ' 杯']);
+      if (x.split.takeaway_powder) rows.push(['外帶・基底粉（不用菜）', x.split.takeaway_powder + ' 杯']);
+      // 備菜看這一行。其他杯數都是參考
+      rows.push(['<b>要用菜的</b>', '<b>' + x.split.with_veg + ' 杯</b>']);
+    }
     if (!x.is_past && x.served_cups > 0) rows.push(['已經扣掉', x.served_cups + ' 杯']);
     if (x.prepped_cups > 0) rows.push(['其中提前備料', x.prepped_cups + ' 杯']);
     if (x.appt_cups) rows.push(['預約帶入', x.appt_cups + ' 杯']);
