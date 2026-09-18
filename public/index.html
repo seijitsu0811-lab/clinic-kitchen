@@ -2468,6 +2468,11 @@
     .sub-day small { display: block; font-size: 10.5px; color: var(--text3); }
     .sub-day.picked { background: rgba(16,185,129,.14); border-color: #10B981; }
     .sub-day.missed { background: rgba(239,68,68,.12);  border-color: #EF4444; }
+    /* 休診退費：那一杯不做、錢也退了。灰掉，不能再點 */
+    .sub-day.closed { background: var(--bg); color: var(--text3); cursor: default;
+                      border-style: dashed; }
+    /* 休診但還沒處理退費 —— 這種要看得出來，不然帳上一直多一杯 */
+    .sub-day.warn   { background: rgba(180,83,9,.12); border-color: var(--orange); }
 
     /* 今日那一頁的訂閱晶片。刻意跟員工、個案的晶片不同色 ——
        要並排看得到，但也要看得出這一杯是哪一條線的 */

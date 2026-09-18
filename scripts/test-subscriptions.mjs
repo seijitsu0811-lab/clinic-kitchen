@@ -216,6 +216,56 @@ line('\n━━ 7. 有紀錄的輪不能刪掉 ━━');
   check('同一人同一輪不能訂兩次', !dup.ok && dup.status === 400, `HTTP ${dup.status}`);
 }
 
+line('\n━━ 7.5 假日標在訂閱之後：休診退費 ━━');
+// 2026-09 真的發生過：9/14 建了三筆訂閱（各 6 杯 900 元），9/15 才把 9/25
+// 標成中秋。杯數是凍住的，所以那一杯永遠停在「未領」，帳上一直多一杯 ——
+// 而實際上錢已經退回去了。
+{
+  const C = users[2] || users[0];
+  const sub = await api('/api/subscriptions', 'POST',
+    { user_id: C.id, prescription_id: ownRx.id, cycle_start: CYCLE });
+  const lastDay = sub.dates[sub.dates.length - 1];
+  const firstDay = sub.dates[0];
+
+  // 訂閱建好之後才標休診 —— 要當下講出來那天已經有人訂了
+  const cr = await api('/api/closures', 'POST', { date: lastDay, reason: '訂閱測試' });
+  check('標休診時講得出那天已經有人訂', cr.subscription_cups > 0 && /已經有/.test(cr.warning || ''),
+        cr.warning ? cr.warning.slice(0, 60) : '★ 沒有提醒');
+
+  const s0 = (await api('/api/subscriptions?cycle_start=' + CYCLE)).subscriptions.find(x => x.id === sub.id);
+  check('杯數沒有被自動改掉（凍住）', s0.entitled_cups === sub.entitled_cups,
+        `${s0.entitled_cups} 杯 —— 收過錢的不能被事後補的假日偷偷改`);
+
+  const r = await api('/api/subscriptions/' + sub.id + '/refund-cup', 'POST', { date: lastDay });
+  check('退費之後少一杯', r.entitled_cups === sub.entitled_cups - 1,
+        `${sub.entitled_cups} → ${r.entitled_cups} 杯`);
+  check('收費跟著少一杯', r.charge === sub.charge - sub.unit_price,
+        `${sub.charge} → ${r.charge} 元`);
+
+  const s1 = (await api('/api/subscriptions?cycle_start=' + CYCLE)).subscriptions.find(x => x.id === sub.id);
+  const pk = s1.pickups.find(p => p.date === lastDay);
+  check('那一杯標成休診退費', pk && pk.status === 'closed', pk ? pk.status : '');
+  check('剩下的杯數不含那一杯', s1.remaining === s1.entitled_cups - s1.picked - s1.missed,
+        `訂 ${s1.entitled_cups}、剩 ${s1.remaining}　—— 不會再顯示「剩 1」卻永遠領不到`);
+  check('備註留下是哪天退的', /退/.test(s1.note || ''), s1.note);
+
+  const again = await fetch(B + '/api/subscriptions/' + sub.id + '/refund-cup',
+    { method: 'POST', headers: H, body: JSON.stringify({ date: lastDay }) });
+  check('同一杯不能退兩次', again.status === 400, `HTTP ${again.status}`);
+
+  // 已經喝掉的不能退 —— 那等於帳上少一杯、實際多給一杯
+  await api('/api/subscriptions/' + sub.id + '/pickup', 'PUT', { date: firstDay, status: 'picked' });
+  const drunk = await fetch(B + '/api/subscriptions/' + sub.id + '/refund-cup',
+    { method: 'POST', headers: H, body: JSON.stringify({ date: firstDay }) });
+  check('已經喝掉的那一杯不能退', drunk.status === 400, `HTTP ${drunk.status}`);
+
+  // 收拾
+  await api('/api/subscriptions/' + sub.id + '/pickup', 'PUT', { date: firstDay, status: 'pending' });
+  await api('/api/closures/' + lastDay, 'DELETE');
+  // closed 那一杯讓 DELETE 擋住（有紀錄不能刪），改成直接停用
+  await api('/api/subscriptions/' + sub.id, 'PUT', { active: 0 });
+}
+
 line('\n━━ 8. 收尾 ━━');
 await cleanup();
 {

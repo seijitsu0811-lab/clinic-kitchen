@@ -4549,8 +4549,18 @@ const App = (() => {
       return;
     }
     el.innerHTML = d.subscriptions.map(ss => {
+      const closedDays = new Set((d.closed_pickup_days || []).map(c => c.date));
       const days = ss.pickups.map(p => {
         const dow = SUBDOW[new Date(p.date + 'T00:00:00').getDay()];
+        // 已經退費的那一杯：不能再點來點去，只顯示狀態
+        if (p.status === 'closed')
+          return `<span class="sub-day closed">${esc(p.date.slice(5))} ${dow}<small>休診退費</small></span>`;
+        // 休診日但還沒處理：那一杯不會做，錢卻還算在帳上
+        if (closedDays.has(p.date) && p.status === 'pending')
+          return `<button class="sub-day warn"
+                    onclick="App.refundSubCup(${ss.id}, '${esc(p.date)}', '${esc(ss.user_name)}', ${ss.unit_price})">
+            ${esc(p.date.slice(5))} ${dow}<small>休診・待退費</small>
+          </button>`;
         const who = p.picked_by_name && p.picked_by_user_id !== ss.user_id
           ? p.picked_by_name + ' 代' : (p.status === 'picked' ? '已喝' : '');
         const mark = p.status === 'missed' ? '沒人喝' : who;
@@ -4591,6 +4601,16 @@ const App = (() => {
       const r = await api('/api/subscriptions/' + subId + '/pickup', 'PUT', { date, status: next });
       if (r.warning) alert(r.warning);
       await loadSubscriptions();
+    } catch (e) { alert(e.message); }
+  }
+
+  async function refundSubCup(subId, date, name, price) {
+    if (!confirm(`${name} 的 ${date} 那一杯因休診不做，錢退了 ${price} 元？\n\n`
+      + '確認之後那一杯會標成「休診退費」，這一輪少收一杯。')) return;
+    try {
+      const r = await api('/api/subscriptions/' + subId + '/refund-cup', 'POST', { date });
+      await loadSubscriptions();
+      alert(`已處理。${name} 這一輪改為 ${r.entitled_cups} 杯、${r.charge} 元。`);
     } catch (e) { alert(e.message); }
   }
 
@@ -4785,7 +4805,8 @@ const App = (() => {
     const reason = prompt(date + ' 為什麼不開工？（例如 中秋節）');
     if (reason === null) return;
     try {
-      await api('/api/closures', 'POST', { date, reason: reason.trim() });
+      const cr = await api('/api/closures', 'POST', { date, reason: reason.trim() });
+      if (cr.warning) alert(cr.warning);
       await loadCalendar();
     } catch (e) { alert(e.message); }
   }
@@ -5020,8 +5041,9 @@ const App = (() => {
     const date = document.getElementById('closureDate').value;
     if (!date) return alert('請選日期');
     try {
-      await api('/api/closures', 'POST',
+      const cr = await api('/api/closures', 'POST',
         { date, reason: document.getElementById('closureReason').value.trim() });
+      if (cr.warning) alert(cr.warning);
       document.getElementById('closureReason').value = '';
       await renderClosures();
       // 休診日會改變缺料與採購，不是只改這一份清單 —— 重載才看得到
@@ -5273,6 +5295,6 @@ const App = (() => {
     loadCalendar, calMonth, calPick, calPrep, calClose, calOpen,
     loadPrepAhead, savePrepAhead,
     loadSubscriptions, subCycle, addSubscription, toggleSubActive, removeSubscription,
-    cycleSubPickup, cycleSubPickupToday, shareSubCup
+    cycleSubPickup, cycleSubPickupToday, shareSubCup, refundSubCup
   };
 })();

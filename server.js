@@ -5667,6 +5667,48 @@ app.put('/api/subscriptions/:id', (req, res) => {
 //
 // picked_by 可以不是訂的人 —— 原訂的人把權利讓給別人。權利與付費還是
 // 訂的人的，所以兩個欄位分開記，兩邊都查得到。
+// 某一杯因為休診沒做、錢已經退了。
+//
+// 訂閱的杯數在建立時就凍住 —— 收過錢的那一輪不能被事後補的假日偷偷改掉。
+// 但凍住的另一面是：假日標在訂閱之後（2026-09 就是：9/14 建訂閱、
+// 9/15 才把 9/25 標成中秋），那一杯會永遠停在「未領」，帳上一直顯示剩 1 杯，
+// 而實際上錢已經退回去了。
+//
+// 這裡是明確的一個動作，不是自動改：那一杯標成 closed、應得杯數減一，
+// 收費跟著少一杯，並在備註留下是哪天、為什麼退的。
+app.post('/api/subscriptions/:id/refund-cup', (req, res) => {
+  const subId = Number(req.params.id);
+  const date = String(req.body.date || '').trim();
+  const ss = db.prepare('SELECT * FROM staff_subscriptions WHERE id=?').get(subId);
+  if (!ss) return res.status(404).json({ error: '找不到這一輪訂閱' });
+  const pk = db.prepare(
+    'SELECT status FROM subscription_pickups WHERE subscription_id=? AND date=?').get(subId, date);
+  if (!pk) return res.status(400).json({ error: date + ' 不是這一輪的取餐日' });
+  if (pk.status === 'closed') return res.status(400).json({ error: '這一杯已經退過了' });
+  // 已經喝掉的杯子不能退 —— 那等於帳上少一杯、實際多給一杯
+  if (pk.status === 'picked')
+    return res.status(400).json({ error: date + ' 那一杯已經有人喝了，不能退' });
+
+  const reason = String(req.body.reason || '').trim() || (isClosed(date) ? '休診' : '');
+  tx(() => {
+    db.prepare(
+      `UPDATE subscription_pickups
+          SET status='closed', marked_by=?, marked_at=datetime('now','localtime')
+        WHERE subscription_id=? AND date=?`
+    ).run(req.kitchenUser.name, subId, date);
+    const line = `${date} ${reason || '不做'}，退 ${ss.unit_price} 元`;
+    db.prepare(
+      `UPDATE staff_subscriptions
+          SET entitled_cups = MAX(0, entitled_cups - 1),
+              note = CASE WHEN COALESCE(note,'')='' THEN ? ELSE note || '；' || ? END
+        WHERE id=?`
+    ).run(line, line, subId);
+  });
+  const after = db.prepare('SELECT entitled_cups, unit_price FROM staff_subscriptions WHERE id=?').get(subId);
+  res.json({ ok: true, entitled_cups: after.entitled_cups,
+             charge: Math.round(after.entitled_cups * after.unit_price) });
+});
+
 app.put('/api/subscriptions/:id/pickup', (req, res) => {
   const subId = Number(req.params.id);
   const date  = String(req.body.date || '').trim();
@@ -5740,7 +5782,21 @@ app.post('/api/closures', (req, res) => {
     `INSERT INTO kitchen_closures (date, reason, created_by) VALUES (?,?,?)
        ON CONFLICT(date) DO UPDATE SET reason=excluded.reason`
   ).run(date, String(req.body.reason || '').trim(), req.kitchenUser.name);
-  res.json({ ok: true, date });
+
+  // 那一天已經有人訂閱付了錢。訂閱的杯數是凍住的，標了休診也不會自動減 ——
+  // 所以要當下講出來，不然會像中秋那次：隔天才標、三個人各多收一杯的錢
+  const subs = db.prepare(
+    `SELECT u.name FROM subscription_pickups sp
+       JOIN staff_subscriptions ss ON ss.id = sp.subscription_id
+       JOIN users u ON u.id = ss.user_id
+      WHERE sp.date=? AND sp.status='pending' AND ss.active=1`
+  ).all(date).map(r => r.name);
+  res.json({ ok: true, date,
+             subscription_cups: subs.length,
+             warning: subs.length
+               ? `${date} 已經有 ${subs.length} 杯訂閱（${subs.join('、')}）。`
+                 + '訂閱的錢在建立時就收了，標休診不會自動退 —— 到訂閱頁把那一杯標成「休診退費」'
+               : '' });
 });
 
 app.delete('/api/closures/:date', (req, res) => {
