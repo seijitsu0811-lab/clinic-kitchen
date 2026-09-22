@@ -2,6 +2,7 @@ const express = require('express');
 const { DatabaseSync } = require('node:sqlite');
 const fs   = require('fs');
 const path = require('path');
+const { authorizeAgentRead, calendarDates, parseAgentReadRange, projectCaseOrder } = require('./agent-read-contract');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -392,6 +393,36 @@ try {
   `CREATE TABLE IF NOT EXISTS day_state (
      date TEXT PRIMARY KEY, state TEXT NOT NULL DEFAULT '{}',
      updated_at TEXT DEFAULT (datetime('now','localtime')), updated_by TEXT DEFAULT '')`,
+
+  // 報廢：知道原因的損失。
+  //
+  // 盤點原本只記一個差異（實際 − 帳面），把三件完全不同的事混在一起：
+  // 爛掉丟了、用了沒扣到、扣帳公式本身有洞。2026-09-17 那次蘋果差 −2420g，
+  // 事後沒有任何方法分辨是哪一種；同一天還有兩次盤點專門把冷凍草莓歸零 ——
+  // 那是在拿盤點當報廢用，因為沒有別的地方可以記。
+  //
+  // 報廢拆出來之後，盤點剩下的「未說明差異」才是真正該查的訊號。
+  //
+  // unit_cost 存在這一列、不是事後即時算：報廢那天丟掉的是那天的錢，
+  // 之後進貨價變了，已經發生的損失不能跟著變（跟訂閱凍住單價同一個理由）。
+  // stocktake_id 有值 = 盤點時拆出來的（庫存已經照實際數覆寫，不再另扣）；
+  // 沒值 = 隨時報廢（記的當下就扣庫存）。
+  `CREATE TABLE IF NOT EXISTS waste_log (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     date TEXT NOT NULL,
+     ingredient_id INTEGER NOT NULL,
+     qty REAL NOT NULL,
+     reason TEXT NOT NULL,
+     note TEXT DEFAULT '',
+     unit_cost REAL DEFAULT 0,
+     cost REAL DEFAULT 0,
+     user_id INTEGER,
+     stocktake_id INTEGER,
+     created_at TEXT DEFAULT (datetime('now','localtime')),
+     FOREIGN KEY (ingredient_id) REFERENCES ingredients(id))`,
+  "CREATE INDEX IF NOT EXISTS idx_waste_date ON waste_log(date)",
+  // 盤點當下拆出來的報廢量。未說明差異 = variance + waste_qty
+  "ALTER TABLE stocktake_items ADD COLUMN waste_qty REAL DEFAULT 0",
 ].forEach(sql => { try { db.exec(sql); } catch(e) {} });
 // 全新安裝時要有一張員工處方可用，所以先讓 EMP-00 頂著；
 // 之後 installFormulaSets() 會建 EMP-01 並讓它接手。
@@ -1602,6 +1633,65 @@ function safeEqual(a, b) {
   return ab.length === bb.length && require('crypto').timingSafeEqual(ab, bb);
 }
 
+// JoyHub 專用唯讀契約。這條路徑刻意註冊在一般 /api 使用者中介層之前，
+// 使用獨立的服務憑證，也絕不呼叫 syncApptOrders、settleRecentDays 或任何寫入函式。
+// `/api/today` 是操作畫面的 command endpoint，不得拿來當 Agent 的查詢 API。
+app.get('/api/agent/energy-juice', (req, res) => {
+  const auth = authorizeAgentRead(process.env.KITCHEN_AGENT_READ_TOKEN, req.get('authorization'));
+  if (!auth.ok) return res.status(auth.status).json({ error: auth.code });
+
+  let range;
+  try {
+    range = parseAgentReadRange({ from: req.query.from, to: req.query.to, today: today() });
+  } catch (error) {
+    return res.status(error.statusCode || 400).json({ error: error.code || 'DATE_RANGE_INVALID' });
+  }
+
+  const includeDetails = req.query.include_details === 'true';
+  const days = calendarDates(range).map(date => {
+    const plannedRows = cupsOnDate(date);
+    const exceptions = dayExceptions(date);
+    const plannedQuantity = plannedRows.reduce((sum, row) => sum + Number(row.cups || 0), 0);
+    const servedQuantity = exceptions.anyTap
+      ? expectedForDate(date).reduce((sum, row) => sum + Number(row.cups || 0), 0)
+      : null;
+    const orderRows = db.prepare(
+      `SELECT co.id, co.date, co.cups, co.meal_time, co.patient_name,
+              COALESCE(co.source_key,'') source_key, p.code rx_code, p.name rx_name
+         FROM case_orders co JOIN prescriptions p ON p.id=co.prescription_id
+        WHERE co.date=? ORDER BY co.meal_time, co.id`
+    ).all(date);
+    const records = includeDetails ? orderRows.map(row => projectCaseOrder(row, {
+      status: exceptions.anyTap
+        ? (exceptions.casePicked.has(row.id) ? 'served' : 'not_served')
+        : 'unknown',
+    })) : [];
+    return {
+      date,
+      planned_quantity: plannedQuantity,
+      served_quantity: servedQuantity,
+      served_status_completeness: exceptions.anyTap ? 'recorded' : 'unknown',
+      unattributed_records: orderRows.filter(row => !String(row.patient_name || '').trim()).length,
+      breakdown: plannedRows.map(row => ({
+        item_code: db.prepare('SELECT code FROM prescriptions WHERE id=?').get(row.rxId)?.code || null,
+        quantity: Number(row.cups || 0),
+        category: row.why || null,
+      })),
+      records,
+    };
+  });
+  const unattributedRecords = days.reduce((sum, day) => sum + day.unattributed_records, 0);
+  res.set('Cache-Control', 'no-store').json({
+    source: 'clinic-kitchen',
+    source_version: process.env.RAILWAY_GIT_COMMIT_SHA || process.env.KITCHEN_SOURCE_VERSION || 'unknown',
+    range: { from: range.from, to: range.to, timezone: 'Asia/Taipei' },
+    data_completeness: unattributedRecords ? 'partial' : 'complete',
+    unattributed_records: unattributedRecords,
+    read_only: true,
+    days,
+  });
+});
+
 app.use('/api', (req, res, next) => {
   const userId = Number(req.get('x-kitchen-user-id') || 0);
   if (!userId) {
@@ -2217,6 +2307,8 @@ const LOG_NAMES = [
   [/^\/api\/inventory\/consume$/,                '扣庫存'],
   [/^\/api\/inventory\/\d+$/,                   '調整庫存'],
   [/^\/api\/stocktake$/,                          '盤點'],
+  [/^\/api\/waste\/\d+$/,                        '取消報廢'],
+  [/^\/api\/waste$/,                              '報廢'],
   [/^\/api\/consumption\/\d+\/reverse$/,       '還原補扣'],
   [/^\/api\/rotation\/plan\/override$/,         '手動指定蔬果方案'],
   [/^\/api\/rotation\/plan\/override\/\d+$/,  '取消方案指定'],
@@ -4538,7 +4630,10 @@ app.get('/api/stocktake/shortlist', (req, res) => {
 
   const lastVar = {};
   db.prepare(
-    `SELECT si.ingredient_id, si.variance FROM stocktake_items si
+    // 看的是未說明的那一塊。已經記成報廢的不算「差異大」——
+    // 原因已經知道了，不需要下次再特別盤一次
+    `SELECT si.ingredient_id, si.variance + COALESCE(si.waste_qty,0) variance
+       FROM stocktake_items si
       JOIN stocktakes s ON s.id=si.stocktake_id
       WHERE s.id=(SELECT MAX(id) FROM stocktakes)`
   ).all().forEach(r => { lastVar[r.ingredient_id] = r.variance; });
@@ -4806,7 +4901,20 @@ app.get('/api/costs/monthly', (req, res) => {
   ['planned', 'actual', 'total'].forEach(k => { meals[k] = Math.round(meals[k] * 10) / 10; });
   meals.cost_per_box = meals.count > 0 ? Math.round(meals.total / meals.count * 10) / 10 : 0;
 
-  res.json({ month, days, month_total, by_product, meals });
+  // 報廢另外列，不併進月總支出 —— 月總支出是「做出來的東西花了多少」，
+  // 報廢是「沒做成東西就丟掉的錢」，併在一起兩個都看不清楚
+  const wasteRows = db.prepare(
+    `SELECT w.ingredient_id, i.name, i.unit, w.reason, SUM(w.qty) qty, SUM(w.cost) cost, COUNT(*) n
+       FROM waste_log w JOIN ingredients i ON i.id = w.ingredient_id
+      WHERE w.date LIKE ? GROUP BY w.ingredient_id, w.reason ORDER BY SUM(w.cost) DESC`
+  ).all(`${month}-%`);
+  const waste = {
+    total_cost: Math.round(wasteRows.reduce((s, r) => s + r.cost, 0)),
+    count: wasteRows.reduce((s, r) => s + r.n, 0),
+    items: wasteRows.map(r => ({ ...r, qty: Math.round(r.qty * 10) / 10, cost: Math.round(r.cost) }))
+  };
+
+  res.json({ month, days, month_total, by_product, meals, waste });
 });
 
 app.put('/api/settings', (req, res) => {
@@ -5005,14 +5113,41 @@ app.post('/api/stocktake', (req, res) => {
     return res.status(400).json({ error: '沒有盤點資料' });
   }
   const d = date || today();
+
+  // 報廢量先整批檢查，任何一列不對就整張不收 —— 盤點會覆寫庫存，
+  // 不能收一半、另一半要人重填
+  for (const it of items) {
+    const w = Number(it.waste_qty) || 0;
+    if (!w) continue;
+    if (w < 0) return res.status(400).json({ error: '報廢量不能是負數' });
+    if (it.counted_qty === '' || it.counted_qty == null)
+      return res.status(400).json({ error: '有報廢量的品項要一起填實際數量' });
+    const r = wasteReasonOf(it.waste_reason, it.waste_note);
+    if (r.error) return res.status(400).json({ error: r.error });
+    const book = db.prepare('SELECT COALESCE(qty,0) q FROM inventory WHERE ingredient_id=?')
+      .get(Number(it.ingredient_id))?.q || 0;
+    if (w > book + 0.01) {
+      const nm = db.prepare('SELECT name, unit FROM ingredients WHERE id=?').get(Number(it.ingredient_id));
+      return res.status(400).json({ error:
+        `${nm ? nm.name : '這一樣'}帳上只有 ${Math.round(book * 10) / 10}${nm ? nm.unit : ''}，`
+        + `報廢 ${w} 比帳上還多。報廢是「帳上有、但丟掉了」的那一部分，不會超過帳面` });
+    }
+  }
+
+  const ucCache = buildUnitCostCache();
   const result = tx(() => {
     const st = db.prepare(
       'INSERT INTO stocktakes (date,user_id,note) VALUES (?,?,?)'
     ).run(d, req.kitchenUser.id, note || '');
     const insItem = db.prepare(
-      `INSERT INTO stocktake_items (stocktake_id,ingredient_id,book_qty,counted_qty,variance)
-       VALUES (?,?,?,?,?)`
+      `INSERT INTO stocktake_items (stocktake_id,ingredient_id,book_qty,counted_qty,variance,waste_qty)
+       VALUES (?,?,?,?,?,?)`
     );
+    const insWaste = db.prepare(
+      `INSERT INTO waste_log (date,ingredient_id,qty,reason,note,unit_cost,cost,user_id,stocktake_id)
+       VALUES (?,?,?,?,?,?,?,?,?)`
+    );
+    let wasted = 0, unexplained = 0, wasteCost = 0;
     const setQty = db.prepare(
       `INSERT INTO inventory (ingredient_id,qty,updated_at)
        VALUES (?,?,datetime('now','localtime'))
@@ -5025,12 +5160,24 @@ app.post('/api/stocktake', (req, res) => {
       const book = db.prepare('SELECT COALESCE(qty,0) q FROM inventory WHERE ingredient_id=?').get(id)?.q || 0;
       const cnt  = Number(it.counted_qty) || 0;
       const varc = Math.round((cnt - book) * 100) / 100;
-      insItem.run(st.lastInsertRowid, id, book, cnt, varc);
+      const w    = Math.round((Number(it.waste_qty) || 0) * 100) / 100;
+      // 庫存一律照實際數覆寫。報廢只是把差異拆開來記，不會再多扣一次
+      insItem.run(st.lastInsertRowid, id, book, cnt, varc, w);
       setQty.run(id, cnt);
       counted++;
       if (varc < 0) shortage += 1;
+      if (w > 0) {
+        const r  = wasteReasonOf(it.waste_reason, it.waste_note);
+        const uc = ucCache[id] || 0;
+        insWaste.run(d, id, w, r.reason, r.note, uc, Math.round(w * uc * 10) / 10,
+                     req.kitchenUser.id, st.lastInsertRowid);
+        wasted++;
+        wasteCost += w * uc;
+      }
+      if (varc + w < -0.05) unexplained++;
     });
-    return { id: st.lastInsertRowid, counted, shortage };
+    return { id: st.lastInsertRowid, counted, shortage, wasted, unexplained,
+             waste_cost: Math.round(wasteCost) };
   });
   res.json({ ok: true, ...result });
 });
@@ -5042,11 +5189,124 @@ app.get('/api/stocktake/:id', (req, res) => {
   ).get(req.params.id);
   if (!st) return res.status(404).json({ error: '找不到這次盤點' });
   const items = db.prepare(
-    `SELECT si.*, i.name, i.unit FROM stocktake_items si
+    `SELECT si.*, i.name, i.unit,
+            ROUND(si.variance + COALESCE(si.waste_qty,0), 2) unexplained
+       FROM stocktake_items si
      JOIN ingredients i ON i.id=si.ingredient_id
-     WHERE si.stocktake_id=? ORDER BY si.variance`
+     WHERE si.stocktake_id=? ORDER BY si.variance + COALESCE(si.waste_qty,0)`
   ).all(req.params.id);
   res.json({ ...st, items });
+});
+
+// ════════════════════════════════════════════════════════
+// API: 報廢
+// 兩個入口寫同一張表：
+//   隨時報廢   POST /api/waste      —— 丟的當下記，庫存當下就扣
+//   盤點時拆   POST /api/stocktake  —— 帶 waste_qty，庫存照實際數覆寫
+// 隨時報廢的量已經先扣掉了，下次盤點的差異裡自然不含它，所以兩邊不會重複算。
+// ════════════════════════════════════════════════════════
+const WASTE_REASONS = ['腐壞過期', '掉落污染', '其他'];
+
+function wasteReasonOf(reason, note) {
+  const r = String(reason || '').trim() || '腐壞過期';
+  const n = String(note || '').trim();
+  if (!WASTE_REASONS.includes(r)) return { error: '報廢原因只能是：' + WASTE_REASONS.join('、') };
+  // 「其他」沒寫原因，等於沒記 —— 一個月後沒人知道那 800g 是什麼
+  if (r === '其他' && !n) return { error: '原因選「其他」的話，請在備註寫一下是什麼' };
+  return { reason: r, note: n.slice(0, 200) };
+}
+
+app.get('/api/waste', (req, res) => {
+  const from = String(req.query.from || '0000-00-00');
+  const to   = String(req.query.to   || '9999-12-31');
+  const ingId = Number(req.query.ingredient_id) || 0;
+  const rows = db.prepare(
+    `SELECT w.*, i.name, i.unit, u.name user_name
+       FROM waste_log w
+       JOIN ingredients i ON i.id = w.ingredient_id
+       LEFT JOIN users u ON u.id = w.user_id
+      WHERE w.date >= ? AND w.date <= ? AND (? = 0 OR w.ingredient_id = ?)
+      ORDER BY w.date DESC, w.id DESC LIMIT 300`
+  ).all(from, to, ingId, ingId);
+  const byReason = {};
+  rows.forEach(r => { byReason[r.reason] = (byReason[r.reason] || 0) + r.cost; });
+  res.json({
+    reasons: WASTE_REASONS,
+    rows,
+    total_cost: Math.round(rows.reduce((s, r) => s + r.cost, 0)),
+    by_reason: Object.entries(byReason).map(([reason, cost]) => ({ reason, cost: Math.round(cost) }))
+  });
+});
+
+app.post('/api/waste', (req, res) => {
+  const id = Number(req.body.ingredient_id);
+  const ing = db.prepare('SELECT * FROM ingredients WHERE id=? AND active=1').get(id);
+  if (!ing) return res.status(400).json({ error: '找不到這樣食材' });
+  const qty = toBaseQty(ing, req.body.qty, req.body.unit);
+  if (qty == null) return res.status(400).json({ error: '報廢量要大於 0' });
+  const r = wasteReasonOf(req.body.reason, req.body.note);
+  if (r.error) return res.status(400).json({ error: r.error });
+  const d = String(req.body.date || '').trim() || today();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return res.status(400).json({ error: '日期格式不對' });
+  if (d > today()) return res.status(400).json({ error: '報廢是已經丟掉的東西，日期不能在未來' });
+
+  const book = db.prepare('SELECT COALESCE(qty,0) q FROM inventory WHERE ingredient_id=?').get(id)?.q || 0;
+  // 手上明明有、帳上卻比要丟的還少 —— 那是帳本身錯了，不是報廢能解決的。
+  // 硬扣下去會變負數，只會把問題藏得更深
+  if (qty > book + 0.01) {
+    return res.status(400).json({ error:
+      `${ing.name}帳上只有 ${Math.round(book * 10) / 10}${ing.unit}，比要報廢的 ${Math.round(qty * 10) / 10}${ing.unit} 還少。`
+      + '這代表帳面已經不準了 —— 請直接用「盤點」數一次這一樣，盤點時可以一起拆出報廢量' });
+  }
+  const uc = unitCost(id);
+  const out = tx(() => {
+    const w = db.prepare(
+      `INSERT INTO waste_log (date,ingredient_id,qty,reason,note,unit_cost,cost,user_id)
+       VALUES (?,?,?,?,?,?,?,?)`
+    ).run(d, id, qty, r.reason, r.note, uc, Math.round(qty * uc * 10) / 10, req.kitchenUser.id);
+    db.prepare(
+      `UPDATE inventory SET qty = MAX(0, qty - ?), updated_at = datetime('now','localtime')
+        WHERE ingredient_id=?`
+    ).run(qty, id);
+    return w.lastInsertRowid;
+  });
+  const after = db.prepare('SELECT COALESCE(qty,0) q FROM inventory WHERE ingredient_id=?').get(id)?.q || 0;
+  res.json({ ok: true, id: out, name: ing.name, unit: ing.unit, qty,
+             cost: Math.round(qty * uc), stock: after });
+});
+
+// 記錯了要能收回。
+// 隨時報廢：把扣掉的量加回去 —— 但如果之後這一樣已經盤點過，
+// 庫存已經被實際數覆寫，這時候再加回去就是憑空多出來的貨。那種只刪紀錄、不動庫存。
+// 盤點時拆的：庫存本來就是照實際數，只把那一塊改回「未說明」。
+app.delete('/api/waste/:id', (req, res) => {
+  const w = db.prepare('SELECT * FROM waste_log WHERE id=?').get(Number(req.params.id));
+  if (!w) return res.status(404).json({ error: '找不到這筆報廢' });
+  let restored = 0;
+  tx(() => {
+    if (w.stocktake_id) {
+      db.prepare(
+        `UPDATE stocktake_items SET waste_qty = MAX(0, COALESCE(waste_qty,0) - ?)
+          WHERE stocktake_id=? AND ingredient_id=?`
+      ).run(w.qty, w.stocktake_id, w.ingredient_id);
+    } else {
+      const countedAfter = db.prepare(
+        `SELECT 1 FROM stocktake_items si JOIN stocktakes s ON s.id = si.stocktake_id
+          WHERE si.ingredient_id=? AND s.created_at >= ? LIMIT 1`
+      ).get(w.ingredient_id, w.created_at);
+      if (!countedAfter) {
+        db.prepare(
+          `UPDATE inventory SET qty = qty + ?, updated_at = datetime('now','localtime')
+            WHERE ingredient_id=?`
+        ).run(w.qty, w.ingredient_id);
+        restored = w.qty;
+      }
+    }
+    db.prepare('DELETE FROM waste_log WHERE id=?').run(w.id);
+  });
+  res.json({ ok: true, restored,
+             note: restored || w.stocktake_id ? ''
+               : '之後已經盤點過這一樣，庫存以盤點數字為準，所以沒有加回去' });
 });
 
 app.get('/api/stocktakes', (req, res) => {

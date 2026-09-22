@@ -2757,7 +2757,22 @@ const App = (() => {
         <tr class="row-total"><td>月合計</td>${colTotals}<td>$${data.month_total}</td></tr>
         </tbody></table></div>`;
 
-    document.getElementById('costMonthly').innerHTML = summaryHtml + tableHtml;
+    // 報廢不併進月總支出，另外一塊：丟掉的錢跟做出來的成本是兩回事
+    const w = data.waste;
+    const wasteHtml = w && w.count ? `
+      <div class="card waste-month">
+        <div class="waste-month-head">
+          <b>本月報廢</b><span>NT$${w.total_cost}</span>
+        </div>
+        <div class="waste-month-sub">${w.count} 筆，不含在上面的月總支出裡</div>
+        ${w.items.slice(0, 8).map(x => `
+          <div class="waste-month-row">
+            <span>${esc(x.name)}<small>${esc(x.reason)}</small></span>
+            <span>${x.qty}${esc(x.unit)}</span>
+            <span>NT$${x.cost}</span>
+          </div>`).join('')}
+      </div>` : '';
+    document.getElementById('costMonthly').innerHTML = summaryHtml + wasteHtml + tableHtml;
   }
 
   function prevCostMonth() {
@@ -2870,11 +2885,28 @@ const App = (() => {
     const mark = open => { if (row) row.classList.toggle('open', open); };
     if (box.style.display !== 'none') { box.style.display = 'none'; mark(false); return; }
     mark(true);
-    const rows = await api(`/api/inventory/${ingId}/purchases`);
+    const [rows, wd] = await Promise.all([
+      api(`/api/inventory/${ingId}/purchases`),
+      api(`/api/waste?ingredient_id=${ingId}`)
+    ]);
+    // 報廢放在採購紀錄上面：打開一樣食材，最常要做的就是「這個壞了，記一下」
+    const wasteHtml = `<div class="waste-bar">
+        <button class="btn btn-ghost btn-sm" onclick="App.openWaste(${ingId})">🗑 報廢</button>
+        ${wd.rows.length ? `<span class="waste-sum">累計報廢 ${wd.rows.length} 筆・NT$${wd.total_cost}</span>` : ''}
+      </div>` + (wd.rows.length ? `<div class="purchase-history">${wd.rows.slice(0, 5).map(w => `
+        <div class="ph-row waste-row">
+          <span class="ph-date">${esc(w.date)}</span>
+          <span class="ph-purpose waste-tag">${esc(w.reason)}</span>
+          ${w.note ? `<span class="ph-note" title="${esc(w.note)}">${esc(w.note.slice(0, 20))}</span>` : ''}
+          <span class="ph-qty">${Math.round(w.qty * 10) / 10}${esc(w.unit)}</span>
+          <span class="ph-price">NT$${Math.round(w.cost)}</span>
+          <span class="ph-uc">${esc(w.user_name || '')}${w.stocktake_id ? '・盤點' : ''}</span>
+          <button class="ph-fix ph-del" title="記錯了" onclick="App.deleteWaste(${w.id})">刪</button>
+        </div>`).join('')}</div>` : '');
     if (rows.length === 0) {
-      box.innerHTML = '<div class="purchase-history"><div style="color:var(--text3);font-size:12px;padding:6px 0">尚無採購記錄</div></div>';
+      box.innerHTML = wasteHtml + '<div class="purchase-history"><div style="color:var(--text3);font-size:12px;padding:6px 0">尚無採購記錄</div></div>';
     } else {
-      box.innerHTML = `<div class="purchase-history">${rows.map(r => {
+      box.innerHTML = wasteHtml + `<div class="purchase-history">${rows.map(r => {
         // 原本是 r.qty > 999 ? 'g' : '份' —— 拿數量大小猜單位。
         // 買 800g 會標成「/份」，買 12 顆也標成「/份」，而換算後其實是 2640g。
         // 單位就在資料裡，不必猜
@@ -2902,7 +2934,66 @@ const App = (() => {
       }).join('')}</div>`;
     }
     box.style.display = '';
-    btn.textContent = '📋 收起';
+  }
+
+  // ══════════════════════════════════════════════════════
+  // 報廢（隨時記）
+  // 丟的當下就記、庫存當下就扣。等到盤點那天才回想「這週丟了多少」，準度就沒了
+  // ══════════════════════════════════════════════════════
+  async function openWaste(ingId) {
+    const list = _invRows && _invRows.length ? _invRows : await api('/api/inventory');
+    const sel = document.getElementById('wasteIng');
+    sel.innerHTML = '<option value="">選食材…</option>' + list
+      .slice().sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0))
+      .map(i => `<option value="${i.id}">${esc(i.name)}（帳上 ${Math.round(i.qty * 10) / 10}${esc(i.unit)}）</option>`)
+      .join('');
+    sel.value = ingId ? String(ingId) : '';
+    document.getElementById('wasteQty').value = '';
+    document.getElementById('wasteNote').value = '';
+    document.getElementById('wasteReason').value = '腐壞過期';
+    wasteIngChanged();
+    openModal('modalWaste');
+  }
+
+  // 有「顆／包」的食材讓人用顆數報 —— 爛掉的是 3 顆奇異果，沒人會去秤
+  function wasteIngChanged() {
+    const id = Number(document.getElementById('wasteIng').value);
+    const i = (_invRows || []).find(x => x.id === id);
+    const u = document.getElementById('wasteUnit');
+    if (!i) { u.innerHTML = '<option value="base">—</option>'; return; }
+    const opts = [`<option value="base">${esc(i.unit)}</option>`];
+    if (i.count_unit && i.count_ratio > 1)
+      opts.unshift(`<option value="count">${esc(i.count_unit)}（1${esc(i.count_unit)}=${i.count_ratio}${esc(i.unit)}）</option>`);
+    if (i.unit === 'g') opts.push('<option value="kg">kg</option>');
+    u.innerHTML = opts.join('');
+  }
+
+  async function saveWaste() {
+    const body = {
+      ingredient_id: Number(document.getElementById('wasteIng').value),
+      qty:    Number(document.getElementById('wasteQty').value),
+      unit:   document.getElementById('wasteUnit').value,
+      reason: document.getElementById('wasteReason').value,
+      note:   document.getElementById('wasteNote').value.trim()
+    };
+    if (!body.ingredient_id) return alert('先選是哪一樣');
+    if (!(body.qty > 0)) return alert('報廢量要大於 0');
+    try {
+      const r = await api('/api/waste', 'POST', body);
+      closeModal('modalWaste');
+      alert(`已記報廢：${r.name} ${Math.round(r.qty * 10) / 10}${r.unit}（約 NT$${r.cost}）。\n帳上剩 ${Math.round(r.stock * 10) / 10}${r.unit}。`);
+      loadInventory();
+      checkInvWarning();
+    } catch (e) { alert(e.message); }
+  }
+
+  async function deleteWaste(id) {
+    if (!confirm('這筆報廢記錯了，要刪掉？')) return;
+    try {
+      const r = await api('/api/waste/' + id, 'DELETE');
+      if (r.note) alert(r.note);
+      loadInventory();
+    } catch (e) { alert(e.message); }
   }
 
   // 買的是小黃瓜卻登記在大黃瓜上 —— 沒有這條路的話，
@@ -3625,28 +3716,77 @@ const App = (() => {
           <span style="font-size:12px;color:var(--text3);white-space:nowrap">帳面 ${Math.round(i.book_qty * 10) / 10}${esc(i.unit)}</span>
           <input type="number" step="any" data-st-id="${i.ingredient_id}"
                  placeholder="實際"
-                 style="width:96px;padding:6px 8px;border:1.5px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-size:13px">
+                 style="width:84px;padding:6px 8px;border:1.5px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-size:13px">
+          <input type="number" step="any" min="0" data-st-waste="${i.ingredient_id}"
+                 placeholder="報廢" title="這段期間丟掉的量（${esc(i.unit)}）"
+                 oninput="App.stWasteInput(${i.ingredient_id})"
+                 style="width:70px;padding:6px 8px;border:1.5px dashed var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-size:13px">
+        </div>
+        <div class="st-waste-why" id="stWhy_${i.ingredient_id}" style="display:none">
+          <select data-st-reason="${i.ingredient_id}">
+            <option>腐壞過期</option><option>掉落污染</option><option>其他</option>
+          </select>
+          <input type="text" data-st-wnote="${i.ingredient_id}" placeholder="備註（選其他時必填）">
         </div>`;
     }).join('');
     openModal('modalStocktake');
   }
 
+  // 報廢量填了才出現原因 —— 48 列每列都掛一個下拉選單太吵
+  function stWasteInput(id) {
+    const el = document.querySelector(`[data-st-waste="${id}"]`);
+    const why = document.getElementById('stWhy_' + id);
+    if (why) why.style.display = el && Number(el.value) > 0 ? '' : 'none';
+  }
+
   async function saveStocktake() {
+    const val = (attr, id) => {
+      const el = document.querySelector(`[${attr}="${id}"]`);
+      return el ? el.value : '';
+    };
+    // 只填報廢、沒填實際 —— 盤點是拿實際數覆寫帳面，沒有實際數就拆不出差異
+    const orphan = [...document.querySelectorAll('[data-st-waste]')]
+      .filter(el => el.value !== '' && Number(el.value) > 0 && val('data-st-id', el.dataset.stWaste) === '');
+    if (orphan.length) {
+      const src = stocktakeItems.find(s => s.ingredient_id === Number(orphan[0].dataset.stWaste));
+      return alert(`${src ? src.name : '有一樣'}填了報廢、沒填實際數量。\n\n`
+        + '兩個要一起填；只是要記報廢的話，關掉盤點、到庫存頁點那一樣按「報廢」。');
+    }
     const items = [...document.querySelectorAll('[data-st-id]')]
       .filter(el => el.value !== '')
-      .map(el => ({ ingredient_id: Number(el.dataset.stId), counted_qty: Number(el.value) }));
+      .map(el => {
+        const id = Number(el.dataset.stId);
+        const w = Number(val('data-st-waste', id)) || 0;
+        return { ingredient_id: id, counted_qty: Number(el.value),
+                 waste_qty: w,
+                 waste_reason: w ? val('data-st-reason', id) : '',
+                 waste_note:   w ? val('data-st-wnote', id).trim() : '' };
+      });
     if (!items.length) return alert('至少要填一項實際數量');
+    const bad = items.find(it => it.waste_qty && it.waste_reason === '其他' && !it.waste_note);
+    if (bad) {
+      const src = stocktakeItems.find(s => s.ingredient_id === bad.ingredient_id);
+      return alert(`${src.name}的報廢原因選了「其他」，請在備註寫一下是什麼`);
+    }
 
-    // 先讓人看到差異再決定要不要送出 —— 覆寫庫存是不可逆的
+    // 先讓人看到差異再決定要不要送出 —— 覆寫庫存是不可逆的。
+    // 差異拆成兩塊：報廢（知道原因）與未說明（該查的）
     const diffs = items.map(it => {
       const src = stocktakeItems.find(s => s.ingredient_id === it.ingredient_id);
+      const v = Math.round((it.counted_qty - src.book_qty) * 10) / 10;
       return { name: src.name, unit: src.unit, book: src.book_qty,
-               counted: it.counted_qty, v: Math.round((it.counted_qty - src.book_qty) * 10) / 10 };
-    }).filter(d => Math.abs(d.v) > 0.05);
+               counted: it.counted_qty, v, w: it.waste_qty,
+               u: Math.round((v + it.waste_qty) * 10) / 10 };
+    }).filter(d => Math.abs(d.v) > 0.05 || d.w > 0);
 
+    const line = d => {
+      let s = `${d.name}　帳面 ${Math.round(d.book*10)/10} → 實際 ${d.counted}${d.unit}　(${d.v > 0 ? '+' : ''}${d.v})`;
+      if (d.w > 0) s += `\n　　其中報廢 ${d.w}・未說明 ${d.u > 0 ? '+' : ''}${d.u}`;
+      return s;
+    };
     const msg = diffs.length
       ? `共 ${items.length} 項，其中 ${diffs.length} 項與帳面不符：\n\n` +
-        diffs.slice(0, 12).map(d => `${d.name}　帳面 ${Math.round(d.book*10)/10} → 實際 ${d.counted}${d.unit}　(${d.v > 0 ? '+' : ''}${d.v})`).join('\n') +
+        diffs.slice(0, 12).map(line).join('\n') +
         (diffs.length > 12 ? `\n…另有 ${diffs.length - 12} 項` : '') +
         '\n\n送出後庫存會以實際數量為準，確定嗎？'
       : `共 ${items.length} 項，與帳面一致。確定送出？`;
@@ -3657,7 +3797,9 @@ const App = (() => {
         note: document.getElementById('stocktakeNote').value.trim(), items
       });
       closeModal('modalStocktake');
-      alert(`盤點完成：${r.counted} 項已更新，其中 ${r.shortage} 項短少。`);
+      alert(`盤點完成：${r.counted} 項已更新，其中 ${r.shortage} 項短少。`
+        + (r.wasted ? `\n報廢 ${r.wasted} 項，約 NT$${r.waste_cost}。` : '')
+        + (r.unexplained ? `\n還有 ${r.unexplained} 項少掉的量說不出原因 —— 那幾樣值得查一下扣帳。` : ''));
       loadInventory();
       checkInvWarning();
     } catch (e) { alert(e.message); }
@@ -5293,7 +5435,8 @@ const App = (() => {
     openAddTrialSession, saveTrialSession, deleteTrialSession,
     loadSOP, toggleQC, resetQC, saveBatchNotes,
     toggleCaseRecipe, togglePrepBatches, toggleFutureCases, setSchFilter,
-    openStocktake, saveStocktake, reverseAutoSettle, toggleAutoSettle, ackAutoSettle,
+    openStocktake, saveStocktake, stWasteInput,
+    openWaste, wasteIngChanged, saveWaste, deleteWaste, reverseAutoSettle, toggleAutoSettle, ackAutoSettle,
     renderMealOrderVendor,
     downloadBackup, runBackupNow,
     toggleLeaveRestore,

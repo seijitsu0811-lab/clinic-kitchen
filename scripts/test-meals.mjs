@@ -94,6 +94,8 @@ const g1      = day2.purchase_lists[0];
 const open    = g1.lines.filter(l => !l.all_purchased);
 const planned = open.reduce((s, l) => s + l.subtotal, 0);
 const actual  = planned + 30;              // 當天漲價，實付比預計多 30
+// 同一天跑第二次時，這家店早就有上一輪的採購紀錄 —— 要看的是這次增加幾筆
+const splitBefore = (await api('/api/meals/purchases')).filter(p => p.note === g1.vendor).length;
 await api('/api/meals/purchase', 'POST', {
   lines: open.map(l => ({
     meal_item_id:  Number(l.key.split('|')[0]),
@@ -109,7 +111,7 @@ check('該店出單全部轉為已採購', purchased.every(o => o.status === '�
 check('拆帳總和精準等於實付', Math.abs(day3.spent_total - actual) < 0.05,
       `預計 ${money(planned)} → 實付 ${money(actual)} → 入帳 ${money(day3.spent_total)}`);
 const splitRows = (await api('/api/meals/purchases')).filter(p => p.note === g1.vendor);
-check('總額拆回各品項，成本仍可分析', splitRows.length === open.length,
+check('總額拆回各品項，成本仍可分析', splitRows.length - splitBefore === open.length,
       splitRows.map(r => `${r.display_name} ${money(r.total_price)}`).join('、'));
 
 line('\n━━ 7. 狀態一路走到出餐 ━━');
