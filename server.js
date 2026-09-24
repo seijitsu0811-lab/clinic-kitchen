@@ -3008,9 +3008,21 @@ app.put('/api/ingredients/:id', (req, res) => {
   // 盤點單位與換算比例。原本這兩欄只能靠寫死的遷移設定（只有蘋果與檸檬有），
   // 要多一樣就得改程式 —— 而採購與盤點的單位換算全靠它們。
   // 28 樣食材裡只有 2 樣設得起來，難怪「2.2 公斤」那種輸入沒有防線
-  const cur = db.prepare('SELECT active, COALESCE(track_stock,1) track_stock FROM ingredients WHERE id=?')
-                .get(req.params.id);
+  // 整列的現值，不只 active 與 track_stock。
+  //
+  // 下面那句 UPDATE 原本把 body 裡的每一欄直接寫進去，沒帶的就寫 null ——
+  // 只想改一件事（例如補上「1 罐 = 500 g」）就得把 name、unit、category
+  // 整列重送一次，少送一欄就撞 NOT NULL，回 500。而 count_unit 在前面已經寫進去了，
+  // 於是「設定生效了，但伺服器說失敗」。畫面上的編輯視窗剛好每次都整列送，
+  // 所以這個洞一直沒被踩到。沒帶的欄位一律保留現值
+  const cur = db.prepare(
+    `SELECT name, unit, category, COALESCE(safety_stock,0) safety_stock,
+            COALESCE(storage_note,'') storage_note, COALESCE(shelf_life_days,0) shelf_life_days,
+            active, COALESCE(track_stock,1) track_stock
+       FROM ingredients WHERE id=?`
+  ).get(req.params.id);
   if (!cur) return res.status(404).json({ error: '找不到這個食材' });
+  const keep = (v, now) => (v === undefined ? now : v);
 
   const curConv = db.prepare(
     "SELECT COALESCE(count_unit,'') count_unit, COALESCE(count_ratio,1) count_ratio FROM ingredients WHERE id=?"
@@ -3058,7 +3070,10 @@ app.put('/api/ingredients/:id', (req, res) => {
   db.prepare(
     `UPDATE ingredients SET name=?,unit=?,category=?,safety_stock=?,storage_note=?,
             shelf_life_days=?,active=?,track_stock=? WHERE id=?`
-  ).run(name, unit, category, safety_stock||0, storage_note||'', shelf_life_days||0,
+  ).run(keep(name, cur.name), keep(unit, cur.unit), keep(category, cur.category),
+        keep(safety_stock, cur.safety_stock) || 0,
+        keep(storage_note, cur.storage_note) || '',
+        keep(shelf_life_days, cur.shelf_life_days) || 0,
         nextActive,
         track_stock === undefined ? cur.track_stock : (track_stock ? 1 : 0),
         req.params.id);

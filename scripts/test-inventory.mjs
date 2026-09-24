@@ -41,7 +41,21 @@ if (rx) {
     { code: 'ZZ-TEST', name: '測試處方', formula_type: '粉配方', timing: '餐前' });
   rx = { id: r.id, code: 'ZZ-TEST' };
 }
-await api(`/api/prescriptions/${rx.id}/ingredients`, 'PUT', [{ ingredient_id: oat.id, qty_per_cup: 10 }]);
+// 自動補扣那組要一把「只有這張測試處方在用」的尺。
+// 燕麥不行 —— 員工配方每杯也有 20g，昨天有幾杯被補扣就會一起扣掉，
+// 於是同一支測試在某些星期跑會過、某些星期會失敗
+let zz = (await api('/api/ingredients?include_inactive=1')).find(i => i.name === 'ZZ量尺料');
+if (!zz) {
+  const r = await api('/api/ingredients', 'POST',
+    { name: 'ZZ量尺料', unit: 'g', category: '粉類', safety_stock: 0 });
+  zz = { id: r.id, name: 'ZZ量尺料', unit: 'g' };
+} else {
+  await api(`/api/ingredients/${zz.id}`, 'PUT', { active: 1 });
+}
+await api(`/api/prescriptions/${rx.id}/ingredients`, 'PUT',
+  [{ ingredient_id: oat.id, qty_per_cup: 10 }, { ingredient_id: zz.id, qty_per_cup: 10 }]);
+await api('/api/stocktake', 'POST',
+  { note: 'ZZ 量尺料設到已知量', items: [{ ingredient_id: zz.id, counted_qty: 1000 }] });
 
 // 先用盤點把庫存設到已知數量。測試不能依賴環境裡剩多少 ——
 // 扣庫存有 MAX(0,…) 保護，起始量太低時扣了也不會變，斷言就會假失敗
@@ -70,8 +84,10 @@ const ydayOrder = await api('/api/today/cases', 'POST',
     patient_name: 'ZZ補扣測試', notes: 'ZZ', date: yday }).catch(() => null);
 // case_orders 的日期是今天，改成昨天
 const before = await qtyOf('燕麥');
+const beforeZZ = await qtyOf('ZZ量尺料');
 await api('/api/today');           // 觸發補扣
 const afterSettle = await qtyOf('燕麥');
+const afterZZ = await qtyOf('ZZ量尺料');
 const settled = await api('/api/consumption/auto?days=3');
 // 只看這張測試處方在昨天的補扣，不要把環境裡別的補扣算進來
 const mine = settled.filter(s => s.date === yday && s.prescription_id === rx.id);
@@ -87,10 +103,11 @@ const total = mine.reduce((s, r) => s + r.cups, 0);
 check('補的是差額 3 杯，不是整份 5 杯', total === 3,
       `實際補 ${total} 杯（應出 5、已扣 2）`);
 
-// 扣的量也要對得上：3 杯 × 每杯 10g 燕麥
+// 扣的量也要對得上：3 杯 × 每杯 10g。
+// 用只有這張處方在用的量尺料來看，環境裡別人的補扣不會混進來
 check('庫存少掉的量與補扣杯數一致',
-      Math.abs((before - afterSettle) - 30) < 0.05,
-      `${before} → ${afterSettle}（少 ${Math.round((before - afterSettle) * 10) / 10}g，應為 3×10）`);
+      Math.abs((beforeZZ - afterZZ) - 30) < 0.05,
+      `${beforeZZ} → ${afterZZ}（少 ${Math.round((beforeZZ - afterZZ) * 10) / 10}g，應為 3×10）`);
 
 const secondPass = await qtyOf('燕麥');
 await api('/api/today');           // 再打一次
@@ -148,10 +165,32 @@ for (const c of await api('/api/consumption/auto?days=3')) {
   await api(`/api/consumption/${c.id}/reverse`, 'POST').catch(() => {});
 }
 await api(`/api/prescriptions/${rx.id}`, 'DELETE');
+await api(`/api/ingredients/${zz.id}`, 'PUT', { active: 0 }).catch(() => {});
 // 最後用盤點把庫存還原成測試開始前的樣子
 await api('/api/stocktake', 'POST',
   { note: 'ZZ 還原', items: [{ ingredient_id: oat.id, counted_qty: origQty }] });
 check('燕麥還原成測試前的數量', (await qtyOf('燕麥')) === origQty, `${await qtyOf('燕麥')} / ${origQty}`);
+
+// 只改一件事的 PUT，不能把整列其他欄位清掉。
+// 補「1 罐 = 500 g」的時候踩到過：換算單位寫進去了，伺服器卻回 500
+line('\n━━ 7. 只改換算單位，其他欄位要留著 ━━');
+{
+  const all = await api('/api/ingredients?include_inactive=1');
+  const before = all.find(i => i.id === oat.id);
+  const r = await fetch(`${B}/api/ingredients/${oat.id}`, {
+    method: 'PUT', headers: H, body: JSON.stringify({ count_unit: '包', count_ratio: 750 }) });
+  check('只帶換算單位也要成功', r.ok,
+        r.ok ? '' : `★ ${r.status} ${(await r.text()).slice(0, 80)}`);
+  const after = (await api('/api/ingredients?include_inactive=1')).find(i => i.id === oat.id);
+  check('換算單位寫進去了', after.count_unit === '包' && after.count_ratio === 750,
+        `${after.count_unit}=${after.count_ratio}`);
+  check('名稱、單位、分類、安全量都沒被清掉',
+        after.name === before.name && after.unit === before.unit &&
+        after.category === before.category && after.safety_stock === before.safety_stock,
+        `${after.name}／${after.unit}／${after.category}／安全量 ${after.safety_stock}`);
+  await api(`/api/ingredients/${oat.id}`, 'PUT',
+    { count_unit: before.count_unit || '', count_ratio: before.count_ratio || 1 });
+}
 
 line(`\n${'─'.repeat(46)}`);
 line(`通過 ${pass} 項，失敗 ${fail} 項`);
